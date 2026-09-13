@@ -1,7 +1,9 @@
-# TTC network MCP server: specification v0.5
+# TTC network MCP server: specification v0.6
 
-**Date:** 2026-09-13 | **Status:** decisions a to i accepted; ready to implement | **Supersedes:** v0.4 (history in `docs/spec-history/`)
+**Date:** 2026-09-13 | **Status:** decisions a to j accepted; ready to implement | **Supersedes:** v0.5 (history in `docs/spec-history/`)
 **Companions (in this repository):** `docs/investigation-2026-09-13.md` (source survey), `docs/detours-addendum.md` (detours), `scripts/ttc_transit_probe.py` (reference behaviour for most tools)
+
+**What changed in v0.6:** transport and hosting. The server speaks **streamable HTTP** and is deployed on **Google Cloud Run** (decision j, section 6.9): a FastMCP 3 application with the Google OAuth gate and email allowlist in-process, stateless JSON responses so idle clients do not keep an instance alive, `us-east1` for the always-free tier, and the daily static check moved out of the process into a Cloud Scheduler-driven Cloud Run Job that publishes the SQLite store to a bucket. Local development keeps a stdio mode.
 
 **What changed in v0.5:** the Line 5 and 6 real-time gap is now designed for, not just described. The static layer gains scheduled departures per stop for the current service day, every arrivals-style answer carries a `basis` of `realtime` or `schedule`, and LRT platforms (and any stop whose real-time source is down) fall back to the schedule with that basis stated (decision i, section 6.8). `vehicles` declares Lines 5 and 6 unavailable, and `feed_status` reports NTAS prediction coverage per line.
 
@@ -9,14 +11,14 @@
 
 **What changed in v0.3:** the server no longer polls. Every real-time and advisory source is fetched on demand through a TTL cache with single-flight coalescing and a last-known-good fallback (decision g, section 6.6). The static GTFS keeps one scheduled check per day. Arrivals now use the cheapest per-stop endpoints; the 3-second `modified_update` feed is demoted to parity tests.
 
-**Deployment model:** single-user, self-hosted (the maintainer, or another developer on their own machine). The priority is the least bandwidth and the fewest requests to the TTC's servers, not throughput for many users. Latency of a few hundred milliseconds per tool call is acceptable.
+**Deployment model:** single-user, hosted by its maintainer on Cloud Run behind a Google OAuth gate (or run locally over stdio by another developer). The priority is the least bandwidth and the fewest requests to the TTC's servers, and near-zero marginal cloud cost, not throughput for many users. Latency of a few hundred milliseconds per tool call, plus a cold start of a few seconds after idle, is acceptable.
 
 ## 1. Purpose and principles
 
 The server exists so that Claude (and any MCP client) can reason about the TTC network as it is right now, not as it was when a dataset was pasted in.
 
 1. **Nothing baked in.** Static data is resolved through the City of Toronto CKAN API and re-downloaded only when the resource ETag changes.
-2. **Fetch on demand, never in the background.** No poller runs while nobody is asking. The only scheduled work is one `HEAD` per day per static package. Repeated questions inside a feed's update interval are served from a TTL cache.
+2. **Fetch on demand, never in the background.** No poller runs while nobody is asking. The only scheduled work is one `HEAD` per day per static package, and it runs outside the serving process (a Cloud Run Job). Repeated questions inside a feed's update interval are served from a TTL cache.
 3. **Public stop numbers are the canonical identifier** in every tool input and output. Other ID spaces stay inside the server.
 4. **Every answer carries provenance and freshness**: source, feed timestamp, when it was fetched, whether it came live, from the TTL cache, or from the last-known-good fallback, and a staleness verdict.
 5. **Undocumented endpoints are fragile**: one adapter each, defensive parsing, "unavailable" in the output rather than a crashed tool.
@@ -26,7 +28,7 @@ The server exists so that Claude (and any MCP client) can reason about the TTC n
 ## 2. Architecture
 
 ```
- static layer (SQLite/DuckDB, rebuilt per board period; one scheduled HEAD per day)
+ static layer (SQLite, rebuilt per board period by a Cloud Run Job on a daily Cloud Scheduler trigger; published to a GCS bucket; pulled by the service at cold start)
    CKAN package_show -> merged GTFS zip   -> stops (hierarchy) / routes / trips / stop_times / calendar / shapes / pathways / levels
                      -> surface GTFS zip  -> crosswalk: stop_code <-> surface stop_id
    derived: stop_directions, route_patterns (with stop_sequence), pattern_shapes, pattern_run_times (median minutes between
@@ -52,6 +54,7 @@ The server exists so that Claude (and any MCP client) can reason about the TTC n
 
 ### 2.1 Static layer
 
+- **Where it runs (v0.6):** the daily check and the rebuild are a Cloud Run Job (`ttc-mcp-static`), triggered by Cloud Scheduler at 04:30 America/Toronto. The Job resolves both packages, compares ETags with `manifest.json` in the bucket, rebuilds on change into `static-<feed_version>.sqlite`, uploads it, and rewrites the manifest (which lists the active feed and, during a period change, the incoming one). The serving instance never builds anything: at cold start it reads the manifest and downloads the referenced database(s) to `/tmp` (in-memory on Cloud Run, so the memory limit must cover it; the build keeps the file compact, see 6.9). In local stdio mode the same code runs the check in-process on startup and every 24 h.
 - Packages: `merged-gtfs-ttc-routes-and-schedules` (primary) and `surface-routes-and-schedules-for-bustime` (crosswalk only). Once a day: `package_show`, then `HEAD` on each zip and compare ETags; download and rebuild only on change (about 84 MB + 83 MB per board period, roughly every six weeks). The CKAN API is cached 15 minutes upstream, so a new feed can take that long to become visible; this does not matter at a daily cadence.
 - Rebuild is one streaming pass over `stop_times.txt` (~7.7 M rows, about 2 minutes) into a temporary database swapped in atomically. It runs in the background; tool calls keep using the previous database until the swap. A first-ever start with no database is the one case where a tool call must wait, and it says so.
 - Patterns store `(stop_sequence, stop_id)` pairs because 9,099 of 137,912 trips do not number stops from 1 and GTFS-RT selectors reference `stop_sequence`.
@@ -385,6 +388,38 @@ Request budget compared with v0.2 polling: polling cost about 14,000 requests an
 
 **Validation items:** (11) sample NTAS for all 18 Line 6 stations at several times over a week to establish whether the empty results are time-of-day, station-specific, or a feed that is not yet live; (12) when the first Line 5 or 6 alert appears, record which alerts.ttc.ca `routeType` and which `gtfsrt.ttc.ca` feed carry it and add the rule; (13) check each static rebuild for platforms without `parent_station`.
 
+### 6.9 Transport and hosting (decision j, v0.6)
+
+**Decision:** the server is a FastMCP 3 application (`fastmcp==3.4.x`) exposing **streamable HTTP** at `/mcp`, with authentication and authorization in-process rather than through a separate proxy: `GoogleProvider` (OAuth with dynamic client registration, `require_authorization_consent="remember"`) plus the `EmailAllowlist` middleware (`ALLOWED_EMAILS=lunaparker33@gmail.com`). The gate runs in-process, not as a proxy in front of a loopback server, because the tools are native Python and there is no third-party backend to wrap. A `--transport stdio` mode remains for local development and for any developer who wants to run it on their own machine.
+
+**Why:** a hosted connector reaches claude.ai, Claude Desktop, iOS and Claude Code through one URL; stdio would confine the server to one machine. The on-demand design (decision g) is what makes hosting cheap: an idle instance makes no requests and can scale to zero.
+
+**Cloud shape:**
+
+| Item | Value |
+|---|---|
+| Project / region | `$PROJECT_ID` ($PROJECT_NUMBER); **`us-east1`**, an always-free region |
+| Service | Cloud Run `ttc-mcp`, `--allow-unauthenticated` (the gate is the app), `--min-instances 0 --max-instances 1`, `--memory 1Gi --cpu 1 --cpu-boost --timeout 300`, execution environment gen2, CPU allocated only during requests |
+| URL | `https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/mcp` (deterministic; set `BASE_URL` and the OAuth redirect URI `.../auth/callback` before the first deploy) |
+| Identity | service account `ttc-mcp-sa`; secrets `ttc-mcp-oauth-client-secret`, `ttc-mcp-jwt-signing-key`, `ttc-mcp-storage-fernet-key` (no backend credential: every TTC and City source is unauthenticated) |
+| OAuth state | Firestore `(default)` via `FirestoreStore` with `FirestoreV1KeySanitizationStrategy` + `FirestoreV1CollectionSanitizationStrategy`, wrapped in `PrefixCollectionsWrapper(prefix="ttc")` and Fernet; the sanitization and prefix are mandatory because Claude Code's CIMD client id is a URL shared by every gateway |
+| Static store | bucket `gs://ttc-mcp-static-$PROJECT_NUMBER` (us-east1): `manifest.json`, `static-<feed_version>.sqlite`, the two source zips for provenance; Job `ttc-mcp-static` (same image, entrypoint `ttc-mcp-build`), Cloud Scheduler `ttc-mcp-static-daily` at 04:30 America/Toronto; the Job's service account gets `roles/storage.objectAdmin` on that bucket only, the service's gets `roles/storage.objectViewer` |
+| Images | Artifact Registry repo `ttc-mcp` (docker, us-east1); `gcloud builds submit` then `gcloud run deploy --image` and `gcloud run jobs deploy` from the same tag |
+| Connectors | claude.ai custom connector on the `/mcp` URL (DCR, leave the advanced OAuth fields empty); Claude Code `.mcp.json` entry `{"type": "http", "url": ".../mcp"}` |
+| Billing | falls under the project-wide hard cap and `billing-killswitch`; no new budget wiring; expected marginal cost near zero (below) |
+
+**Streamable HTTP mode:** stateless, JSON responses (`stateless_http=True`, `json_response=True`): each `tools/call` is one POST and one response, no server-held session and no long-lived SSE stream. This matters twice: with `max-instances 1` every instance can answer any request without sticky sessions, and idle connected clients cannot keep the instance billing. The cache module works unchanged in one process; single-flight is per instance, which with one instance is global.
+
+**Cold start:** container start plus manifest read plus one regional bucket download of the database (target under 200 MB: patterns, run times, scheduled departures and shapes as compact rows rather than raw `stop_times`; measured size is a section 8 item). Expect 3 to 8 seconds on the first call after idle, then warm; `--cpu-boost` helps. If the download proves slow, the alternative is a gen2 GCS volume mount of the bucket with SQLite opened read-only (`immutable=1`), which trades cold-start time for slower first reads per page.
+
+**Cost (free-tier figures to re-verify at deploy time):** Cloud Run's monthly free tier (about 2 million requests, 180,000 vCPU-seconds and 360,000 GiB-seconds) covers a single-user service that bills only during requests plus a two-minute daily Job; a sub-gigabyte bucket sits inside the 5 GB always-free storage in US regions; Cloud Scheduler allows three free jobs; Artifact Registry storage for one image is within its free allowance; Firestore reads for OAuth are negligible. The only items that could bill are egress on large TTC fetches (kilobytes to hundreds of kilobytes per call) and any long-lived instance, which the stateless mode prevents.
+
+**Threat model:** the server holds no third-party credential; the only secrets are its own gate's. Read-only public data behind the email gate is the safe class of connector. Nothing in the tools can act on the TTC or on the user's accounts.
+
+**Local mode:** `ttc-mcp --transport stdio` uses the same code with the static check in-process (startup plus every 24 h while running) and the cache directory from `TTC_MCP_CACHE`; the Google gate is off in stdio mode.
+
+**Validation (adds to section 8):** (14) confirm every TTC host answers from Cloud Run's us-east1 egress IPs with the server's User-Agent, since none publish access rules; (15) measure cold start with the real database size and pick download versus volume mount; (16) verify the connector from claude.ai, Claude Code and iOS after the first deploy.
+
 ## 7. Decision record
 
 | # | Decision | Accepted behaviour (2026-09-13) |
@@ -398,6 +433,7 @@ Request budget compared with v0.2 polling: polling cost about 14,000 requests an
 | g | Fetch model | on demand with TTL cache, single-flight, last-known-good; static checked once a day; no pollers |
 | h | Trip questions and disruptions (incl. Lines 5/6 as rail, section 6.8) | `nearest_stops` bridge from an external geocoder; `connections` (direct + one transfer, live and disruption overlay, shuttle legs); `service_status`; disruptions propagated into every answer; station alias table; geocoding out of scope |
 | i | Real-time gaps (Lines 5/6, outages) | scheduled departures from `stop_times` as the fallback; every arrivals-style row carries `basis` realtime/schedule; `vehicles` declares rail unavailable; `feed_status` reports NTAS coverage per line |
+| j | Transport and hosting | FastMCP 3 streamable HTTP (stateless JSON) with in-process Google OAuth gate + email allowlist; Cloud Run `ttc-mcp` in us-east1, min 0 / max 1; static store built by a daily Cloud Run Job into a GCS bucket and pulled at cold start; stdio mode for local use |
 
 ## 8. To validate during implementation
 
@@ -417,13 +453,14 @@ Request budget compared with v0.2 polling: polling cost about 14,000 requests an
 - **Adapters:** one module per source (`ckan`, `gtfs_static`, `bustime_rt`, `bustime_web`, `gtfsrt_ttc`, `ntas`, `ttc_alerts`, `ttcapi`), each returning typed records plus a `SourceStatus`. Tools compose adapters through the cache and never touch HTTP directly.
 - **Cache module:** `CacheEntry {key, body, parsed, fetched_at, feed_timestamp, etag, last_modified, error}`; `get(key, ttl, fetch, max_stale)` implements TTL, single-flight (one in-flight future per key), conditional GET when a validator exists, and stale-if-error with the age reported back to the tool. Memory footprint is small: the largest cached body is the 568 KB trip feed.
 - **Connections planner:** precompute per pattern the ordered stop list with cumulative median minutes; index stop -> [(pattern, position)]; index station -> member stops (parent, suffix, 150 m rule) and stop -> nearby stops (150 m grid). Query: origin set x destination set through the stop index gives direct hits in O(patterns at origin); one-transfer hits enumerate downstream stops of each origin pattern (average 33) and probe the destination index. Apply the running-now filter, score, overlay, and return. Expected cost: tens of milliseconds static plus one arrivals fetch.
-- **Static build:** streaming, single pass, ~2 minutes; write to a temporary database and swap atomically; keep the previous database for the overlap window; a first-ever start without a database blocks tools with an explicit "building static index" message.
+- **Static build:** streaming, single pass, ~2 minutes, in the Cloud Run Job; write to a temporary database, upload, then rewrite the manifest; the manifest keeps the previous database listed for the overlap window; a service that starts with no manifest yet answers static tools with an explicit "static store not built yet" error rather than blocking.
+- **Entry points:** `ttc-mcp` (server; `--transport http|stdio`, default http on `$PORT`) and `ttc-mcp-build` (the Job). One Dockerfile (`python:3.12-slim`, `uv sync --frozen`), one image, two commands.
 - **Parity tests (nightly, live):** arrivals at 15461 from the per-stop XML vs crosswalked `bustime` protobuf vs `modified_update` (same vehicles and minutes within 1 min); NTAS vs `trips/subway` for 13863; detour skipped stops vs live omitted stops on a linked trip; Blue Night classifier still flags 35 of 35.
 - **Licensing:** CKAN data under the Open Government Licence - Toronto (attribution string in the server's `about` text); everything else undocumented, so tool descriptions say "best effort, from the TTC's own site endpoints".
 
 ## 10. Effort
 
-Core server: ~3 days solo / ~1.5 days with Claude; the on-demand model removes the poller supervision but adds the cache module, so the total is unchanged. Additions: item 1 ~2 h / ~1 h; item 3 ~1 h / ~30 min (plus ~1.5 days / ~half a day for an exact step-free verdict beyond coded-node cases); item 4 ~1 h / ~30 min; item 5 ~3 to 4 h / ~1.5 h; item 6 ~2 h / ~1 h. Five additions without step-free routing: about **1.5 days solo, ~5 hours with Claude**. v0.4 additions: `connections` ~1 day / ~3 to 4 h; `nearest_stops` ~1 h / ~30 min; `service_status` plus propagation ~3 h / ~1.5 h; alias table ~1.5 h / ~45 min. v0.5: `scheduled_departures` and the schedule basis ~2 h / ~1 h (the `stop_times` table already exists in the static build). About **2 days solo, ~7 to 8 hours with Claude** on top of the earlier items.
+Core server: ~3 days solo / ~1.5 days with Claude; the on-demand model removes the poller supervision but adds the cache module, so the total is unchanged. Cloud deployment following the existing gateway recipe (OAuth client, secrets, service account, bucket, Job, Scheduler, first deploy, connector re-adds): ~4 h solo / ~2 h with Claude, most of it console clicks the recipe already documents. Additions: item 1 ~2 h / ~1 h; item 3 ~1 h / ~30 min (plus ~1.5 days / ~half a day for an exact step-free verdict beyond coded-node cases); item 4 ~1 h / ~30 min; item 5 ~3 to 4 h / ~1.5 h; item 6 ~2 h / ~1 h. Five additions without step-free routing: about **1.5 days solo, ~5 hours with Claude**. v0.4 additions: `connections` ~1 day / ~3 to 4 h; `nearest_stops` ~1 h / ~30 min; `service_status` plus propagation ~3 h / ~1.5 h; alias table ~1.5 h / ~45 min. v0.5: `scheduled_departures` and the schedule basis ~2 h / ~1 h (the `stop_times` table already exists in the static build). About **2 days solo, ~7 to 8 hours with Claude** on top of the earlier items.
 
 ## 11. Verification log (2026-09-13)
 

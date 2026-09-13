@@ -1,0 +1,367 @@
+<title>ttc-mcp Architecture</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@90,600;90,800;100,900&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --bg: #FAF7F5; --panel: #F1ECE9; --panel-2: #E9E2DE; --ink: #1B1516; --ink-2: #4A4143; --muted: #7A6E6B;
+    --rule: #DDD4D0; --accent: #DA251D; --accent-ink: #FFFFFF; --code-bg: #F3EEEB;
+    --l1: #F8C300; --l2: #00923F; --l4: #A21A68; --l5: #F58220; --l6: #8A8D8F;
+    --diagram-accent: #DA251D;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #161213; --panel: #221C1D; --panel-2: #2C2526; --ink: #F1ECEA; --ink-2: #CFC6C3; --muted: #9C918E;
+      --rule: #3A3133; --accent: #F0463D; --accent-ink: #1B1516; --code-bg: #201A1B; --diagram-accent: #F0463D;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #161213; --panel: #221C1D; --panel-2: #2C2526; --ink: #F1ECEA; --ink-2: #CFC6C3; --muted: #9C918E;
+    --rule: #3A3133; --accent: #F0463D; --accent-ink: #1B1516; --code-bg: #201A1B; --diagram-accent: #F0463D;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--ink); font-family: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif; font-size: 16px; line-height: 1.55; padding-inline: 20px; padding-block: 0 80px; }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  header.plate { margin: 36px 0 12px; padding: 22px 26px; background: var(--ink); color: var(--bg); border-radius: 4px; display: grid; gap: 6px; }
+  header.plate .eyebrow { font-family: "Archivo", "Helvetica Neue", Arial, sans-serif; font-weight: 600; font-stretch: 90%; letter-spacing: .12em; text-transform: uppercase; font-size: 12px; color: var(--l1); }
+  header.plate h1 { font-family: "Archivo", "Helvetica Neue", Arial, sans-serif; font-weight: 900; font-size: clamp(34px, 6vw, 56px); line-height: 1; margin: 0; letter-spacing: -.01em; text-wrap: balance; }
+  header.plate p { margin: 6px 0 0; max-width: 62ch; color: var(--bg); opacity: .85; }
+  .meta { color: var(--muted); font-size: 14px; margin: 0 0 28px; display: flex; flex-wrap: wrap; gap: 8px 22px; }
+  .meta span b { color: var(--ink-2); font-weight: 600; }
+  /* route line down the margin; sections are stations */
+  .line { position: relative; padding-left: 34px; }
+  .line::before { content: ""; position: absolute; left: 9px; top: 0; bottom: 0; width: 5px; background: var(--accent); border-radius: 3px; opacity: .9; }
+  section { position: relative; margin: 0 0 44px; }
+  section::before { content: ""; position: absolute; left: -33px; top: 6px; width: 15px; height: 15px; border-radius: 50%; background: var(--bg); border: 4px solid var(--accent); }
+  section[data-line="1"]::before { border-color: var(--l1); } section[data-line="2"]::before { border-color: var(--l2); }
+  section[data-line="4"]::before { border-color: var(--l4); } section[data-line="5"]::before { border-color: var(--l5); } section[data-line="6"]::before { border-color: var(--l6); }
+  h2 { font-family: "Archivo", "Helvetica Neue", Arial, sans-serif; font-weight: 800; font-stretch: 90%; font-size: 24px; margin: 0 0 10px; letter-spacing: -.005em; text-wrap: balance; }
+  h3 { font-family: "Archivo", "Helvetica Neue", Arial, sans-serif; font-weight: 600; font-stretch: 90%; font-size: 17px; margin: 22px 0 8px; }
+  p { max-width: 68ch; margin: 0 0 12px; }
+  p.lede { font-size: 17px; color: var(--ink-2); }
+  code, pre { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; }
+  pre { background: var(--code-bg); border: 1px solid var(--rule); border-radius: 4px; padding: 14px 16px; overflow-x: auto; line-height: 1.5; margin: 10px 0 16px; }
+  pre code { background: none; padding: 0; }
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin: 14px 0 6px; }
+  .fact { background: var(--panel); border-radius: 4px; padding: 14px 16px; }
+  .fact .k { font-family: "Archivo", sans-serif; font-weight: 600; font-stretch: 90%; text-transform: uppercase; letter-spacing: .1em; font-size: 11px; color: var(--muted); }
+  .fact .v { font-weight: 600; font-size: 17px; margin-top: 4px; }
+  .fact .d { color: var(--ink-2); font-size: 14px; margin-top: 4px; }
+  figure { margin: 16px 0 8px; }
+  .diagram { overflow-x: auto; background: var(--panel); border-radius: 4px; padding: 12px; }
+  .diagram svg { display: block; min-width: 900px; width: 100%; max-width: 100%; height: auto; color: var(--ink); }
+  figcaption { color: var(--muted); font-size: 14px; margin-top: 10px; max-width: 78ch; }
+  .tablewrap { overflow-x: auto; margin: 10px 0 14px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-family: "Archivo", sans-serif; font-weight: 600; font-stretch: 90%; text-transform: uppercase; letter-spacing: .08em; font-size: 11.5px; color: var(--muted); }
+  td.num { text-align: right; white-space: nowrap; }
+  .tree { columns: 1; }
+  .tree pre { font-size: 13.5px; }
+  ol.phases { padding-left: 0; list-style: none; counter-reset: ph; display: grid; gap: 10px; margin: 12px 0 0; }
+  ol.phases li { counter-increment: ph; display: grid; grid-template-columns: 42px 1fr auto; gap: 12px; align-items: start; background: var(--panel); border-radius: 4px; padding: 12px 14px; }
+  ol.phases li::before { content: counter(ph); font-family: "Archivo", sans-serif; font-weight: 900; font-size: 22px; line-height: 1; color: var(--accent); }
+  ol.phases li .t { font-weight: 600; } ol.phases li .s { color: var(--ink-2); font-size: 14px; margin-top: 2px; }
+  ol.phases li .e { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+  ul.tight { margin: 6px 0 12px; padding-left: 20px; max-width: 70ch; } ul.tight li { margin-bottom: 5px; }
+  .note { border-left: 4px solid var(--accent); padding: 8px 14px; background: var(--panel); border-radius: 0 4px 4px 0; max-width: 70ch; margin: 12px 0; }
+  @media (max-width: 520px) { ol.phases li { grid-template-columns: 34px 1fr; } ol.phases li .e { grid-column: 2; white-space: normal; } .line { padding-left: 26px; } section::before { left: -25px; } header.plate { padding: 18px; } }
+  @media (prefers-reduced-motion: no-preference) { section::before { transition: transform .2s; } section:hover::before { transform: scale(1.15); } }
+</style>
+
+<div class="wrap">
+  <header class="plate">
+    <div class="eyebrow">Cloud Run · streamable HTTP · single user · fetch on demand</div>
+    <h1>ttc-mcp Architecture</h1>
+    <p>How the server is layered, what each layer stores, how a request moves through it, where it runs, and the order to build it in. Everything here is fixed by spec v0.6 (decisions a to j).</p>
+  </header>
+  <div class="meta"><span><b>Spec</b> docs/spec.md v0.6</span><span><b>Runtime</b> Python 3.12, FastMCP 3, Cloud Run</span><span><b>Store</b> SQLite in a bucket</span><span><b>Date</b> 2026-09-13</span></div>
+
+  <div class="line">
+
+  <section data-line="1">
+    <h2>Deployment model</h2>
+    <p class="lede">One Cloud Run service behind a Google OAuth gate, scaling to zero between questions. It fetches what a question needs, caches it for as long as the feed itself stays unchanged, and keeps the last good copy of everything in case the TTC hiccups. The static store is built elsewhere, by a daily job, and pulled in at cold start.</p>
+    <div class="facts">
+      <div class="fact"><div class="k">Process</div><div class="v">Cloud Run service, HTTP</div><div class="d">FastMCP 3 with GoogleProvider + email allowlist in-process; streamable HTTP in stateless JSON mode at <code>/mcp</code>; <code>--transport stdio</code> for local use.</div></div>
+      <div class="fact"><div class="k">Background work</div><div class="v">One Cloud Run Job a day</div><div class="d">Cloud Scheduler at 04:30 Toronto time: HEAD both packages, rebuild on ETag change, publish SQLite + manifest to the bucket. The serving process never builds.</div></div>
+      <div class="fact"><div class="k">Typical tool call</div><div class="v">0.1 to 0.3 s warm</div><div class="d">Per-stop XML 1 KB + vehicle feed 90 KB; static lookups are local. Cold start after idle: a few seconds to fetch the store.</div></div>
+      <div class="fact"><div class="k">Footprint and cost</div><div class="v">min 0 / max 1 · 1 GiB · us-east1</div><div class="d">Always-free region; bills only during requests and the daily job; falls under the project hard cap and killswitch. Expected marginal cost near zero.</div></div>
+    </div>
+    <pre><code>// claude.ai → Connectors → Add custom connector (DCR; leave the OAuth fields empty)
+https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/mcp
+
+// Claude Code .mcp.json (remote OAuth server; no secrets on the client)
+"mcpServers": { "ttc": { "type": "http", "url": "https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/mcp" } }
+
+// local development, no gate
+uv run ttc-mcp --transport stdio</code></pre>
+  </section>
+
+  <section data-line="2">
+    <h2>The layers</h2>
+    <p>Sources on the left never talk to tools on the right directly. Adapters normalise each source, the two stores decide when a fetch is allowed to happen, the domain services do the joins, and the tool surface is a thin mapping from MCP calls to those services.</p>
+    <figure>
+      <div class="diagram">
+      <svg viewBox="0 0 1040 640" role="img" aria-label="Data flows left to right: City of Toronto CKAN feeds a daily static build into a SQLite store; TTC endpoints are fetched on demand through one adapter each into a TTL cache with single-flight and last-known-good; domain services read both stores and answer the MCP tool surface, which Claude calls over stdio alongside the Google Maps MCP for geocoding." font-family="IBM Plex Sans, Helvetica Neue, Arial, sans-serif" font-size="12">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+          <marker id="arrow-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#DA251D"/></marker>
+        </defs>
+        <!-- column headers -->
+        <g font-family="Archivo, Helvetica Neue, Arial, sans-serif" font-weight="700" font-size="11" letter-spacing="1.5" fill="currentColor" opacity=".6">
+          <text x="20" y="28">SOURCES</text><text x="300" y="28">ADAPTERS + STORES</text><text x="590" y="28">DOMAIN SERVICES</text><text x="840" y="28">TOOL SURFACE + CLIENT</text>
+        </g>
+        <!-- Sources: CKAN -->
+        <rect x="20" y="44" width="230" height="118" rx="4" fill="none" stroke="currentColor" stroke-width="1.2"/>
+        <text x="32" y="64" font-weight="600" fill="currentColor">City of Toronto open data</text>
+        <text x="32" y="82" fill="currentColor" opacity=".8">CKAN package_show</text>
+        <text x="32" y="100" fill="currentColor" opacity=".8">merged GTFS zip · 84 MB</text>
+        <text x="32" y="118" fill="currentColor" opacity=".8">surface GTFS zip · 83 MB (crosswalk)</text>
+        <text x="32" y="148" fill="currentColor" opacity=".6" font-size="11">new board period about every 6 weeks</text>
+        <!-- Sources: TTC -->
+        <rect x="20" y="196" width="230" height="384" rx="4" fill="none" stroke="currentColor" stroke-width="1.2"/>
+        <text x="32" y="216" font-weight="600" fill="currentColor">TTC endpoints</text>
+        <g fill="currentColor" opacity=".85">
+          <text x="32" y="240">bustime.ttc.ca</text>
+          <text x="44" y="256" font-size="11" opacity=".85">getStopPredictions.jsp · 1 KB</text>
+          <text x="44" y="272" font-size="11" opacity=".85">gtfsrt/vehicles · 90 KB · occupancy</text>
+          <text x="44" y="288" font-size="11" opacity=".85">gtfsrt/trips · 568 KB · trip ids</text>
+          <text x="32" y="314">gtfsrt.ttc.ca</text>
+          <text x="44" y="330" font-size="11" opacity=".85">trips/subway · 12 KB</text>
+          <text x="44" y="346" font-size="11" opacity=".85">alerts/{all,accessibility} · 40 KB</text>
+          <text x="44" y="362" font-size="11" opacity=".85">trips/detour · 163 KB · TripModifications</text>
+          <text x="32" y="388">ntas.ttc.ca</text>
+          <text x="44" y="404" font-size="11" opacity=".85">get-next-train-time/{platform} · &lt;1 KB</text>
+          <text x="32" y="430">alerts.ttc.ca</text>
+          <text x="44" y="446" font-size="11" opacity=".85">api/alerts/list · 51 KB · ETag, 304</text>
+          <text x="32" y="472">www.ttc.ca/ttcapi</text>
+          <text x="44" y="488" font-size="11" opacity=".85">getallroutesandstopsalerts · 80 KB</text>
+          <text x="44" y="504" font-size="11" opacity=".85">routedetail/get?id=R · per rebuild</text>
+        </g>
+        <text x="32" y="540" fill="currentColor" opacity=".6" font-size="11">all undocumented except GTFS-RT;</text>
+        <text x="32" y="556" fill="currentColor" opacity=".6" font-size="11">four hosts reject the default Python UA</text>
+        <!-- Static build + store -->
+        <rect x="300" y="44" width="240" height="60" rx="4" fill="none" stroke="currentColor" stroke-width="1.2"/>
+        <text x="312" y="64" font-weight="600" fill="currentColor">Static build · Cloud Run Job</text>
+        <text x="312" y="82" fill="currentColor" opacity=".8" font-size="11">Cloud Scheduler daily 04:30; one pass, ~2 min</text>
+        <text x="312" y="96" fill="currentColor" opacity=".8" font-size="11">uploads static-&lt;version&gt;.sqlite + manifest</text>
+        <rect x="300" y="126" width="240" height="118" rx="4" fill="none" stroke="currentColor" stroke-width="1.2"/>
+        <text x="312" y="146" font-weight="600" fill="currentColor">Static store · SQLite from GCS</text>
+        <text x="312" y="164" fill="currentColor" opacity=".8" font-size="11">stops (hierarchy) · routes · trips · stop_times</text>
+        <text x="312" y="180" fill="currentColor" opacity=".8" font-size="11">patterns (stop_sequence) · run times · shapes</text>
+        <text x="312" y="196" fill="currentColor" opacity=".8" font-size="11">pathways · aliases · transfer graph · crosswalk</text>
+        <text x="312" y="212" fill="currentColor" opacity=".8" font-size="11">spatial index · service hours</text>
+        <text x="312" y="234" fill="currentColor" opacity=".6" font-size="11">pulled at cold start; two feeds across a period change</text>
+        <!-- Adapters + fetch cache -->
+        <rect x="300" y="276" width="240" height="304" rx="4" fill="none" stroke="currentColor" stroke-width="1.2"/>
+        <text x="312" y="296" font-weight="600" fill="currentColor">Adapters · one per source</text>
+        <text x="312" y="314" fill="currentColor" opacity=".8" font-size="11">bustime_web · bustime_rt · gtfsrt_ttc · ntas</text>
+        <text x="312" y="330" fill="currentColor" opacity=".8" font-size="11">ttc_alerts · ttcapi · ckan · gtfs_static</text>
+        <text x="312" y="346" fill="currentColor" opacity=".8" font-size="11">typed records + SourceStatus; parse defensively</text>
+        <line x1="312" y1="362" x2="528" y2="362" stroke="currentColor" stroke-width=".8" opacity=".4"/>
+        <text x="312" y="384" font-weight="600" fill="currentColor">Fetch cache</text>
+        <text x="312" y="402" fill="currentColor" opacity=".8" font-size="11">TTL = the feed's own tick (10 s to 10 min)</text>
+        <text x="312" y="418" fill="currentColor" opacity=".8" font-size="11">single-flight: one in-flight fetch per key</text>
+        <text x="312" y="434" fill="currentColor" opacity=".8" font-size="11">last-known-good: serve stale on error, labelled</text>
+        <text x="312" y="450" fill="currentColor" opacity=".8" font-size="11">conditional GET where a validator exists</text>
+        <text x="312" y="466" fill="currentColor" opacity=".8" font-size="11">keys carry params: getStopPredictions:15461</text>
+        <text x="312" y="496" fill="currentColor" opacity=".6" font-size="11">CacheEntry {body, parsed, fetched_at,</text>
+        <text x="312" y="512" fill="currentColor" opacity=".6" font-size="11">  feed_timestamp, etag, last_modified, error}</text>
+        <text x="312" y="542" fill="currentColor" opacity=".6" font-size="11">no poller: an idle server makes no requests</text>
+        <!-- Domain services -->
+        <rect x="590" y="44" width="200" height="536" rx="4" fill="none" stroke="currentColor" stroke-width="1.2"/>
+        <text x="602" y="64" font-weight="600" fill="currentColor">Domain services</text>
+        <g fill="currentColor">
+          <text x="602" y="96" font-weight="600" font-size="12">network</text><text x="602" y="112" opacity=".8" font-size="11">stops, stations, aliases,</text><text x="602" y="126" opacity=".8" font-size="11">routes, patterns, nearest</text>
+          <text x="602" y="158" font-weight="600" font-size="12">schedule</text><text x="602" y="174" opacity=".8" font-size="11">service day, scheduled</text><text x="602" y="188" opacity=".8" font-size="11">departures (fallback basis)</text>
+          <text x="602" y="220" font-weight="600" font-size="12">arrivals</text><text x="602" y="236" opacity=".8" font-size="11">per-stop XML or NTAS, crowding</text><text x="602" y="250" opacity=".8" font-size="11">join, detour flag, basis</text>
+          <text x="602" y="282" font-weight="600" font-size="12">disruptions</text><text x="602" y="298" opacity=".8" font-size="11">closures as station spans,</text><text x="602" y="312" opacity=".8" font-size="11">detours, RSZ, elevators;</text><text x="602" y="326" opacity=".8" font-size="11">propagated into every answer</text>
+          <text x="602" y="358" font-weight="600" font-size="12">connections</text><text x="602" y="374" opacity=".8" font-size="11">direct + one transfer, running-</text><text x="602" y="388" opacity=".8" font-size="11">now filter, overlay, shuttle legs</text>
+          <text x="602" y="420" font-weight="600" font-size="12">accessibility</text><text x="602" y="436" opacity=".8" font-size="11">platform flags, entrances,</text><text x="602" y="450" opacity=".8" font-size="11">unit codes → pathway nodes</text>
+          <text x="602" y="482" font-weight="600" font-size="12">geometry</text><text x="602" y="498" opacity=".8" font-size="11">canonical shape per direction,</text><text x="602" y="512" opacity=".8" font-size="11">polyline / GeoJSON, stops between</text>
+          <text x="602" y="544" font-weight="600" font-size="12">status</text><text x="602" y="560" opacity=".8" font-size="11">freshness verdicts, NTAS coverage</text>
+        </g>
+        <!-- Tool surface -->
+        <rect x="840" y="44" width="180" height="336" rx="4" fill="#DA251D" fill-opacity=".08" stroke="#DA251D" stroke-width="1.4"/>
+        <text x="852" y="64" font-weight="600" fill="currentColor">MCP tool surface · Cloud Run</text>
+        <g fill="currentColor" opacity=".85" font-size="11">
+          <text x="852" y="88">find_stops · nearest_stops</text>
+          <text x="852" y="104">stop · station · routes</text>
+          <text x="852" y="120">route_stops · route_shape</text>
+          <text x="852" y="136">service_hours</text>
+          <text x="852" y="152">scheduled_departures</text>
+          <text x="852" y="176">arrivals · next_trains</text>
+          <text x="852" y="192">vehicles</text>
+          <text x="852" y="216">connections</text>
+          <text x="852" y="240">service_status · alerts</text>
+          <text x="852" y="256">detours · service_changes</text>
+          <text x="852" y="272">accessibility</text>
+          <text x="852" y="296">feed_status</text>
+        </g>
+        <text x="852" y="330" fill="currentColor" opacity=".6" font-size="11">every answer carries meta:</text>
+        <text x="852" y="346" fill="currentColor" opacity=".6" font-size="11">source, fetched_at, cache,</text>
+        <text x="852" y="362" fill="currentColor" opacity=".6" font-size="11">static_feed, staleness, basis</text>
+        <!-- Client -->
+        <rect x="840" y="420" width="180" height="70" rx="4" fill="none" stroke="currentColor" stroke-width="1.2"/>
+        <text x="852" y="440" font-weight="600" fill="currentColor">claude.ai · Claude Code · iOS</text>
+        <text x="852" y="458" fill="currentColor" opacity=".8" font-size="11">HTTPS to /mcp; Google OAuth gate,</text>
+        <text x="852" y="474" fill="currentColor" opacity=".8" font-size="11">email allowlist, state in Firestore</text>
+        <rect x="840" y="516" width="180" height="64" rx="4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="4 3"/>
+        <text x="852" y="536" font-weight="600" fill="currentColor">Google Maps MCP</text>
+        <text x="852" y="554" fill="currentColor" opacity=".8" font-size="11">geocodes addresses; this</text>
+        <text x="852" y="570" fill="currentColor" opacity=".8" font-size="11">server never geocodes</text>
+        <!-- arrows -->
+        <g stroke="currentColor" stroke-width="1.3" fill="none" marker-end="url(#arrow)">
+          <line x1="250" y1="74" x2="298" y2="74"/>
+          <line x1="420" y1="104" x2="420" y2="124"/>
+          <line x1="250" y1="388" x2="298" y2="388"/>
+          <line x1="540" y1="185" x2="588" y2="185"/>
+          <line x1="540" y1="428" x2="588" y2="428"/>
+          <line x1="790" y1="312" x2="838" y2="312"/>
+          <line x1="930" y1="420" x2="930" y2="382"/>
+          <line x1="930" y1="516" x2="930" y2="492"/>
+        </g>
+        <g fill="currentColor" font-size="10.5" opacity=".75">
+          <text x="252" y="66">HEAD daily,</text><text x="252" y="88" font-size="10">zip on ETag change</text>
+          <text x="428" y="118">bucket</text>
+          <text x="252" y="380">GET on demand</text>
+          <text x="544" y="178">reads</text>
+          <text x="544" y="421">records + status</text>
+          <text x="794" y="305">answers</text>
+          <text x="936" y="404">POST</text>
+          <text x="936" y="508">lat, lon</text>
+        </g>
+      </svg>
+      </div>
+      <figcaption>The two stores are the only places a fetch can originate: the static store through the daily Job's ETag check, the fetch cache through a tool call whose TTL has expired. The service itself is one Cloud Run instance at most, scaling to zero; stateless JSON responses mean an idle client cannot keep it billing. Sizes and cadences are the measured values from the 2026-09-13 investigation.</figcaption>
+    </figure>
+  </section>
+
+  <section data-line="4">
+    <h2>Two requests, end to end</h2>
+    <h3><code>arrivals 15461</code> (Cherry St at Front St East)</h3>
+    <div class="tablewrap"><table>
+      <tr><th>Step</th><th>Component</th><th>What happens</th><th>Cost</th></tr>
+      <tr><td>1</td><td>tools.arrivals</td><td>Resolves 15461 in the static store: name, coordinates, routes served, station suffix (none here).</td><td class="num">local</td></tr>
+      <tr><td>2</td><td>cache → bustime_web</td><td>Key <code>getStopPredictions:15461</code>, TTL 30 s. Miss: fetch the per-stop XML. Hit: reuse.</td><td class="num">1 KB · 0.07 s</td></tr>
+      <tr><td>3</td><td>cache → bustime_rt</td><td>Key <code>vehicles</code>, TTL 30 s, shared by every stop. Join vehicle id → occupancy → TTC label.</td><td class="num">90 KB · 0.06 s</td></tr>
+      <tr><td>4</td><td>cache → gtfsrt_ttc</td><td>Key <code>detours</code>, TTL 5 min. Is route 504 detoured today? If not, stop here.</td><td class="num">163 KB · 0.10 s</td></tr>
+      <tr><td>5</td><td>cache → bustime_rt</td><td>Only when the route is detoured: key <code>trips</code>, map vehicle → trip id → detour membership.</td><td class="num">568 KB · 0.10 s</td></tr>
+      <tr><td>6</td><td>cache → ttc_alerts</td><td>Key <code>alerts</code>, TTL 25 s then conditional GET. Disruptions for 504/304/508.</td><td class="num">51 KB, or 304</td></tr>
+      <tr><td>7</td><td>schedule</td><td>If step 2 returned nothing: scheduled departures from <code>stop_times</code>, rows marked <code>basis: schedule</code>.</td><td class="num">local</td></tr>
+      <tr><td>8</td><td>tools.arrivals</td><td>Compose rows + <code>meta</code> (source, fetched_at, cache, static_feed, staleness).</td><td class="num">~0.15 s total</td></tr>
+    </table></div>
+
+    <h3><code>connections</code> from Cherry St and Front St East to Union</h3>
+    <div class="tablewrap"><table>
+      <tr><th>Step</th><th>Component</th><th>What happens</th><th>Cost</th></tr>
+      <tr><td>1</td><td>network.nearest</td><td>Origin set: stops within 400 m of the coordinates (15460, 15461, 15510, 15246, ...). Destination set: every platform and stop belonging to station Union via parent, suffix and the 150 m rule.</td><td class="num">local</td></tr>
+      <tr><td>2</td><td>connections.direct</td><td>Patterns serving an origin stop where a destination stop appears later: 121 westbound Mill St → 1 Front St W.</td><td class="num">local</td></tr>
+      <tr><td>3</td><td>connections.transfer</td><td>For each origin pattern, downstream transfer points that reach the destination: 504A → King Station → Line 1 (or walk).</td><td class="num">local</td></tr>
+      <tr><td>4</td><td>schedule</td><td>Running-now filter (service id + route span) and typical minutes from median run times; 4-minute transfer penalty.</td><td class="num">local</td></tr>
+      <tr><td>5</td><td>disruptions</td><td>Overlay: drop legs through closed stations, add a shuttle leg if the alert says shuttles operate, re-route around detour-skipped stops.</td><td class="num">alerts + detours, cached</td></tr>
+      <tr><td>6</td><td>arrivals</td><td>Next departures at the first ride leg's board stop (step list above).</td><td class="num">~0.15 s</td></tr>
+      <tr><td>7</td><td>tools.connections</td><td>Rank by transfers, then minutes, then stops; return 4 options with legs, basis and disruptions.</td><td class="num">~0.3 s total</td></tr>
+    </table></div>
+  </section>
+
+  <section data-line="5">
+    <h2>Package layout</h2>
+    <p>One installable package, one entry point, adapters isolated from everything that reasons about the network. Tests are split so the live parity checks can run nightly without the unit suite touching the internet.</p>
+<pre><code>ttc-mcp/
+├── pyproject.toml          # uv-managed; deps: mcp&lt;2, httpx, gtfs-realtime-bindings&gt;=2.2, pydantic
+├── ttc_mcp/
+│   ├── server.py           # FastMCP app: tools, GoogleProvider + EmailAllowlist, --transport http|stdio
+│   ├── config.py           # cache dir, User-Agent, TTL table, staleness thresholds, bucket + manifest names
+│   ├── build.py            # ttc-mcp-build entry point for the Cloud Run Job (ETag check → build → upload)
+│   ├── cache.py            # CacheEntry, TTL, single-flight futures, stale-if-error, conditional GET
+│   ├── adapters/
+│   │   ├── ckan.py         # package_show, HEAD/ETag, zip download
+│   │   ├── gtfs_static.py  # streaming build → SQLite (temp file, atomic swap)
+│   │   ├── bustime_web.py  # getStopPredictions.jsp and friends (XML)
+│   │   ├── bustime_rt.py   # gtfsrt/trips, gtfsrt/vehicles (protobuf, Surface ids)
+│   │   ├── gtfsrt_ttc.py   # trips/subway, alerts/*, trips/detour (protobuf or protobuf-JSON)
+│   │   ├── ntas.py         # get-next-train-time
+│   │   ├── ttc_alerts.py   # alerts.ttc.ca list (ETag)
+│   │   └── ttcapi.py       # getallroutesandstopsalerts, routedetail/get
+│   ├── static/
+│   │   ├── store.py        # SQLite access; manifest + bucket pull at cold start; dual-feed window; crosswalk; spatial index
+│   │   ├── patterns.py     # (stop_sequence, stop_id) patterns, run times, canonical shapes
+│   │   ├── aliases.py      # station_aliases builder + manual list (Dundas → TMU, ...)
+│   │   └── schedule.py     # service-day logic, scheduled departures, service spans
+│   ├── domain/
+│   │   ├── network.py      # stops, stations, nearest, routes, series
+│   │   ├── arrivals.py     # real-time or schedule basis, crowding join, detour flag
+│   │   ├── disruptions.py  # closure spans, detours, RSZ, elevators; propagation helpers
+│   │   ├── connections.py  # direct + one-transfer search, scoring, overlay
+│   │   ├── accessibility.py
+│   │   ├── geometry.py
+│   │   └── status.py       # freshness verdicts, NTAS coverage, feed_status
+│   └── tools/              # one module per MCP tool: input schema → domain call → output + meta
+├── cloud/
+│   ├── Dockerfile          # python:3.12-slim + uv sync --frozen; one image, two commands
+│   └── deploy.md           # the gateway recipe retargeted: OAuth client, 3 secrets, SA, bucket, Job, Scheduler
+├── scripts/ttc_transit_probe.py   # the reference probe (kept as an oracle)
+├── tests/
+│   ├── unit/               # fixtures from captured feeds; no network
+│   └── parity/             # nightly, live: XML vs protobuf vs modified_update; NTAS vs subway feed; 35/35 Blue Night
+└── docs/                   # spec.md, investigation, addendum, this page</code></pre>
+  </section>
+
+  <section data-line="6">
+    <h2>What lives where</h2>
+    <h3>Static store (SQLite, rebuilt per board period)</h3>
+    <div class="tablewrap"><table>
+      <tr><th>Table</th><th>Rows (S1000538)</th><th>Purpose</th></tr>
+      <tr><td>stops</td><td class="num">12,002</td><td>boarding stops and platforms, 114 station parents, 250 entrances, 2,126 pathway nodes; wheelchair flags</td></tr>
+      <tr><td>routes / trips</td><td class="num">235 / 137,912</td><td>route metadata, series, headsigns, direction ids, shape ids</td></tr>
+      <tr><td>stop_times</td><td class="num">~7.7 M</td><td>indexed by (stop, departure) for scheduled departures; source of patterns and run times</td></tr>
+      <tr><td>patterns</td><td class="num">1,418</td><td>(stop_sequence, stop_id) sequences per route-direction, trip counts, canonical shape</td></tr>
+      <tr><td>shapes</td><td class="num">1,592</td><td>encoded polylines with shape_dist_traveled</td></tr>
+      <tr><td>pathways / levels</td><td class="num">4,086 / 324</td><td>station internals; elevator and escalator unit codes where named</td></tr>
+      <tr><td>crosswalk</td><td class="num">9,135</td><td>public stop number ↔ Surface-GTFS internal id (needed only for the protobuf trip and vehicle feeds)</td></tr>
+      <tr><td>station_aliases</td><td class="num">~250</td><td>names, platform prefixes, stop suffixes, alert names, manual list; GO stations marked external</td></tr>
+      <tr><td>transfer_graph</td><td class="num">~1,200</td><td>stop ↔ station membership and stop ↔ stop within 150 m</td></tr>
+    </table></div>
+    <h3>Fetch cache (memory, per process)</h3>
+    <div class="tablewrap"><table>
+      <tr><th>Key</th><th>TTL</th><th>Stale-if-error max</th><th>Freshness signal</th></tr>
+      <tr><td>getStopPredictions:{stop}</td><td class="num">30 s</td><td class="num">10 min</td><td>poll time</td></tr>
+      <tr><td>vehicles · trips</td><td class="num">30 s</td><td class="num">10 min</td><td>feed header timestamp (ticks every 30 s, 5 to 7 s lag)</td></tr>
+      <tr><td>subway_trips</td><td class="num">30 s</td><td class="num">10 min</td><td>feed header (generated on request)</td></tr>
+      <tr><td>ntas:{platform}</td><td class="num">10 s</td><td class="num">5 min</td><td>poll time; per-line coverage tracked</td></tr>
+      <tr><td>alerts</td><td class="num">25 s + 304</td><td class="num">1 h</td><td>Last-Modified, ETag, body lastUpdated</td></tr>
+      <tr><td>gtfsrt_alerts</td><td class="num">60 s</td><td class="num">1 h</td><td>feed header (on request)</td></tr>
+      <tr><td>detours</td><td class="num">5 min</td><td class="num">1 h</td><td>HTTP Date (no feed timestamp)</td></tr>
+      <tr><td>service_changes</td><td class="num">10 min</td><td class="num">1 h</td><td>poll time</td></tr>
+    </table></div>
+    <div class="note">Staleness verdicts are computed at answer time: surface real-time past 90 s, subway and NTAS past 60 s, alerts past 10 min, detours past 30 min; static is <em>expiring</em> within 3 days of feed_end_date and <em>expired</em> after it.</div>
+  </section>
+
+  <section data-line="1">
+    <h2>Build order</h2>
+    <p>Each phase leaves a working server. Estimates are from the spec: solo first, paired with Claude second.</p>
+    <ol class="phases">
+      <li><div><div class="t">Static core</div><div class="s">CKAN adapter, streaming GTFS build into SQLite, patterns and run times, aliases, crosswalk, dual-feed window. Tools: find_stops, nearest_stops, stop, station, routes, route_stops, service_hours, scheduled_departures.</div></div><div class="e">~1.5 d · ~6 h</div></li>
+      <li><div><div class="t">Cache and real-time</div><div class="s">cache.py with TTL, single-flight, last-known-good, conditional GET; bustime, gtfsrt, NTAS adapters. Tools: arrivals (with schedule basis), next_trains, vehicles, feed_status.</div></div><div class="e">~1 d · ~4 h</div></li>
+      <li><div><div class="t">Advisories and propagation</div><div class="s">alerts.ttc.ca and GTFS-RT alerts adapters, disruption engine (closure spans, station id OR code joins), service_status, disruptions attached to every answer.</div></div><div class="e">~4 h · ~2 h</div></li>
+      <li><div><div class="t">Connections</div><div class="s">Direct and one-transfer search over patterns, running-now filter, scoring, disruption overlay with shuttle legs, live first-leg departures. Twenty-trip quality check.</div></div><div class="e">~1 d · ~3 to 4 h</div></li>
+      <li><div><div class="t">Detours, geometry, accessibility, crowding, service changes</div><div class="s">TripModifications adapter and detours tool; route_shape; accessibility with unit-code joins; crowding labels; service_changes parsing.</div></div><div class="e">~1.5 d · ~5 h</div></li>
+      <li><div><div class="t">Cloud deploy</div><div class="s">OAuth client and redirect URI, three secrets, service account, bucket, Artifact Registry repo, Job + Scheduler, first deploy, connector added on claude.ai and Claude Code, egress check against every TTC host.</div></div><div class="e">~4 h · ~2 h</div></li>
+      <li><div><div class="t">Parity tests and hardening</div><div class="s">Nightly live parity suite, 403/429 logging with backoff, NTAS coverage sampling for Line 6, first board-period transition watched in late October.</div></div><div class="e">~4 h · ~2 h</div></li>
+    </ol>
+  </section>
+
+  <section data-line="2">
+    <h2>Boundaries</h2>
+    <ul class="tight">
+      <li><b>No geocoding.</b> Addresses become coordinates in the Google Maps MCP; this server starts at <code>nearest_stops</code>.</li>
+      <li><b>No pollers, no public access.</b> Single user behind the email gate; an idle instance makes no requests and scales to zero. Polling would have cost about 14,000 requests and 4 GB a day for nobody.</li>
+      <li><b>No timetable-exact itineraries.</b> <code>connections</code> gives structural options with typical minutes and live first-leg departures; a RAPTOR planner over stop_times is a possible later addition.</li>
+      <li><b>No subway or LRT vehicle positions, no LRT trip updates.</b> The TTC does not publish them; rail answers come from NTAS with the timetable as the stated fallback.</li>
+      <li><b>No invented reasons.</b> A detour with no matching service change is shown with <code>reason: null</code>; an empty NTAS list is "no prediction", never "no trains".</li>
+    </ul>
+  </section>
+
+  </div>
+</div>
