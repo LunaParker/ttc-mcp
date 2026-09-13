@@ -1,0 +1,1 @@
+Spec history. `spec-v0.1.md` to `spec-v0.3.md` are the drafts as delivered on 2026-09-13; v0.4 (trip questions, disruptions, aliases) was patched in place into v0.5 the same evening, so its content is the v0.5 file minus decision i. The live specification is `../spec.md`.
