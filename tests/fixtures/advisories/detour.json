@@ -1,0 +1,79 @@
+{
+ "header": {
+  "gtfsRealtimeVersion": "2.0"
+ },
+ "entity": [
+  {
+   "id": "detour_0_9001:0_0_6_504_Distillery",
+   "tripModifications": {
+    "selectedTrips": [
+     {
+      "tripIds": [
+       "100677020",
+       "100895020",
+       "101100020"
+      ],
+      "shapeId": "detour_0_9001:0_0_6_504_Distillery_shape"
+     }
+    ],
+    "serviceDates": [
+     "20261005",
+     "20261006",
+     "20261007"
+    ],
+    "modifications": [
+     {
+      "startStopSelector": {
+       "stopSequence": 3
+      },
+      "endStopSelector": {
+       "stopSequence": 5
+      },
+      "propagatedModificationDelay": 0
+     }
+    ]
+   }
+  },
+  {
+   "id": "detour_0_9001:0_0_6_504_Distillery_shape",
+   "shape": {
+    "shapeId": "detour_0_9001:0_0_6_504_Distillery_shape",
+    "encodedPolyline": "wfwiGturcNUxBoBFe@aAg@oF]}Aq@eFc@mG_@kAm@}E_@iF]kA_B}Ms@Tu@QcAz@c@L_@N{GlAy@l@mAb@aD\\q@l@iEfA_F|@u@h@kD`AgCx@UPYb@IRk@^_@PUJy@CcAj@aD^e@HiBj@}BZw@j@aJjCqBZu@f@}C~@aDj@uAt@wBZ_Aj@m@eDCGEY_BkMQHyFbBKDaElADRfBdO@VaABuBdAkC^}@h@_Ct@oC`@y@h@c@LaBf@yDl@u@f@aBXIC]BEDGJCPn@f@"
+   }
+  },
+  {
+   "id": "detour_1_9002:1_1_77_77_Nowhere",
+   "tripModifications": {
+    "selectedTrips": [
+     {
+      "tripIds": [
+       "999999999"
+      ],
+      "shapeId": "detour_1_9002:1_1_77_77_Nowhere_shape"
+     }
+    ],
+    "serviceDates": [
+     "20261006"
+    ],
+    "modifications": [
+     {
+      "startStopSelector": {
+       "stopSequence": 2
+      },
+      "endStopSelector": {
+       "stopSequence": 2
+      },
+      "propagatedModificationDelay": 0
+     }
+    ]
+   }
+  },
+  {
+   "id": "detour_1_9002:1_1_77_77_Nowhere_shape",
+   "shape": {
+    "shapeId": "detour_1_9002:1_1_77_77_Nowhere_shape",
+    "encodedPolyline": "_p~iF~ps|U_ulLnnqC"
+   }
+  }
+ ]
+}

@@ -1,0 +1,36 @@
+{
+ "lastUpdated": "2026-10-05T13:42:32.99Z",
+ "routeAlerts": [],
+ "accessibilityAlerts": [],
+ "stopAlerts": [],
+ "serviceChanges": [
+  {
+   "id": "f4d1a81b-0001",
+   "route": "504|304",
+   "routeType": "Streetcar",
+   "title": "504 King &ndash; Temporary route change due to track work",
+   "effectiveDateTitle": "October 1 to October 31",
+   "effectiveStartDate": "2026-10-01T00:00:00Z",
+   "effectiveEndDate": "2026-10-31T04:00:00Z",
+   "categoryName": "Route change",
+   "station": "",
+   "isDetour": false,
+   "contentText": "504 King streetcars will divert via Queen St between Roncesvalles and Dufferin.",
+   "url": "https://www.ttc.ca/service-advisories/Service-Changes/504-Temporary-route-change"
+  },
+  {
+   "id": "f4d1a81b-0002",
+   "route": "",
+   "routeType": "Bus",
+   "title": "101 Downsview Park - Temporary route change due to concert road closures",
+   "effectiveDateTitle": "September 30 to October 2",
+   "effectiveStartDate": "2026-09-30T00:00:00Z",
+   "effectiveEndDate": "2026-10-02T04:00:00Z",
+   "categoryName": "Route change",
+   "station": "",
+   "isDetour": false,
+   "contentText": "",
+   "url": "https://www.ttc.ca/service-advisories/Service-Changes/101"
+  }
+ ]
+}
