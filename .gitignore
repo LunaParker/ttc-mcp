@@ -4,3 +4,7 @@ __pycache__/
 *.pyc
 .cache/
 .DS_Store
+.pytest_cache/
+*.sqlite
+*.tmp
+*.part
