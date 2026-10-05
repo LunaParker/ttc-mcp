@@ -149,3 +149,35 @@ async def test_feed_status_reflects_everything_this_session_fetched(server_url):
     assert fs["ntas_coverage"]["1"]["with_prediction"] >= 1 and "6" in fs["ntas_coverage"]
     overnight = await call(server_url, "routes", overnight=True)
     assert len(overnight["routes"]) == 35 and overnight["meta"]["static_feed"] == fs["static"]["feed_version"]
+
+
+@pytest.mark.anyio
+async def test_service_status_closures_resolve_through_the_static_station_tool(server_url):
+    ss = await call(server_url, "service_status")
+    assert ss["as_of"] and ss["counts"]["rsz"] >= 0 and ss["meta"]["errors"] is None
+    for cl in ss["closures"][:3]:
+        for sid, name in zip(cl["stations"], cl["station_names"]):
+            assert (await call(server_url, "station", query=sid))["station"]["name"] == name
+        assert all(len(w) == 2 for w in cl["windows"])
+
+
+@pytest.mark.anyio
+async def test_detours_resolve_against_static_patterns_and_mark_route_stops(server_url):
+    d = await call(server_url, "detours")
+    dirs = [x for g in d["detours"] for x in g["directions"]]
+    assert d["count"] > 0 and d["resolved"] >= 0.8 * len(dirs)
+    live = [x for g in d["detours"] if g["active_today"] for x in g["directions"] if x["pattern"] != "unknown" and x["skipped"]]
+    x = live[0]
+    rs = await call(server_url, "route_stops", route=x["route"], direction=x["direction_id"])
+    status = {s["number"]: s["status"] for p in rs["patterns"] for s in p["stops"]}
+    assert any(status.get(s["number"]) == "skipped_by_detour" for s in x["skipped"])
+
+
+@pytest.mark.anyio
+async def test_realtime_answers_carry_advisories(server_url):
+    a = await call(server_url, "arrivals", stop="15461")
+    assert "disruptions" in a and all("detour_id" in r for r in a["arrivals"]) and a["meta"]["advisories"]["staleness"] in ("fresh", "stale")
+    t = await call(server_url, "next_trains", query="York Mills")
+    assert all(p["service"] in ("normal", "no_prediction", "suspended") for p in t["platforms"]) and "disruptions" in t
+    fs = await call(server_url, "feed_status")
+    assert len(fs["sources"]) == 8 and {s["name"]: s["verdict"] for s in fs["sources"]}["alerts.ttc.ca"] == "fresh"
