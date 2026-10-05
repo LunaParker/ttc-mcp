@@ -35,7 +35,7 @@ def test_stdio_transport_speaks_only_json_rpc_on_stdout(tmp_path):
         _send(proc, LIST)
         names = {t["name"] for t in _reply(proc, 2)["result"]["tools"]}
         assert {"find_stops", "nearest_stops", "stop", "station", "routes", "route_stops", "service_hours",
-                "scheduled_departures", "arrivals", "next_trains", "vehicles", "feed_status"} <= names
+                "scheduled_departures", "arrivals", "next_trains", "vehicles", "feed_status", "alerts", "service_status", "detours", "service_changes"} <= names
     finally:
         proc.stdin.close()
         proc.wait(timeout=10)

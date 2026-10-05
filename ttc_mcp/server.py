@@ -10,12 +10,14 @@ from ttc_mcp import __version__
 from ttc_mcp.adapters.ckan import make_client
 from ttc_mcp.config import settings
 from ttc_mcp.static.refresh import ensure_static
-from ttc_mcp.tools import realtime_tools, static_tools
+from ttc_mcp.tools import advisory_tools, realtime_tools, static_tools
 
 INSTRUCTIONS = (
     "TTC network data, fetched on demand. Public stop numbers identify stops and are directional. Stations resolve by name or alias. "
     "Real-time answers (arrivals, next_trains, vehicles) are fetched when asked, cached for the feed's own interval, and fall back to the "
-    "timetable with basis 'schedule' when a source has nothing. Every answer carries meta (source, fetched_at, cache, static_feed, staleness)."
+    "timetable with basis 'schedule' when a source has nothing. Disruptions travel with every answer: stop, station, nearest_stops, "
+    "route_stops, arrivals and next_trains carry the closures, detours, reduced speed zones and elevator outages that touch them; call "
+    "service_status first for the network picture. Every answer carries meta (source, fetched_at, cache, static_feed, staleness)."
 )
 
 
@@ -23,6 +25,7 @@ def create_app() -> FastMCP:
     mcp = FastMCP("ttc-mcp", instructions=INSTRUCTIONS, version=__version__)
     static_tools.register(mcp)
     realtime_tools.register(mcp)
+    advisory_tools.register(mcp)
     return mcp
 
 
