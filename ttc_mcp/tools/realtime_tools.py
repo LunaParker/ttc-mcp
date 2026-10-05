@@ -5,20 +5,12 @@ import asyncio
 from fastmcp import FastMCP
 
 from ttc_mcp import runtime
-from ttc_mcp.cache import SourceUnavailable
 from ttc_mcp.domain import arrivals as arr
 from ttc_mcp.domain import trains
 from ttc_mcp.domain import vehicles as veh
+from ttc_mcp.realtime import attempt as _try
 
 SURFACE = "bustime getStopPredictions.jsp + gtfsrt/vehicles"
-
-
-async def _try(coro):
-    """A failed source becomes (None, reason) so the tool can fall back instead of failing."""
-    try:
-        return await coro, None
-    except SourceUnavailable as e:
-        return None, e.error
 
 
 async def _aguard(fn):

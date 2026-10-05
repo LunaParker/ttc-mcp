@@ -6,14 +6,22 @@ from collections.abc import Callable
 
 import httpx
 
-from ttc_mcp.adapters import bustime_rt, bustime_web, http, ntas
+from ttc_mcp.adapters import bustime_rt, bustime_web, detour_feed, gtfsrt_alerts, http, ntas, ttc_alerts, ttcapi
 from ttc_mcp.adapters.http import Fetched, Validators
 from ttc_mcp.cache import Cache, Hit, SourceUnavailable
 from ttc_mcp.domain.freshness import iso
-from ttc_mcp.sources import NTAS, SOURCES, STOP_XML, VEHICLES
+from ttc_mcp.sources import ALERTS, DETOURS, NTAS, RT_ALERTS, SERVICE_CHANGES, SOURCES, STOP_XML, TRIPS, VEHICLES
 
 PROBE_STOP, PROBE_PLATFORM = "15461", "13863"
 STATUS_FIELDS = ("age_s", "cache", "feed_timestamp", "signal", "lag_s", "entities", "last_error", "verdict", "hits")
+
+
+async def attempt(coro):
+    """A failed source becomes (None, reason) so callers can fall back instead of failing."""
+    try:
+        return await coro, None
+    except SourceUnavailable as e:
+        return None, e.error
 
 
 class Realtime:
@@ -39,9 +47,26 @@ class Realtime:
         return await self.cache.get(NTAS, f"{NTAS.key}:{platform}", self._fetch(ntas.url_for(platform)),
                                     ntas.parse_next_trains, force=force)
 
+    async def alerts(self, *, force: bool = False) -> Hit:
+        return await self.cache.get(ALERTS, ALERTS.key, self._fetch(ALERTS.url), ttc_alerts.parse_alerts, force=force)
+
+    async def rt_alerts(self, *, force: bool = False) -> Hit:
+        return await self.cache.get(RT_ALERTS, RT_ALERTS.key, self._fetch(RT_ALERTS.url), gtfsrt_alerts.parse_rt_alerts, force=force)
+
+    async def detours(self, *, force: bool = False) -> Hit:
+        return await self.cache.get(DETOURS, DETOURS.key, self._fetch(DETOURS.url), detour_feed.parse_detours, force=force)
+
+    async def service_changes(self, *, force: bool = False) -> Hit:
+        return await self.cache.get(SERVICE_CHANGES, SERVICE_CHANGES.key, self._fetch(SERVICE_CHANGES.url),
+                                    ttcapi.parse_service_changes, force=force)
+
+    async def trips(self, *, force: bool = False) -> Hit:
+        return await self.cache.get(TRIPS, TRIPS.key, self._fetch(TRIPS.url), bustime_rt.parse_trips, force=force)
+
     async def probe(self) -> dict[str, str | None]:
-        """One live request per source, bypassing TTLs; errors are reported, never raised."""
-        jobs = [self.stop_predictions(PROBE_STOP, force=True), self.vehicles(force=True), self.next_trains(PROBE_PLATFORM, force=True)]
+        """One live request per source in SOURCES order, bypassing TTLs; errors are reported, never raised."""
+        jobs = [self.stop_predictions(PROBE_STOP, force=True), self.vehicles(force=True), self.next_trains(PROBE_PLATFORM, force=True),
+                self.alerts(force=True), self.rt_alerts(force=True), self.detours(force=True), self.service_changes(force=True), self.trips(force=True)]
         results = await asyncio.gather(*jobs, return_exceptions=True)
         return {s.name: (str(r) if isinstance(r, Exception) else None) for s, r in zip(SOURCES, results)}
 
@@ -74,4 +99,4 @@ class Realtime:
         await self.client.aclose()
 
 
-__all__ = ["Realtime", "SourceUnavailable", "PROBE_STOP", "PROBE_PLATFORM"]
+__all__ = ["Realtime", "SourceUnavailable", "attempt", "PROBE_STOP", "PROBE_PLATFORM"]
