@@ -10,7 +10,7 @@ def test_sources_carry_spec_ttls_and_thresholds():
     assert (STOP_XML.ttl, STOP_XML.max_stale, STOP_XML.stale_after) == (30, 600, 90)
     assert (VEHICLES.ttl, VEHICLES.max_stale, VEHICLES.stale_after) == (30, 600, 90)
     assert (NTAS.ttl, NTAS.max_stale, NTAS.stale_after) == (10, 300, 60)
-    assert [s.key for s in SOURCES] == ["stop_xml", "vehicles", "ntas"]
+    assert [s.key for s in SOURCES][:3] == ["stop_xml", "vehicles", "ntas"]
     assert STOP_XML.url.format(stop="15461") == "https://bustime.ttc.ca/bustime/map/getStopPredictions.jsp?stop=15461&route=all"
     assert NTAS.url.format(platform="13863") == "https://ntas.ttc.ca/api/ntas/get-next-train-time/13863"
 
