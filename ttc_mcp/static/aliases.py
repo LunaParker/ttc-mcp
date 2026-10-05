@@ -40,9 +40,10 @@ def build_aliases(conn: sqlite3.Connection) -> int:
         if x.endswith(" GO"):
             rows.add((normalize(x), "", "suffix", "GO"))
             continue
-        for s in stations:
-            if s[2] is not None and _haversine(lat, lon, s[2], s[3]) <= SUFFIX_RADIUS_M:
-                rows.add((normalize(x), s[0], "suffix", None))
+        near = [(_haversine(lat, lon, s[2], s[3]), s[0]) for s in stations if s[2] is not None]
+        near = [n for n in near if n[0] <= SUFFIX_RADIUS_M]
+        if near:
+            rows.add((normalize(x), min(near)[1], "suffix", None))
     for alias, target in MANUAL.items():
         sid = by_name.get(normalize(target))
         if sid:
@@ -56,8 +57,10 @@ def resolve_station(conn: sqlite3.Connection, query: str) -> list[sqlite3.Row]:
     if not q:
         return []
     hits = conn.execute(
-        "SELECT DISTINCT s.* FROM station_aliases a JOIN stops s ON s.stop_id=a.station_id "
-        "WHERE a.alias=? AND a.external IS NULL ORDER BY s.name", (q,)).fetchall()
+        "SELECT s.* FROM station_aliases a JOIN stops s ON s.stop_id=a.station_id "
+        "WHERE a.alias=? AND a.external IS NULL GROUP BY s.stop_id "
+        "ORDER BY MIN(CASE a.source WHEN 'manual' THEN 0 WHEN 'station' THEN 1 WHEN 'platform' THEN 2 ELSE 3 END), s.name",
+        (q,)).fetchall()
     if hits:
         return hits
     if conn.execute("SELECT 1 FROM station_aliases WHERE alias=? AND external IS NOT NULL", (q,)).fetchone():
