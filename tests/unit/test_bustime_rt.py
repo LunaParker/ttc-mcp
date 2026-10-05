@@ -1,8 +1,8 @@
 import pytest
 from google.protobuf.message import DecodeError
 
-from tests.rtfeeds import make_vehicle_feed
-from ttc_mcp.adapters.bustime_rt import Vehicle, parse_vehicles
+from tests.rtfeeds import make_trip_feed, make_vehicle_feed
+from ttc_mcp.adapters.bustime_rt import Vehicle, parse_trips, parse_vehicles
 
 TS = 1791218028
 
@@ -31,3 +31,12 @@ def test_explicit_empty_is_kept_as_empty_not_missing():
 def test_garbage_raises_decode_error():
     with pytest.raises(DecodeError):
         parse_vehicles(b"\xff\xff\xff not a feed", {})
+
+
+def test_parses_trip_feed_vehicle_and_route_maps():
+    body = make_trip_feed(TS, [{"trip": "100677020", "route": "504", "vehicle": "4617", "stops": [("4282", 12, TS + 300)]},
+                              {"trip": "-5", "route": "7", "relationship": "ADDED"}, {"trip": "x", "route": "121", "vehicle": "8520"}])
+    p = parse_trips(body, {})
+    assert (p.feed_timestamp, p.entities, p.value.timestamp) == (TS, 3, TS)
+    assert p.value.vehicle_trip == {"4617": "100677020", "8520": "x"}
+    assert p.value.trip_route == {"100677020": "504", "-5": "7", "x": "121"}

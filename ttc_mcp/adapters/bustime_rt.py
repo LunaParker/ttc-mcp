@@ -52,3 +52,29 @@ def parse_vehicles(body: bytes, headers: dict[str, str]) -> Parsed:
         if rec.route:
             by_route.setdefault(rec.route, []).append(vid)
     return Parsed(VehicleFeed(feed.header.timestamp, vehicles, by_route), feed.header.timestamp or None, len(vehicles))
+
+
+@dataclass(frozen=True)
+class TripFeed:
+    timestamp: int
+    vehicle_trip: dict[str, str]
+    trip_route: dict[str, str]
+
+
+def parse_trips(body: bytes, headers: dict[str, str]) -> Parsed:
+    """bustime.ttc.ca/gtfsrt/trips, used only to map a vehicle id to its live trip id for detour flags."""
+    feed = pb.FeedMessage()
+    feed.ParseFromString(body)
+    vehicle_trip: dict[str, str] = {}
+    trip_route: dict[str, str] = {}
+    n = 0
+    for ent in feed.entity:
+        if not ent.HasField("trip_update"):
+            continue
+        n += 1
+        tu = ent.trip_update
+        if tu.trip.trip_id:
+            trip_route[tu.trip.trip_id] = tu.trip.route_id
+            if tu.vehicle.id:
+                vehicle_trip[tu.vehicle.id] = tu.trip.trip_id
+    return Parsed(TripFeed(feed.header.timestamp, vehicle_trip, trip_route), feed.header.timestamp or None, n)
