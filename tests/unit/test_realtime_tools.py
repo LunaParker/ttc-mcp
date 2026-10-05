@@ -130,7 +130,7 @@ async def test_vehicles_by_route_and_id_and_rail_unavailable(env):
         assert r["meta"]["source"] == "bustime vehicles" and r["meta"]["staleness"] == "fresh"
         assert (await c.call_tool("vehicles", {"vehicle_id": "8520"})).data["vehicles"][0]["crowding"]["label"] == "Not busy"
         rail = (await c.call_tool("vehicles", {"route": "1"})).data
-        assert rail["vehicles"] == [] and "no vehicle positions" in rail["unavailable"]
+        assert rail["vehicles"] == [] and "no vehicle positions" in rail["unavailable"] and rail["meta"]["cache"] == "static"
         assert "error" in (await c.call_tool("vehicles", {})).data
 
 

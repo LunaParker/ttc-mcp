@@ -27,7 +27,7 @@ async def _aguard(fn):
     except runtime.StoreUnavailable as e:
         return {"error": str(e), "meta": runtime.meta(None)}
     payload, hits, source = await fn(feed)
-    if "error" in payload:
+    if "error" in payload or not source:
         return {**payload, "meta": runtime.meta(feed)}
     return {**payload, "meta": runtime.meta_rt(feed, hits, source=source)}
 
@@ -87,7 +87,7 @@ def register(mcp: FastMCP) -> None:
             if not (route or vehicle_id):
                 return {"error": "give a route or a vehicle_id"}, [], ""
             if route and veh.is_rail(feed.conn, route):
-                return {"route": route, "vehicles": [], "unavailable": "the TTC publishes no vehicle positions for rail lines; use next_trains"}, [], "bustime vehicles"
+                return {"route": route, "vehicles": [], "unavailable": "the TTC publishes no vehicle positions for rail lines; use next_trains"}, [], ""
             hit, err = await _try(runtime.get_realtime().vehicles())
             if hit is None:
                 return {"route": route, "vehicle_id": vehicle_id, "vehicles": [], "note": f"vehicle feed unavailable ({err})"}, [], "bustime vehicles"
