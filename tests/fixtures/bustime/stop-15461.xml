@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<stop>
+	<id>15461</id> 
+	<rtpiFeedName></rtpiFeedName>
+	<nm>Cherry St at Front St East</nm>
+	<sri>
+		<rt>504</rt> 
+		<rtRtpiFeedName></rtRtpiFeedName>
+		<rd>504</rd>		
+		<d>East - 504A King towards Distillery</d> 
+		<dd>East - 504A King towards Distillery</dd>   
+		<dRtpiFeedName></dRtpiFeedName>
+	</sri>
+	<sbs>
+	</sbs>
+	<cr>504</cr>
+	<crRtpiFeedName></crRtpiFeedName>
+	<pre>
+		<pt>2 MIN</pt>
+		<fd>East - 504A  King towards Distillery</fd>
+		<v>4617</v>
+		<scheduled>false</scheduled>		
+		<rn>504</rn> 
+		<rd>504</rd> 		
+		<m>1</m>	
+		<consist></consist>    
+		<cars></cars> 
+	</pre>
+	<pre>
+		<pt>14 MIN</pt>
+		<fd>East - 504A  King towards Distillery</fd>
+		<v>4517</v>
+		<scheduled>false</scheduled>		
+		<rn>504</rn> 
+		<rd>504</rd> 		
+		<m>1</m>	
+		<consist></consist>    
+		<cars></cars> 
+	</pre>
+	<pre>
+		<pt>15 MIN</pt>
+		<fd>East - 504A  King towards Distillery</fd>
+		<v>4432</v>
+		<scheduled>false</scheduled>		
+		<rn>504</rn> 
+		<rd>504</rd> 		
+		<m>1</m>	
+		<consist></consist>    
+		<cars></cars> 
+	</pre>
+	<pre>
+		<pt>28 MIN</pt>
+		<fd>East - 504A  King towards Distillery</fd>
+		<v>4637</v>
+		<scheduled>false</scheduled>		
+		<rn>504</rn> 
+		<rd>504</rd> 		
+		<m>1</m>	
+		<consist></consist>    
+		<cars></cars> 
+	</pre>
+</stop>

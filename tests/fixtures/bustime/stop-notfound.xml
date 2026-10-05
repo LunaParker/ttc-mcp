@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<stop>
+	<id>999999</id> 
+	<rtpiFeedName></rtpiFeedName>
+	<nm></nm>
+	<sbs>
+	</sbs>
+	<noPredictionMessage>Stop not found</noPredictionMessage>
+</stop>
