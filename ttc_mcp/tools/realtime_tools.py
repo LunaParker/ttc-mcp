@@ -4,7 +4,7 @@ import asyncio
 
 from fastmcp import FastMCP
 
-from ttc_mcp import runtime
+from ttc_mcp import advisory, runtime
 from ttc_mcp.domain import arrivals as arr
 from ttc_mcp.domain import trains
 from ttc_mcp.domain import vehicles as veh
@@ -18,17 +18,23 @@ async def _aguard(fn):
         feed = runtime.feed_for()
     except runtime.StoreUnavailable as e:
         return {"error": str(e), "meta": runtime.meta(None)}
-    payload, hits, source = await fn(feed)
+    result = await fn(feed)
+    payload, hits, source = result[:3]
+    snap = result[3] if len(result) > 3 else None
     if "error" in payload or not source:
         return {**payload, "meta": runtime.meta(feed)}
-    return {**payload, "meta": runtime.meta_rt(feed, hits, source=source)}
+    meta = runtime.meta_rt(feed, hits, source=source)
+    if snap is not None:
+        meta["advisories"] = snap.meta()
+    return {**payload, "meta": meta}
 
 
 def register(mcp: FastMCP) -> None:
     @mcp.tool
     async def arrivals(stop: str, route: str | None = None, limit: int = 10) -> dict:
         """Next vehicles at a bus or streetcar stop (BusTime predictions, crowding from the vehicle feed) or next trains at a rail
-        platform (NTAS). Rows carry basis realtime or schedule: when no real-time prediction exists the timetable fills in and a note says so."""
+        platform (NTAS). Rows carry basis realtime or schedule: when no real-time prediction exists the timetable fills in and a note says so.
+        Every row carries detour_id (the vehicle's trip is on a detour) and the answer lists the stop's disruptions."""
         async def run(feed):
             conn, rt, now = feed.conn, runtime.get_realtime(), runtime.now()
             row = arr.stop_row(conn, stop)
@@ -52,13 +58,26 @@ def register(mcp: FastMCP) -> None:
             if not rows:
                 rows = arr.schedule_rows(conn, sid, now, limit=limit, route=route)
                 note, source = arr.fallback_note(preds, err), source + " + static stop_times"
-            return {**head, "arrivals": rows[:limit], **({"note": note} if note else {})}, hits, source
+            snap = await advisory.snapshot(feed)
+            active = {g["route"] for g in snap.detours if g["active_today"]}
+            vehicle_trip = {}
+            if active & set(arr.served_at(conn, sid)) and any(r["basis"] == "realtime" for r in rows):
+                thit, _ = await _try(rt.trips())
+                if thit:
+                    hits.append(thit)
+                    vehicle_trip = thit.parsed.vehicle_trip
+            for r in rows:
+                trip = vehicle_trip.get(r["vehicle_id"] or "") if r["basis"] == "realtime" else r.get("trip_id")
+                r["detour_id"] = snap.trip_detour.get(trip or "")
+            return {**head, "arrivals": rows[:limit], "disruptions": snap.disruptions.for_stop(row),
+                    **({"note": note} if note else {})}, hits, source, snap
         return await _aguard(run)
 
     @mcp.tool
     async def next_trains(query: str) -> dict:
         """Next trains at every rail platform of a station (id, name or alias such as "Dundas" or "Bloor") or at one platform id,
-        from the TTC's NTAS. A platform with no prediction falls back to the timetable (service no_prediction); an empty NTAS answer never means no trains."""
+        from the TTC's NTAS. A platform with no prediction falls back to the timetable (service no_prediction); an empty NTAS answer never means no trains.
+        A platform inside an active closure is reported as service suspended with the closure, whatever NTAS says."""
         async def run(feed):
             conn, rt, now = feed.conn, runtime.get_realtime(), runtime.now()
             res = trains.resolve(conn, query)
@@ -67,8 +86,14 @@ def register(mcp: FastMCP) -> None:
             station, platforms = res
             results = await asyncio.gather(*(_try(rt.next_trains(p["stop_id"])) for p in platforms))
             entries = [trains.platform_entry(conn, p, h.parsed if h else None, err, now) for p, (h, err) in zip(platforms, results)]
+            snap = await advisory.snapshot(feed)
+            for p, e in zip(platforms, entries):
+                closed = snap.disruptions.platform_closed_now(p)
+                if closed:
+                    e["service"], e["disruption"] = "suspended", closed
             source = "ntas" + (" + static stop_times" if any(e["basis"] == "schedule" for e in entries) else "")
-            return {"station": {"id": station["stop_id"], "name": station["name"]}, "platforms": entries}, [h for h, _ in results if h], source
+            return {"station": {"id": station["stop_id"], "name": station["name"]}, "platforms": entries,
+                    "disruptions": snap.disruptions.for_station(station["stop_id"])}, [h for h, _ in results if h], source, snap
         return await _aguard(run)
 
     @mcp.tool

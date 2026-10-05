@@ -25,7 +25,7 @@ async def test_stop_and_station_carry_disruptions_and_service(app_env):
 
 @pytest.mark.anyio
 async def test_station_is_suspended_inside_a_closure_window(app_env, monkeypatch):
-    monkeypatch.setattr(app_env, "now", lambda: NIGHT)
+    monkeypatch.setattr("ttc_mcp.runtime.now", lambda: NIGHT)
     async with Client(make_app([])) as c:
         st = (await c.call_tool("station", {"query": "York Mills"})).data["station"]
         assert st["service"][0]["service"] == "suspended" and st["service"][0]["disruption"]["active_now"] is True
