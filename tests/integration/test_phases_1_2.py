@@ -132,3 +132,38 @@ async def test_realtime_answers_carry_advisories(server_url):
     assert all(p["service"] in ("normal", "no_prediction", "suspended") for p in t["platforms"]) and "disruptions" in t
     fs = await call(server_url, "feed_status")
     assert len(fs["sources"]) == 8 and {s["name"]: s["verdict"] for s in fs["sources"]}["alerts.ttc.ca"] == "fresh"
+
+
+@pytest.mark.anyio
+async def test_route_shape_matches_route_stops_and_the_store(server_url):
+    rs = await call(server_url, "route_stops", route="504", direction="0")
+    sh = await call(server_url, "route_shape", route="504", direction="0")
+    assert [s["number"] for s in sh["stops"]] == [s["number"] for s in rs["patterns"][0]["stops"]]
+    assert sh["length_m"] > 9000 and sh["stops"][-1]["dist_m"] <= sh["length_m"] + 100 and sh["polyline"]
+    g = await call(server_url, "route_shape", route="1", direction="0", format="geojson", simplify_m=25)
+    assert g["geometry"]["type"] == "LineString" and g["points"] < 874
+
+
+@pytest.mark.anyio
+async def test_accessibility_agrees_with_station_and_alerts(server_url):
+    units = [a for a in (await call(server_url, "alerts", type="elevator"))["alerts"] if a["stations"]]
+    if not units:
+        pytest.skip("no elevator outage with a resolvable station right now")
+    a = units[0]
+    acc = (await call(server_url, "accessibility", query=a["stations"][0]))["accessibility"]
+    u = next(x for x in acc["units"] if x["code"] == a["unit_code"])
+    assert u["status"] == "out_of_service" and u["alert_id"] == a["alert_id"] and acc["step_free"]["verdict"] == "no"
+    st = (await call(server_url, "station", query=a["stations"][0]))["station"]
+    assert acc["summary"] == st["wheelchair_summary"] and {p["platform"] for p in acc["platforms"]} == {p["number"] for p in st["platforms"]}
+
+
+@pytest.mark.anyio
+async def test_connections_use_live_arrivals_and_the_advisory_snapshot(server_url):
+    r = await call(server_url, "connections", origin={"lat": 43.6527, "lon": -79.3581}, destination="Union")
+    first = next(o for o in r["options"] if [l["route"] for l in o["legs"] if l["mode"] == "ride"] == ["121"])
+    ride = next(l for l in first["legs"] if l["mode"] == "ride")
+    assert ride["next"] and first["basis"] in ("realtime", "schedule") and r["meta"]["advisories"]["errors"] is None
+    arr = await call(server_url, "arrivals", stop=ride["board"]["number"], route="121", limit=3)
+    assert [n["eta_min"] for n in ride["next"]][:1] == [a["eta_min"] for a in arr["arrivals"]][:1] or arr["meta"]["cache"] == "live"
+    fs = await call(server_url, "feed_status")
+    assert fs["static"]["feed_version"] == r["meta"]["static_feed"]
