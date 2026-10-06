@@ -65,6 +65,18 @@ def test_closure_without_shuttle_drops_the_option(conn):
     assert planner.overlay(conn, disr, finch_union(conn, NOW_NIGHT)) == []
 
 
+@pytest.mark.parametrize("shuttle", ["Running", " operating "])
+def test_a_running_shuttle_splits_the_ride_like_will_operate(conn, shuttle):
+    expected = planner.overlay(conn, closure_77519(conn, shuttle="Will Operate"), finch_union(conn, NOW_NIGHT))
+    over = planner.overlay(conn, closure_77519(conn, shuttle=shuttle), finch_union(conn, NOW_NIGHT))
+    assert [l["mode"] for l in over[0]["legs"] if l["mode"] != "walk"] == ["ride", "shuttle", "ride"] and over[0]["legs"] == expected[0]["legs"]
+
+
+@pytest.mark.parametrize("shuttle", ["Will Not Operate", "Not Running", None])
+def test_a_shuttle_that_does_not_run_drops_the_option(conn, shuttle):
+    assert planner.overlay(conn, closure_77519(conn, shuttle=shuttle), finch_union(conn, NOW_NIGHT)) == []
+
+
 @pytest.mark.parametrize("start,end", [(None, None), ("York Mills", None), (None, "Eglinton")])
 def test_a_missing_span_end_is_named_from_the_shuttle_stations(conn, start, end):
     disr = closure_77519(conn, stop_start=start, stop_end=end)
@@ -86,12 +98,26 @@ def test_a_one_station_closure_inside_the_leg_is_bypassed(conn, shuttle):
     assert over[0]["legs"] == opts[0]["legs"] and "77519" in {d.get("alert_id") for d in over[0]["disruptions"]}
 
 
-def test_the_line_5_ride_through_a_closed_eglinton_platform_is_kept_whole(conn):
+def test_the_line_5_ride_through_eglinton_ignores_the_line_1_listing_of_its_platform(conn):
     opts = line5(conn)
     ride = next(l for l in opts[0]["legs"] if l["mode"] == "ride")
     assert (ride["route"], ride["pattern_id"], ride["board_pos"], ride["alight_pos"]) == ("5", 51, 5, 14)
     over = planner.overlay(conn, build(conn, NOW_NIGHT), opts)
-    assert over[0]["legs"] == opts[0]["legs"] and "77538" in {d.get("alert_id") for d in over[0]["disruptions"]}
+    assert over[0]["legs"] == opts[0]["legs"] and "77538" not in {d.get("alert_id") for d in over[0]["disruptions"]}
+
+
+def test_a_line_5_ride_boarding_at_the_line_1_listed_platform_is_kept_whole(conn):
+    opts = trip(conn, "16073", "16077")
+    ride = next(l for l in opts[0]["legs"] if l["mode"] == "ride")
+    assert (ride["route"], ride["board"]["number"]) == ("5", "16073")
+    over = planner.overlay(conn, build(conn, NOW_NIGHT), opts)
+    assert over and over[0]["legs"] == opts[0]["legs"] and "77538" not in {d.get("alert_id") for d in over[0]["disruptions"]}
+
+
+def test_a_line_1_listing_still_closes_line_1_platforms(conn):
+    """With the closure on York Mills only, Lawrence is closed by the RT entity alone (routes include "1")."""
+    legs = [l for l in planner.overlay(conn, closure_77519(conn, stop_ids=("7462",)), finch_union(conn, NOW_NIGHT))[0]["legs"] if l["mode"] != "walk"]
+    assert [l["mode"] for l in legs] == ["ride", "shuttle", "ride"] and (legs[1]["from"]["name"], legs[1]["to"]["name"]) == ("York Mills", "Lawrence")
 
 
 @pytest.mark.parametrize("origin,dest", [("Finch", "Lawrence"), ("Lawrence", "Union")])

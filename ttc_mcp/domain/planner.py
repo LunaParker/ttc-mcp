@@ -14,6 +14,7 @@ WALK_M = 400
 TRANSFER_M = 150
 TRANSFER_PENALTY_MIN = 4
 HORIZON_MIN = 120
+SHUTTLE_RUNS = ("will operate", "running", "operating")
 
 
 @dataclass
@@ -216,6 +217,10 @@ def _station_of(conn, stop_id: str) -> dict:
     return {"station": r["stop_id"], "name": r["name"]} if r else {"station": None, "name": None}
 
 
+def _shuttle_runs(el: dict) -> bool:
+    return (el.get("shuttle") or "").strip().lower() in SHUTTLE_RUNS
+
+
 def _closure_extent(conn, el: dict, pattern_id: int) -> tuple[int, int] | None:
     """Lowest and highest pattern positions of the closure's stations; None when it names none on the pattern."""
     ids = list(el.get("stations") or [])
@@ -232,8 +237,13 @@ def _split_rail_leg(conn, disr: Disruptions, leg: dict, rows: list, found: dict)
     for i, (_, sid, _) in enumerate(rows):
         row = stop_row(conn, sid)
         el = disr.platform_closed_now(row)
-        if el:
-            closed.append((i, disr.station_closed_now(row["parent_station"], leg["route"]) or el))
+        if not el:
+            continue
+        station = disr.station_closed_now(row["parent_station"], leg["route"])
+        # The TTC's RT entities also list other lines' platforms at interchanges; those stay open for this leg.
+        if station is None and el["source"] == "gtfsrt alerts" and leg["route"] not in el["routes"]:
+            continue
+        closed.append((i, station or el))
     if not closed:
         return [leg]
     el = closed[0][1]
@@ -246,7 +256,7 @@ def _split_rail_leg(conn, disr: Disruptions, leg: dict, rows: list, found: dict)
         if ext and ext[0] < ext[1] and rows[first][0] in ext:
             return [leg]
         return [leg] if 0 < first < len(rows) - 1 else None
-    if el.get("shuttle") != "Will Operate":
+    if not _shuttle_runs(el):
         return None
     names = stop_names(conn, [r[1] for r in rows])
     meta = {"pattern_id": leg["pattern_id"], "route": leg["route"], "direction_id": leg["direction_id"], "headsign": leg["headsign"], "mode": leg["transit"]}
