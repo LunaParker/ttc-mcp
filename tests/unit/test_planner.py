@@ -60,7 +60,7 @@ def test_direct_and_one_transfer_options_from_cherry_front_to_union(conn):
     assert first["typical_min"] == sum(l["min"] if "min" in l else l["typical_min"] for l in first["legs"]) and first["walk_m"] >= 239
     assert first["first_departure"]["route"] == "121" and 0 <= first["first_departure"]["in_min"] <= 120
     xfer = next(o for o in opts if o["transfers"] == 1)
-    assert xfer["rank"] == 2 and all(_rides(o)[1]["route"] != "121" for o in opts if o["transfers"] == 1)
+    assert xfer["rank"] == 2 and all("121" not in [r["route"] for r in _rides(o)] for o in opts if o["transfers"] == 1)
     assert [r["route"] for r in _rides(xfer)] == ["504", "1"] and _rides(xfer)[1]["alight"]["number"] in {"13815", "13816"}
     assert _rides(xfer)[0]["alight"]["number"] in {"15637", "15638"} and _rides(xfer)[1]["transit"] == "subway"
     t = next(l for l in xfer["legs"] if l["mode"] == "transfer")
@@ -110,3 +110,18 @@ def test_rides_move_forward_on_loop_patterns(conn, monkeypatch):
     assert [(r["board_pos"], r["alight_pos"], r["alight"]["number"]) for r in loop] == [(34, 35, "15607")]
     every = hop + opts + planner.search(conn, planner.resolve_endpoint(conn, CHERRY_FRONT), planner.resolve_endpoint(conn, "Union"), now=NOW, limit=10)
     assert all(r["stops"] > 0 and r["alight_pos"] > r["board_pos"] for o in every for r in _rides(o))
+
+
+def test_transfers_stop_short_of_the_destination_and_never_leave_a_direct_pattern(conn, monkeypatch):
+    union, real = planner.resolve_endpoint(conn, "Union"), planner.transfer_stops
+    # Line 1 from Queen reaches Union (pos 16) before St Andrew (pos 17); pretend a 121 stop bound for Union is 50 m from St Andrew.
+    monkeypatch.setattr(planner, "transfer_stops", lambda c, sid: {**real(c, sid), **({"13455": 50} if sid == "13817" else {})})
+    opts = planner.search(conn, planner.resolve_endpoint(conn, "13811"), union, now=NOW, limit=10)
+    assert opts and _rides(opts[0])[0]["route"] == "1"
+    for o in (o for o in opts if o["transfers"] == 1):
+        r, rows = _rides(o)[0], planner.pattern_rows(conn, _rides(o)[0]["pattern_id"])
+        assert r["alight_pos"] < next((i for i in range(r["board_pos"] + 1, len(rows)) if rows[i][1] in union.stops), len(rows))
+    # Pretend King's southbound platform is 50 m from a 121 stop short of Union; staying on the 121 beats that transfer.
+    monkeypatch.setattr(planner, "transfer_stops", lambda c, sid: {**real(c, sid), **({"13814": 50} if sid == "11169" else {})})
+    opts = planner.search(conn, planner.resolve_endpoint(conn, CHERRY_FRONT), union, now=NOW, limit=10)
+    assert opts and all(_rides(o)[0]["route"] != "121" for o in opts if o["transfers"] == 1)

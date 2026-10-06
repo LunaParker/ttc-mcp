@@ -149,7 +149,7 @@ def search(conn, origin: Endpoint, dest: Endpoint, *, now: dt.datetime, max_tran
     def first_dest(pid, after):
         return next(((pos, sid) for pos, sid in dest_by_pattern.get(pid, []) if pos > after), None)
 
-    # A second ride on a pattern the rider could board at the origin is a pointless transfer.
+    # A transfer off or onto a pattern the rider could ride straight from the origin is pointless.
     direct_patterns = {pid for o in o_stops for pid, pos_o, _ in o_idx.get(o, []) if first_dest(pid, pos_o)}
     cands = []
     for o, walk_o in o_stops.items():
@@ -157,11 +157,12 @@ def search(conn, origin: Endpoint, dest: Endpoint, *, now: dt.datetime, max_tran
             hit = first_dest(pid, pos_o)
             if hit:
                 cands.append({"origin": (o, walk_o), "rides": [(pid, pos_o, hit[0])], "transfer": None, "dest": (hit[1], d_stops[hit[1]])})
-            if max_transfers < 1:
+            if max_transfers < 1 or pid in direct_patterns:
                 continue
             r1 = prow(pid)
+            end = hit[0] if hit else len(r1)
             nbr: dict[str, tuple[str, int]] = {}
-            for pos_x in range(pos_o + 1, len(r1)):
+            for pos_x in range(pos_o + 1, end):
                 x = r1[pos_x][1]
                 if not usable(x):
                     continue
@@ -171,7 +172,7 @@ def search(conn, origin: Endpoint, dest: Endpoint, *, now: dt.datetime, max_tran
             y_idx = patterns_at(conn, nbr)
             best: dict[tuple, dict] = {}
             for y, (x, walk_xy) in nbr.items():
-                pos_x = next(i for i in range(pos_o + 1, len(r1)) if r1[i][1] == x)
+                pos_x = next(i for i in range(pos_o + 1, end) if r1[i][1] == x)
                 for qid, pos_y, _ in y_idx.get(y, []):
                     if qid == pid or qid in direct_patterns or qid not in dest_by_pattern or meta(qid)["route"] == meta(pid)["route"]:
                         continue
@@ -179,7 +180,7 @@ def search(conn, origin: Endpoint, dest: Endpoint, *, now: dt.datetime, max_tran
                     if not hit:
                         continue
                     cand = {"origin": (o, walk_o), "rides": [(pid, pos_o, pos_x), (qid, pos_y, hit[0])], "transfer": (x, y, walk_xy), "dest": (hit[1], d_stops[hit[1]])}
-                    score = (r1[pos_x][2] - r1[pos_o][2]) + walk_xy * 60 / 80 + (prow(qid)[hit[0]][2] - prow(qid)[pos_y][2])
+                    score = (r1[pos_x][2] - r1[pos_o][2]) + walk_minutes(walk_xy) * 60 + (prow(qid)[hit[0]][2] - prow(qid)[pos_y][2])
                     key = (pid, qid)
                     if key not in best or score < best[key][0]:
                         best[key] = (score, cand)
