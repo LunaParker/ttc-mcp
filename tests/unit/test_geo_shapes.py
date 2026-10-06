@@ -21,9 +21,11 @@ def test_simplify_drops_collinear_points_but_keeps_corners():
     assert simplify(line[:2], 5) == line[:2] and simplify([], 5) == []
 
 
-def test_slice_by_dist_keeps_the_span_plus_one_neighbour_each_side():
+def test_slice_by_dist_brackets_the_span_with_its_nearest_vertices():
     pts = [(0, 0), (0, 1), (0, 2), (0, 3), (0, 4)]
     dists = [0, 100, 200, 300, 400]
     assert slice_by_dist(pts, dists, 150, 250) == [(0, 1), (0, 2), (0, 3)]
-    assert slice_by_dist(pts, dists, 0, 100) == [(0, 0), (0, 1), (0, 2)]
+    assert slice_by_dist(pts, dists, 0, 100) == [(0, 0), (0, 1)]
     assert slice_by_dist(pts, dists, 350, 400) == [(0, 3), (0, 4)]
+    assert slice_by_dist(pts, dists, 120, 130) == [(0, 1), (0, 2)]
+    assert slice_by_dist(pts, dists, -10, 450) == pts and slice_by_dist([], [], 0, 1) == []

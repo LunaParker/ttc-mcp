@@ -1,3 +1,5 @@
+import pytest
+
 from ttc_mcp.domain import shapes
 from ttc_mcp.domain.geo import decode_polyline
 
@@ -24,7 +26,35 @@ def test_stops_between_slices_by_shape_dist(conn):
     assert abs(r["between"]["length_m"] - (1790.29 - 623.66)) < 2 and r["between"] == {"from": "4569", "to": "4573", "length_m": r["between"]["length_m"]}
     pts = decode_polyline(r["polyline"])
     assert 2 < len(pts) < 539 and r["length_m"] > 10000
-    assert shapes.route_shape(conn, "504", "0", pattern=2, between=("4573", "4569")) is None
+    with pytest.raises(ValueError, match="not after"):
+        shapes.route_shape(conn, "504", "0", pattern=2, between=("4573", "4569"))
+
+
+def test_between_uses_the_first_visit_of_a_repeated_stop(conn):
+    r = shapes.route_shape(conn, "400", "0", between=("15607", "11641"))
+    assert r["pattern_id"] == 41 and [(s["seq"], s["number"]) for s in r["stops"]] == [(34, "15607"), (35, "11641")]
+    r = shapes.route_shape(conn, "400", "0", between=("175", "15607"))
+    assert [(s["seq"], s["number"]) for s in r["stops"]] == [(33, "175"), (34, "15607")]
+    r = shapes.route_shape(conn, "400", "0", between=("11641", "15607"))
+    assert [(s["seq"], s["number"]) for s in r["stops"]] == [(35, "11641"), (36, "15607")]
+
+
+def test_between_with_no_shape_vertex_inside_still_brackets_the_span(conn):
+    for rank in (2, 4):
+        r = shapes.route_shape(conn, "400", "0", pattern=rank, between=("5350", "5403"))
+        pts = decode_polyline(r["polyline"])
+        assert len(pts) >= 2 and r["points"] == len(pts) and "note" not in r
+
+
+def test_between_errors_say_why(conn):
+    with pytest.raises(ValueError, match="stop 99999 is not on"):
+        shapes.route_shape(conn, "504", "0", pattern=2, between=("4569", "99999"))
+    with pytest.raises(ValueError, match="stop 99999 is not on"):
+        shapes.route_shape(conn, "504", "0", pattern=2, between=("99999", "4569"))
+    with pytest.raises(ValueError, match="not after"):
+        shapes.route_shape(conn, "504", "0", pattern=2, between=("4569", "4569"))
+    with pytest.raises(ValueError, match="no shape distance"):
+        shapes.route_shape(conn, "1", "0", between=("14111", "13789"))
 
 
 def test_unknown_route_or_pattern_is_none(conn):

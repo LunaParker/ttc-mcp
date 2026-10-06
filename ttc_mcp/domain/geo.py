@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 import math
 
 
@@ -98,9 +99,10 @@ def simplify(points: list[tuple[float, float]], tolerance_m: float) -> list[tupl
     return [p for p, k in zip(points, keep) if k]
 
 
-def slice_by_dist(points: list, dists: list, d0: float, d1: float) -> list:
-    idx = [i for i, d in enumerate(dists) if d0 <= d <= d1]
-    if not idx:
+def slice_by_dist(points: list, dists, d0: float, d1: float) -> list:
+    """Points bracketing the span: the last vertex at or before d0 through the first at or after d1."""
+    if not points:
         return []
-    lo, hi = max(idx[0] - 1, 0), min(idx[-1] + 1, len(points) - 1)
+    lo = max(bisect.bisect_right(dists, d0) - 1, 0)
+    hi = min(bisect.bisect_left(dists, d1), len(points) - 1)
     return list(points[lo:hi + 1])

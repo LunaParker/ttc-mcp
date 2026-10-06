@@ -68,3 +68,12 @@ def test_store_unavailable_reads_as_an_error(tmp_path, monkeypatch):
 
     assert "static store" in _guard(lambda feed: {})["error"]
     runtime.reset()
+
+
+@pytest.mark.anyio
+async def test_route_shape_span_errors_name_the_reason(app):
+    async with Client(app) as c:
+        r = (await c.call_tool("route_shape", {"route": "504", "direction": "0", "pattern": 2, "from_stop": "4573", "to_stop": "4569"})).data
+        assert "not after" in r["error"] and r["meta"]["static_feed"] == "S1000538"
+        r = (await c.call_tool("route_shape", {"route": "504", "direction": "0", "pattern": 2, "from_stop": "4569", "to_stop": "0"})).data
+        assert "stop 0 is not on" in r["error"]

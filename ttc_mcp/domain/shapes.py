@@ -11,9 +11,26 @@ def _pattern(conn, route: str, direction: str, rank: int):
                         "WHERE (r.short_name=? OR r.route_id=?) AND p.direction_id=? AND p.rank=?", (route, route, int(direction), rank)).fetchone()
 
 
+def _span(rows: list[dict], frm: str, to: str, where: str) -> tuple[int, int]:
+    """Positions of the first visit of frm and the first visit of to after it; ValueError says why there is none."""
+    a = next((i for i, s in enumerate(rows) if s["number"] == frm), None)
+    if a is None:
+        raise ValueError(f"stop {frm} is not on {where}")
+    b = next((i for i, s in enumerate(rows) if i > a and s["number"] == to), None)
+    if b is None:
+        if any(s["number"] == to for s in rows):
+            raise ValueError(f"stop {to} is not after stop {frm} on {where}")
+        raise ValueError(f"stop {to} is not on {where}")
+    for i in (a, b):
+        if rows[i]["dist_m"] is None:
+            raise ValueError(f"no shape distance for stop {rows[i]['number']} on {where}")
+    return a, b
+
+
 def route_shape(conn, route: str, direction: str, *, pattern: int | None = None, fmt: str = "polyline",
                 simplify_m: float | None = None, between: tuple[str, str] | None = None) -> dict | None:
-    """Decision a: the pattern's shape as a polyline (or GeoJSON), stops with shape_dist_traveled, optional span between two stops."""
+    """Decision a: the pattern's shape as a polyline (or GeoJSON), stops with shape_dist_traveled, optional span between two stops.
+    None when the pattern does not exist; ValueError when the span cannot be formed (the message says why)."""
     p = _pattern(conn, route, direction, pattern or 1)
     if p is None:
         return None
@@ -26,10 +43,7 @@ def route_shape(conn, route: str, direction: str, *, pattern: int | None = None,
            "format": fmt, "stops": rows}
     span = None
     if between:
-        idx = {s["number"]: i for i, s in enumerate(rows)}
-        a, b = idx.get(between[0]), idx.get(between[1])
-        if a is None or b is None or b <= a or rows[a]["dist_m"] is None or rows[b]["dist_m"] is None:
-            return None
+        a, b = _span(rows, between[0], between[1], f"pattern {p['rank']} of route {p['route']} direction {p['direction_id']}")
         span = (rows[a]["dist_m"], rows[b]["dist_m"])
         out["stops"] = rows[a:b + 1]
         out["between"] = {"from": between[0], "to": between[1], "length_m": round(span[1] - span[0], 1)}
@@ -40,7 +54,9 @@ def route_shape(conn, route: str, direction: str, *, pattern: int | None = None,
     if span:
         pd = array("f")
         pd.frombytes(shape["dists"])
-        pts = slice_by_dist(pts, list(pd), *span)
+        pts = slice_by_dist(pts, pd, *span)
+        if len(pts) < 2:
+            out["note"] = "the span covers fewer than two shape points"
     if simplify_m:
         pts = simplify(pts, simplify_m)
     out.update(length_m=shape["length_m"], points=len(pts))

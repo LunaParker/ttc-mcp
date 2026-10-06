@@ -14,9 +14,12 @@ def register(mcp: FastMCP) -> None:
                     simplify_m: float | None = None, from_stop: str | None = None, to_stop: str | None = None) -> dict:
         """The geometry of a route and direction: the most-used stop pattern's shape (or another pattern by rank) as an encoded
         polyline or GeoJSON LineString, with its stops and their distance along the shape. Optional Douglas-Peucker simplification
-        (metres) and a from_stop/to_stop span sliced by shape_dist_traveled."""
+        (metres) and a from_stop/to_stop span sliced by shape_dist_traveled (the first visit of each when a stop repeats)."""
         def run(f):
             between = (from_stop, to_stop) if from_stop and to_stop else None
-            d = shapes.route_shape(f.conn, route, direction, pattern=pattern, fmt=format, simplify_m=simplify_m, between=between)
-            return d if d else {"error": f"no pattern {pattern or 1} for route {route} direction {direction}" + (" or the span is not in order" if between else "")}
+            try:
+                d = shapes.route_shape(f.conn, route, direction, pattern=pattern, fmt=format, simplify_m=simplify_m, between=between)
+            except ValueError as e:
+                return {"error": str(e)}
+            return d if d else {"error": f"no pattern {pattern or 1} for route {route} direction {direction}"}
         return _guard(run)
