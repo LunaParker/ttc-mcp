@@ -13,6 +13,7 @@ from pathlib import Path
 from statistics import median
 
 from ttc_mcp import __version__
+from ttc_mcp.domain import geo
 from ttc_mcp.static import gtfs
 from ttc_mcp.static.aliases import build_aliases
 from ttc_mcp.static.schema import SCHEMA
@@ -30,6 +31,7 @@ class FeedMeta:
     stops: int
     patterns: int
     departures: int
+    shapes: int
     path: Path
     bytes: int
 
@@ -61,6 +63,7 @@ def build_sqlite(merged_zip: Path, out_path: Path, surface_zip: Path | None = No
         trips = {t["trip_id"]: t for t in gtfs.read_rows(z, "trips.txt")}
         _log(log, f"[build] {info['feed_version']}: {len(trips)} trips, {n_stops} stops; streaming stop_times ...")
         counts = _stream_stop_times(conn, z, trips, routes)
+        counts["shapes"] = _load_shapes(conn, z) if gtfs.has(z, "shapes.txt") else 0
     if surface_zip is not None:
         _load_crosswalk(conn, surface_zip)
     _attach_orphan_platforms(conn)
@@ -76,7 +79,7 @@ def build_sqlite(merged_zip: Path, out_path: Path, surface_zip: Path | None = No
     size = out_path.stat().st_size
     _log(log, f"[build] done in {time.monotonic() - t0:.0f}s: {out_path} ({size / 1e6:.1f} MB)")
     return FeedMeta(info["feed_version"], info["feed_start_date"], info["feed_end_date"], len(trips), n_stops,
-                    counts["patterns"], counts["departures"], out_path, size)
+                    counts["patterns"], counts["departures"], counts["shapes"], out_path, size)
 
 
 def _load_stops(conn, z) -> int:
@@ -112,13 +115,14 @@ def _load_calendar(conn, z):
 
 
 class _Pattern:
-    __slots__ = ("trip_count", "headsigns", "shapes", "offsets")
+    __slots__ = ("trip_count", "headsigns", "shapes", "offsets", "dists")
 
     def __init__(self, n: int):
         self.trip_count = 0
         self.headsigns: Counter = Counter()
         self.shapes: Counter = Counter()
         self.offsets = [array("I") for _ in range(n)]
+        self.dists = [array("f") for _ in range(n)]
 
 
 def _stream_stop_times(conn, z, trips: dict[str, dict], routes: dict[str, dict]) -> dict[str, int]:
@@ -135,20 +139,22 @@ def _stream_stop_times(conn, z, trips: dict[str, dict], routes: dict[str, dict])
         rows.sort(key=lambda r: r[0])
         t = trips[cur]
         direction = int(t.get("direction_id") or 0)
-        key = (t["route_id"], direction, tuple((seq, sid) for seq, sid, _ in rows))
+        key = (t["route_id"], direction, tuple((seq, sid) for seq, sid, _, _ in rows))
         pid = pattern_ids.setdefault(key, len(pattern_ids) + 1)
         acc = patterns.setdefault(pid, _Pattern(len(rows)))
         acc.trip_count += 1
         acc.headsigns[t["trip_headsign"]] += 1
         acc.shapes[t.get("shape_id") or ""] += 1
         start = rows[0][2]
-        for i, (_, _, s) in enumerate(rows):
+        for i, (_, _, s, d) in enumerate(rows):
             acc.offsets[i].append(s - start)
+            if d is not None:
+                acc.dists[i].append(d)
         trip_rows.append((cur, t["route_id"], t["service_id"], direction, t["trip_headsign"], pid,
                           t.get("shape_id") or None, start, rows[-1][2]))
         routes[t["route_id"]]["hist"][(start % 86400) // 1800] += 1
         tid = _digits(cur, "trip_id")
-        for seq, sid, s in rows:
+        for seq, sid, s, _ in rows:
             dep_batch.append((_digits(sid, "stop_id"), s, tid, seq))
             stop_routes[(sid, t["route_id"], direction, t["trip_headsign"])] += 1
         state["deps"] += len(rows)
@@ -164,28 +170,50 @@ def _stream_stop_times(conn, z, trips: dict[str, dict], routes: dict[str, dict])
                 raise ValueError("stop_times.txt is not grouped by trip_id; the streaming build requires grouping")
             seen.add(tid)
             state["cur"], state["rows"] = tid, []
-        state["rows"].append((int(st["stop_sequence"]), st["stop_id"], gtfs.secs(st.get("departure_time") or st["arrival_time"])))
+        state["rows"].append((int(st["stop_sequence"]), st["stop_id"], gtfs.secs(st.get("departure_time") or st["arrival_time"]),
+                              float(st["shape_dist_traveled"]) if st.get("shape_dist_traveled") else None))
     flush()
     if dep_batch:
         conn.executemany("INSERT INTO departures VALUES (?,?,?,?)", dep_batch)
     conn.executemany("INSERT INTO trips VALUES (?,?,?,?,?,?,?,?,?)", trip_rows)
     conn.executemany("INSERT INTO stop_routes VALUES (?,?,?,?,?)", [(*k, n) for k, n in stop_routes.items()])
     ranks: dict[tuple, int] = defaultdict(int)
-    prow = []
+    prow, ps_rows = [], []
     for key, pid in sorted(pattern_ids.items(), key=lambda kv: (-patterns[kv[1]].trip_count, kv[1])):
         route_id, direction, stops = key
         acc = patterns[pid]
         ranks[(route_id, direction)] += 1
         run = [int(median(o)) if len(o) else 0 for o in acc.offsets]
+        dists = [round(median(d), 2) if len(d) else None for d in acc.dists]
         prow.append((pid, route_id, direction, ranks[(route_id, direction)], acc.trip_count,
                      json.dumps(dict(acc.headsigns)), json.dumps([[seq, sid] for seq, sid in stops]), json.dumps(run),
-                     acc.shapes.most_common(1)[0][0] or None))
-    conn.executemany("INSERT INTO patterns VALUES (?,?,?,?,?,?,?,?,?)", prow)
+                     json.dumps(dists), acc.shapes.most_common(1)[0][0] or None))
+        ps_rows.extend((pid, i, sid, run[i], dists[i]) for i, (seq, sid) in enumerate(stops))
+    conn.executemany("INSERT INTO patterns VALUES (?,?,?,?,?,?,?,?,?,?)", prow)
+    conn.executemany("INSERT INTO pattern_stops VALUES (?,?,?,?,?)", ps_rows)
     conn.executemany("INSERT INTO routes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                      [(rid, r["route_short_name"], r.get("route_long_name"), r["route_type"], r.get("route_color"),
                        r.get("route_text_color"), r["series"], r["mode"], json.dumps(r["hist"]), None, None, None, None)
                       for rid, r in routes.items()])
     return {"patterns": len(pattern_ids), "departures": state["deps"]}
+
+
+def _load_shapes(conn, z) -> int:
+    """Shapes as encoded polylines with a per-point distance array; shape_dist_traveled when the feed has it, else haversine."""
+    acc: dict[str, list] = defaultdict(list)
+    for r in gtfs.read_rows(z, "shapes.txt"):
+        acc[r["shape_id"]].append((int(r["shape_pt_sequence"]), float(r["shape_pt_lat"]), float(r["shape_pt_lon"]),
+                                   float(r["shape_dist_traveled"]) if r.get("shape_dist_traveled") else None))
+    rows = []
+    for sid, pts in acc.items():
+        pts.sort()
+        coords = [(lat, lon) for _, lat, lon, _ in pts]
+        dists = [d for _, _, _, d in pts]
+        if any(d is None for d in dists):
+            dists = geo.cumulative_m(coords)
+        rows.append((sid, geo.encode_polyline(coords), round(geo.cumulative_m(coords)[-1], 1), len(coords), array("f", dists).tobytes()))
+    conn.executemany("INSERT INTO shapes VALUES (?,?,?,?,?)", rows)
+    return len(rows)
 
 
 def _load_crosswalk(conn, surface_zip: Path):

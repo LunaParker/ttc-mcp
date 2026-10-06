@@ -44,3 +44,63 @@ def decode_polyline(s: str) -> list[tuple[float, float]]:
 
 def path_length_m(points: list[tuple[float, float]]) -> float:
     return sum(haversine_m(*points[i], *points[i + 1]) for i in range(len(points) - 1))
+
+
+def encode_polyline(points: list[tuple[float, float]]) -> str:
+    out, prev_lat, prev_lon = [], 0, 0
+    for lat, lon in points:
+        ilat, ilon = round(lat * 1e5), round(lon * 1e5)
+        for delta in (ilat - prev_lat, ilon - prev_lon):
+            v = ~(delta << 1) if delta < 0 else delta << 1
+            while v >= 0x20:
+                out.append(chr((0x20 | (v & 0x1F)) + 63))
+                v >>= 5
+            out.append(chr(v + 63))
+        prev_lat, prev_lon = ilat, ilon
+    return "".join(out)
+
+
+def cumulative_m(points: list[tuple[float, float]]) -> list[float]:
+    out = [0.0]
+    for i in range(1, len(points)):
+        out.append(out[-1] + haversine_m(*points[i - 1], *points[i]))
+    return out
+
+
+def simplify(points: list[tuple[float, float]], tolerance_m: float) -> list[tuple[float, float]]:
+    """Douglas-Peucker on a local equirectangular projection; tolerance in metres."""
+    if len(points) < 3:
+        return list(points)
+    lat0 = math.radians(points[0][0])
+    xy = [((lon * 111320 * math.cos(lat0)), lat * 111320) for lat, lon in points]
+
+    def dist(p, a, b):
+        (px, py), (ax, ay), (bx, by) = p, a, b
+        dx, dy = bx - ax, by - ay
+        if dx == dy == 0:
+            return math.hypot(px - ax, py - ay)
+        t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)))
+        return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+
+    keep = [False] * len(points)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(points) - 1)]
+    while stack:
+        a, b = stack.pop()
+        best, idx = 0.0, -1
+        for i in range(a + 1, b):
+            d = dist(xy[i], xy[a], xy[b])
+            if d > best:
+                best, idx = d, i
+        if idx >= 0 and best > tolerance_m:
+            keep[idx] = True
+            stack.extend(((a, idx), (idx, b)))
+    return [p for p, k in zip(points, keep) if k]
+
+
+def slice_by_dist(points: list, dists: list, d0: float, d1: float) -> list:
+    idx = [i for i, d in enumerate(dists) if d0 <= d <= d1]
+    if not idx:
+        return []
+    lo, hi = max(idx[0] - 1, 0), min(idx[-1] + 1, len(points) - 1)
+    return list(points[lo:hi + 1])

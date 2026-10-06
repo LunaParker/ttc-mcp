@@ -21,7 +21,8 @@ CREATE TABLE calendar_dates (service_id TEXT NOT NULL, date TEXT NOT NULL, excep
 CREATE INDEX calendar_dates_date ON calendar_dates(date);
 CREATE TABLE patterns (
   pattern_id INTEGER PRIMARY KEY, route_id TEXT NOT NULL, direction_id INTEGER NOT NULL, rank INTEGER NOT NULL,
-  trip_count INTEGER NOT NULL, headsigns TEXT NOT NULL, stops TEXT NOT NULL, run_times TEXT NOT NULL, shape_id TEXT
+  trip_count INTEGER NOT NULL, headsigns TEXT NOT NULL, stops TEXT NOT NULL, run_times TEXT NOT NULL, dists TEXT NOT NULL,
+  shape_id TEXT
 );
 CREATE INDEX patterns_route ON patterns(route_id, direction_id, rank);
 CREATE TABLE trips (
@@ -44,4 +45,10 @@ CREATE TABLE station_aliases (
 );
 CREATE INDEX station_aliases_station ON station_aliases(station_id);
 CREATE TABLE crosswalk (stop_code TEXT PRIMARY KEY, surface_stop_id TEXT NOT NULL);
+CREATE TABLE shapes (shape_id TEXT PRIMARY KEY, polyline TEXT NOT NULL, length_m REAL NOT NULL, points INTEGER NOT NULL, dists BLOB NOT NULL);
+CREATE TABLE pattern_stops (
+  pattern_id INTEGER NOT NULL, pos INTEGER NOT NULL, stop_id TEXT NOT NULL, secs INTEGER NOT NULL, dist_m REAL,
+  PRIMARY KEY (pattern_id, pos)
+) WITHOUT ROWID;
+CREATE INDEX pattern_stops_stop ON pattern_stops(stop_id);
 """
