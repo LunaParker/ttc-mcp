@@ -10,6 +10,8 @@ import httpx
 from ttc_mcp.adapters import ckan
 from ttc_mcp.static.build import build_sqlite
 from ttc_mcp.static.manifest import FeedEntry, Manifest
+from ttc_mcp.static.schema import SCHEMA_VERSION
+from ttc_mcp.static.store import schema_version
 
 
 def _log(log, msg):
@@ -43,7 +45,13 @@ def ensure_static(cache_dir: Path, client: httpx.Client, *, today: dt.date | Non
     known = next((f for f in manifest.feeds
                   if f.source_url == merged.url and f.etag == merged_etag and f.surface_etag == surf_etag), None)
     if known and not force and merged_etag:
-        return {"changed": False, "feed_version": known.feed_version, "reason": "etags unchanged", "manifest": manifest}
+        found = schema_version(cache_dir / known.path)
+        if found == SCHEMA_VERSION:
+            return {"changed": False, "feed_version": known.feed_version, "reason": "etags unchanged", "manifest": manifest}
+        _log(log, f"[refresh] {known.feed_version}: store schema {found} != {SCHEMA_VERSION}; rebuilding")
+        reason = "schema changed"
+    else:
+        reason = None
     dl = cache_dir / "downloads"
     _log(log, f"[refresh] downloading {merged.url} ({merged.size or '?'} bytes)")
     merged_zip, merged_etag = ckan.download(client, merged.url, dl / "merged.zip")
@@ -51,8 +59,10 @@ def ensure_static(cache_dir: Path, client: httpx.Client, *, today: dt.date | Non
     if surf:
         _log(log, f"[refresh] downloading {surf.url} ({surf.size or '?'} bytes)")
         surface_zip, surf_etag = ckan.download(client, surf.url, dl / "surface.zip")
-    return _register(cache_dir, manifest, merged_zip, surface_zip, url=merged.url, etag=merged_etag,
+    rep = _register(cache_dir, manifest, merged_zip, surface_zip, url=merged.url, etag=merged_etag,
                      surface_etag=surf_etag, today=today, log=log)
+    rep["reason"] = reason or rep["reason"]
+    return rep
 
 
 def build_from_zips(cache_dir: Path, merged_zip: Path, surface_zip: Path | None, *, today: dt.date | None = None,

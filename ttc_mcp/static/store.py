@@ -2,16 +2,34 @@ from __future__ import annotations
 
 import datetime as dt
 import sqlite3
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from ttc_mcp.static.manifest import Manifest
+from ttc_mcp.static.schema import SCHEMA_VERSION
 
 EXPIRING_DAYS = 3
 
 
 def _d(s: str) -> dt.date:
     return dt.datetime.strptime(s, "%Y%m%d").date()
+
+
+def schema_version(path: Path) -> int:
+    """The schema a store was built with: 1 when it predates the column, 0 when the file is not a store at all."""
+    try:
+        c = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return 0
+    try:
+        return int(c.execute("SELECT schema_version FROM feed_info").fetchone()[0])
+    except sqlite3.OperationalError as e:
+        return 1 if "no such column" in str(e) else 0
+    except (TypeError, sqlite3.Error):
+        return 0
+    finally:
+        c.close()
 
 
 @dataclass
@@ -36,6 +54,10 @@ class StaticStore:
         for e in Manifest.load(cache_dir).feeds:
             p = Path(cache_dir) / e.path
             if not p.exists():
+                continue
+            found = schema_version(p)
+            if found != SCHEMA_VERSION:
+                print(f"[store] skipping {p.name}: schema {found} != {SCHEMA_VERSION}; rebuild with ttc-mcp-build --force", file=sys.stderr)
                 continue
             conn = sqlite3.connect(f"file:{p}?mode=ro&immutable=1", uri=True, check_same_thread=False)
             conn.row_factory = sqlite3.Row

@@ -18,7 +18,7 @@ from ttc_mcp import __version__
 from ttc_mcp.domain import geo
 from ttc_mcp.static import gtfs
 from ttc_mcp.static.aliases import SUFFIX, SUFFIX_RADIUS_M, build_aliases, normalize
-from ttc_mcp.static.schema import SCHEMA
+from ttc_mcp.static.schema import SCHEMA, SCHEMA_VERSION
 
 DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 BATCH = 50_000
@@ -81,9 +81,9 @@ def build_sqlite(merged_zip: Path, out_path: Path, surface_zip: Path | None = No
     _build_station_members(conn)
     _build_transfers(conn)
     conn.execute(
-        "INSERT INTO feed_info VALUES (?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO feed_info VALUES (?,?,?,?,?,?,?,?,?,?)",
         (info["feed_version"], info["feed_start_date"], info["feed_end_date"], info.get("feed_publisher_name"),
-         time.strftime("%Y-%m-%dT%H:%M:%S%z"), source_url, source_etag, surface_etag, __version__))
+         time.strftime("%Y-%m-%dT%H:%M:%S%z"), source_url, source_etag, surface_etag, __version__, SCHEMA_VERSION))
     conn.commit()
     conn.execute("VACUUM")
     conn.close()

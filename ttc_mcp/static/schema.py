@@ -1,7 +1,10 @@
+SCHEMA_VERSION = 2
+
 SCHEMA = """
 CREATE TABLE feed_info (
   feed_version TEXT NOT NULL, feed_start_date TEXT NOT NULL, feed_end_date TEXT NOT NULL, publisher TEXT,
-  built_at TEXT NOT NULL, source_url TEXT, source_etag TEXT, surface_etag TEXT, builder_version TEXT
+  built_at TEXT NOT NULL, source_url TEXT, source_etag TEXT, surface_etag TEXT, builder_version TEXT,
+  schema_version INTEGER NOT NULL
 );
 CREATE TABLE stops (
   stop_id TEXT PRIMARY KEY, stop_code TEXT, name TEXT NOT NULL, lat REAL, lon REAL,

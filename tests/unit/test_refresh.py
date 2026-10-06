@@ -1,4 +1,5 @@
 import datetime as dt
+import sqlite3
 
 import httpx
 
@@ -54,3 +55,21 @@ def test_changed_etag_rebuilds_and_force_rebuilds(tmp_path):
 def test_build_from_zips_adds_a_feed_without_network(tmp_path):
     rep = build_from_zips(tmp_path, MERGED, SURFACE, today=dt.date(2026, 10, 5))
     assert rep["changed"] and Manifest.load(tmp_path).feeds[0].feed_version == "S1000538"
+
+
+def test_store_built_with_an_older_schema_is_rebuilt_even_when_etags_match(tmp_path):
+    ensure_static(tmp_path, client(), today=dt.date(2026, 10, 5))
+    store = tmp_path / Manifest.load(tmp_path).feeds[0].path
+    db = sqlite3.connect(store)
+    db.execute("ALTER TABLE feed_info DROP COLUMN schema_version")
+    db.commit()
+    db.close()
+    calls = []
+    rep = ensure_static(tmp_path, client(calls=calls), today=dt.date(2026, 10, 5))
+    assert rep["changed"] is True and rep["reason"] == "schema changed"
+    assert any(c[0] == "GET" and c[1].endswith("merged.zip") for c in calls)
+    from ttc_mcp.static.store import schema_version
+
+    assert schema_version(store) == 2
+    rep = ensure_static(tmp_path, client(), today=dt.date(2026, 10, 5))
+    assert rep["changed"] is False and rep["reason"] == "etags unchanged"

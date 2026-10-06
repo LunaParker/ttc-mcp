@@ -78,3 +78,9 @@ def test_build_rejects_non_numeric_ids(tmp_path):
             zout.writestr(n, data)
     with pytest.raises(ValueError):
         build_sqlite(bad, tmp_path / "o.sqlite")
+
+
+def test_feed_info_records_the_schema_version(conn):
+    from ttc_mcp.static.schema import SCHEMA_VERSION
+
+    assert conn.execute("SELECT schema_version FROM feed_info").fetchone()[0] == SCHEMA_VERSION == 2

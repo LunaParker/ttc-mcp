@@ -63,3 +63,26 @@ def test_status_is_fresh_near_the_end_when_a_newer_feed_is_loaded(tmp_path, fixt
     st = store.status(dt.date(2026, 10, 30))
     assert st["verdict"] == "fresh" and st["newer_seen"] is True and st["active"] == "S1000542"
     store.close()
+
+
+def test_stores_with_another_schema_version_are_skipped(tmp_path, fixture_db):
+    import shutil
+    import sqlite3
+
+    from ttc_mcp.static.manifest import FeedEntry, Manifest
+    from ttc_mcp.static.store import StaticStore, schema_version
+
+    shutil.copy(fixture_db, tmp_path / "new.sqlite")
+    shutil.copy(fixture_db, tmp_path / "old.sqlite")
+    c = sqlite3.connect(tmp_path / "old.sqlite")
+    c.execute("ALTER TABLE feed_info DROP COLUMN schema_version")
+    c.commit()
+    c.close()
+    sqlite3.connect(tmp_path / "empty.sqlite").close()
+    Manifest([FeedEntry("S1", "20260906", "20261031", "new.sqlite", None, "u", "t"),
+              FeedEntry("S0", "20260801", "20260905", "old.sqlite", None, "u", "t"),
+              FeedEntry("SX", "20260101", "20260131", "empty.sqlite", None, "u", "t")]).save(tmp_path)
+    assert (schema_version(tmp_path / "new.sqlite"), schema_version(tmp_path / "old.sqlite"), schema_version(tmp_path / "empty.sqlite")) == (2, 1, 0)
+    store = StaticStore.from_manifest(tmp_path)
+    assert [f.version for f in store.feeds] == ["S1"]
+    store.close()
