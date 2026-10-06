@@ -5,12 +5,15 @@ import asyncio
 import datetime as dt
 
 from ttc_mcp.domain import arrivals as arr
+from ttc_mcp.domain.planner import HORIZON_MIN
 from ttc_mcp.realtime import Realtime, attempt
 
 SURFACE = "bustime getStopPredictions.jsp + gtfsrt/vehicles"
 NEXT_KEYS = ("eta_min", "vehicle_id", "crowding", "basis", "scheduled_at", "headsign")
-SCAN = 12  # rows read before the direction filter, so a two-way stop still yields three
+SCAN = 12  # live rows read before the direction filter, so a two-way stop still yields three
 NO_DIRECTION = "no real-time prediction in this direction right now; times are from the timetable"
+NONE_LATER = "no real-time prediction in this direction from depart_at on; times are from the timetable"
+NO_SCHEDULE = f"no scheduled departure in this direction within {HORIZON_MIN} minutes"
 
 
 async def arrivals_at(feed, rt: Realtime, row, *, route: str | None, limit: int, now: dt.datetime) -> tuple[list[dict], list, str, str | None]:
@@ -32,14 +35,20 @@ async def arrivals_at(feed, rt: Realtime, row, *, route: str | None, limit: int,
     return rows[:limit] if note else rows, hits, source, note
 
 
-async def next_for_leg(feed, rt: Realtime, leg: dict, *, now: dt.datetime, use_live: bool, n: int = 3) -> tuple[list[dict], list, str | None]:
-    """The next n departures of a ride leg's route in its direction (unknown directions kept): live when use_live, else the timetable."""
+async def next_for_leg(feed, rt: Realtime, leg: dict, *, now: dt.datetime, use_live: bool, clock: dt.datetime | None = None,
+                      n: int = 3) -> tuple[list[dict], list, str | None]:
+    """The next n departures of a ride leg's route in its direction (unknown directions kept) from now (depart_at): live when
+    use_live, dropping vehicles due (clock plus eta_min) before now, else the timetable in that direction within the horizon."""
     conn, sid = feed.conn, leg["board"]["number"]
     rows, hits, note = [], [], None
     if use_live:
         rows, hits, _, note = await arrivals_at(feed, rt, arr.stop_row(conn, sid), route=leg["route"], limit=SCAN, now=now)
-        rows = [r for r in rows if r["direction_id"] in (None, leg["direction_id"])]
-        note = note or (None if rows else NO_DIRECTION)
+        rows = [r for r in rows if r["basis"] == "realtime" and r["direction_id"] in (None, leg["direction_id"])]
+        lead = (now - (clock or now)).total_seconds() / 60
+        later = [r for r in rows if r["eta_min"] is None or r["eta_min"] >= lead]
+        note = note or (None if later else NONE_LATER if rows else NO_DIRECTION)
+        rows = later
     if not rows:
-        rows = [r for r in arr.schedule_rows(conn, sid, now, limit=SCAN, route=leg["route"]) if r["direction_id"] == leg["direction_id"]]
+        rows = arr.schedule_rows(conn, sid, now, limit=n, route=leg["route"], direction_id=leg["direction_id"], horizon_min=HORIZON_MIN)
+        note = note if rows else NO_SCHEDULE
     return [{k: r.get(k) for k in NEXT_KEYS} for r in rows[:n]], hits, note

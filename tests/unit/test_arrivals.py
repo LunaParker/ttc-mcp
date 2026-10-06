@@ -1,11 +1,14 @@
 import datetime as dt
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from tests.rtfeeds import make_vehicle_feed
 from ttc_mcp.adapters.bustime_rt import parse_vehicles
 from ttc_mcp.adapters.bustime_web import StopPredictions, parse_stop_predictions
 from ttc_mcp.adapters.ntas import NextTrains
-from ttc_mcp.domain import arrivals
+from ttc_mcp.domain import arrivals, live
 from ttc_mcp.static.schedule import TZ
 
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "bustime"
@@ -72,3 +75,13 @@ def test_fallback_note_names_the_cause():
     assert "unavailable (HTTP 403)" in arrivals.fallback_note(None, "HTTP 403")
     assert "Stop not found" in arrivals.fallback_note(StopPredictions("1", "", "Stop not found", []), None)
     assert arrivals.fallback_note(StopPredictions("1", "", None, []), None).startswith("no real-time prediction")
+
+
+@pytest.mark.anyio
+async def test_next_for_leg_reads_the_timetable_in_the_legs_direction(conn):
+    """At 06:10 the 504's westbound (direction 1) trips from 15461 leave at 07:48 and 08:04, behind a dozen eastbound ones."""
+    feed, leg = SimpleNamespace(conn=conn), {"board": {"number": "15461"}, "route": "504", "direction_id": "1"}
+    rows, hits, note = await live.next_for_leg(feed, None, leg, now=dt.datetime(2026, 10, 6, 6, 10, tzinfo=TZ), use_live=False)
+    assert [r["scheduled_at"][11:16] for r in rows] == ["07:48", "08:04"] and all(r["basis"] == "schedule" for r in rows) and note is None and hits == []
+    rows, _, note = await live.next_for_leg(feed, None, leg, now=dt.datetime(2026, 10, 6, 8, 10, tzinfo=TZ), use_live=False)
+    assert rows == [] and note == "no scheduled departure in this direction within 120 minutes"

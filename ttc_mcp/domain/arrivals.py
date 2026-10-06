@@ -67,11 +67,12 @@ def rail_rows(conn, stop_id: str, trains: list[NextTrains], *, route: str | None
     return rows
 
 
-def schedule_rows(conn, stop_id: str, now: dt.datetime, *, limit: int, route: str | None = None) -> list[dict]:
+def schedule_rows(conn, stop_id: str, now: dt.datetime, *, limit: int, route: str | None = None, direction_id: str | None = None,
+                  horizon_min: int | None = None) -> list[dict]:
     """Decision i: timetable rows carry basis schedule and never a vehicle or crowding."""
     return [{"route": d["route"], "direction_id": d["direction_id"], "headsign": d["headsign"], "eta_min": d["in_min"],
              "vehicle_id": None, "basis": "schedule", "scheduled_only": True, "scheduled_at": d["when"], "trip_id": d["trip_id"]}
-            for d in schedule.departures_at(conn, stop_id, now, limit=limit, route=route)]
+            for d in schedule.departures_at(conn, stop_id, now, limit=limit, route=route, direction_id=direction_id, horizon_min=horizon_min)]
 
 
 def fallback_note(preds: StopPredictions | None, error: str | None) -> str:

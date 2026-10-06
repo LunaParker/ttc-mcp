@@ -34,7 +34,7 @@ def gtfs_hhmm(secs: int) -> str:
 
 
 def departures_at(conn: sqlite3.Connection, stop_id: str, at: dt.datetime, *, limit: int = 10, route: str | None = None,
-                  pattern_id: int | None = None, horizon_min: int | None = None) -> list[dict]:
+                  pattern_id: int | None = None, direction_id: str | None = None, horizon_min: int | None = None) -> list[dict]:
     """Departures from `at`, soonest first; horizon_min keeps those leaving within that many whole minutes."""
     at = at.astimezone(TZ)
     out = []
@@ -49,10 +49,11 @@ def departures_at(conn: sqlite3.Connection, stop_id: str, at: dt.datetime, *, li
                f"WHERE d.stop_id=? AND d.dep_secs>=? AND t.service_id IN ({marks})"
                + (" AND d.dep_secs<=?" if horizon_min is not None else "")
                + (" AND t.route_id=?" if route else "") + (" AND t.pattern_id=?" if pattern_id is not None else "")
-               + " ORDER BY d.dep_secs LIMIT ?")
+               + (" AND t.direction_id=?" if direction_id is not None else "") + " ORDER BY d.dep_secs LIMIT ?")
         # The SQL bound is a minute loose (sub-second clocks); in_min below is exact.
         params = ([int(stop_id), since, *sids] + ([since + (horizon_min + 1) * 60] if horizon_min is not None else [])
-                  + ([route] if route else []) + ([pattern_id] if pattern_id is not None else []) + [limit])
+                  + ([route] if route else []) + ([pattern_id] if pattern_id is not None else [])
+                  + ([int(direction_id)] if direction_id is not None else []) + [limit])
         for r in conn.execute(sql, params):
             when = wall_clock(day, r["dep_secs"])
             if horizon_min is not None and (when - at).total_seconds() // 60 > horizon_min:
