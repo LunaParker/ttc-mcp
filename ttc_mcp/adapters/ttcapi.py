@@ -51,7 +51,7 @@ def parse_service_changes(body: bytes, headers: dict[str, str]) -> Parsed:
     return Parsed(out, None, len(out))
 
 
-ROUTE_DETAIL = "https://www.ttc.ca/ttcapi/routedetail/get?id={route}"
+ROUTE_DETAIL = "https://www.ttc.ca/ttcapi/routedetail/get"
 
 
 def _level(doc: dict) -> dict | None:
@@ -75,7 +75,7 @@ async def fetch_route_levels(client: httpx.AsyncClient, short_names: list[str], 
     async def one(short: str) -> None:
         async with sem:
             try:
-                r = await client.get(ROUTE_DETAIL.format(route=short))
+                r = await client.get(ROUTE_DETAIL, params={"id": short})
                 level = _level(r.json()) if r.status_code == 200 else None
             except Exception as e:
                 level = None

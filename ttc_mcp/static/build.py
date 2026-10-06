@@ -215,7 +215,8 @@ def _stream_stop_times(conn, z, trips: dict[str, dict], routes: dict[str, dict],
 
 
 def _dist_scale(last: float | None, length_m: float) -> float | None:
-    """Live-feed gap: subway and LRT distances come in kilometres, surface ones in metres; decide per shape against its length."""
+    """Live-feed gap: a shape's distances come in kilometres or metres (the unit follows the shape, not the mode), so decide
+    per shape against its length."""
     if not last or last <= 0 or length_m <= 0:
         return None
     for scale in (1.0, 1000.0):

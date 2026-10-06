@@ -38,7 +38,19 @@ async def test_fetch_route_levels_collects_known_routes_and_skips_failures():
     assert levels["504"] == {"name": "Regular service", "description": "Operates all day, every day, until 1 a.m.", "frequency": "Frequent",
                              "ten_minute": True, "map_url": LEVELS["504"]["mapUrl"], "route_type": 900}
     assert levels["300"]["ten_minute"] is False and levels["300"]["frequency"] is None and levels["300"]["map_url"] is None
-    assert ROUTE_DETAIL.format(route="504") == "https://www.ttc.ca/ttcapi/routedetail/get?id=504"
+    assert ROUTE_DETAIL == "https://www.ttc.ca/ttcapi/routedetail/get"
+
+
+@pytest.mark.anyio
+async def test_the_route_id_travels_as_a_query_parameter():
+    seen = []
+    def h(req):
+        seen.append((str(req.url), dict(req.url.params)))
+        return httpx.Response(404)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(h)) as c:
+        await fetch_route_levels(c, ["504", "a b&c"])
+    assert sorted(seen) == [("https://www.ttc.ca/ttcapi/routedetail/get?id=504", {"id": "504"}),
+                            ("https://www.ttc.ca/ttcapi/routedetail/get?id=a+b%26c", {"id": "a b&c"})]
 
 
 @pytest.mark.anyio

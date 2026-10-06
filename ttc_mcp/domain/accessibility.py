@@ -8,11 +8,11 @@ BOARDING = {0: "unknown", 1: "accessible", 2: "not accessible"}
 
 
 def resolve(conn, query: str):
+    """A station by id, code, name or alias, else a stop; an all-digit query tries the exact station and stop before any name."""
     q = query.strip()
-    row = station_row(conn, q) or station_by_name(conn, q)
-    if row is not None:
-        return row
-    return stop_row(conn, q)
+    if q.isdigit():
+        return station_row(conn, q) or stop_row(conn, q) or station_by_name(conn, q)
+    return station_row(conn, q) or station_by_name(conn, q) or stop_row(conn, q)
 
 
 def for_stop(conn, row) -> dict:

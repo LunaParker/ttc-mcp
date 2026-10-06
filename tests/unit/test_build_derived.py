@@ -63,6 +63,8 @@ def test_transfers_hold_both_directions_within_150_m(conn):
     assert conn.execute("SELECT dist_m FROM transfers WHERE stop_a='15461' AND stop_b='15460'").fetchone()[0] == 42
     assert conn.execute("SELECT MAX(dist_m) FROM transfers").fetchone()[0] <= 150
     assert conn.execute("SELECT COUNT(*) FROM transfers WHERE stop_a=stop_b").fetchone()[0] == 0
+    # Grid regression guard: a pair 121-150 m apart crosses a cell edge and must still be found.
+    assert conn.execute("SELECT dist_m FROM transfers WHERE stop_a='13855' AND stop_b='13857'").fetchone()[0] == 149
 
 
 def test_rail_distances_are_metres_and_start_at_zero(conn):

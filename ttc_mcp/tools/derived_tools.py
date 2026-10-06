@@ -75,7 +75,9 @@ def register(mcp: FastMCP) -> None:
     async def accessibility(query: str) -> dict:
         """Accessibility of a station (id, name or alias) or a stop: platform and entrance wheelchair flags, the station summary,
         elevator and escalator units with their levels and live status (alerts joined to pathway nodes by unit code; codes without
-        a node are reported with node_match false), uncoded node counts and a step-free verdict with its basis."""
+        a node are reported with node_match false), uncoded node counts and a step-free verdict with its basis. Outages announced
+        but not yet active are listed under upcoming and leave the units and the verdict alone. A platform or entrance id answers
+        for its station, with queried_platform or queried_entrance naming what was asked."""
         def run(f, snap):
             row = acc.resolve(f.conn, query)
             if row is None:

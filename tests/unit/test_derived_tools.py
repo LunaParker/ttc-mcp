@@ -16,7 +16,8 @@ TOOLS = {"route_shape", "accessibility", "connections"}
 @pytest.mark.anyio
 async def test_lists_the_derived_tools(app_env):
     async with Client(make_app([])) as c:
-        assert {t.name for t in await c.list_tools()} >= TOOLS
+        tools = {t.name: t for t in await c.list_tools()}
+    assert set(tools) >= TOOLS and "upcoming" in tools["accessibility"].description and "queried_entrance" in tools["accessibility"].description
 
 
 @pytest.mark.anyio

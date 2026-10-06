@@ -90,3 +90,9 @@ async def test_accessibility_names_the_queried_child_by_kind(app, monkeypatch):
         assert r["accessibility"]["station"]["id"] == "14587" and not {"queried_platform", "queried_entrance"} & r.keys()
         monkeypatch.setattr("ttc_mcp.tools.derived_tools.station_row", lambda conn, raw: None)
         assert (await c.call_tool("accessibility", {"query": "13812"})).data["error"] == "stop 13812 has no station record"
+
+
+def test_instructions_point_trip_questions_at_connections_and_name_the_derived_tools():
+    from ttc_mcp.server import INSTRUCTIONS
+
+    assert "connections" in INSTRUCTIONS and "route_shape" in INSTRUCTIONS and "accessibility" in INSTRUCTIONS and "trip" in INSTRUCTIONS

@@ -86,3 +86,32 @@ def test_stores_with_another_schema_version_are_skipped(tmp_path, fixture_db):
     store = StaticStore.from_manifest(tmp_path)
     assert [f.version for f in store.feeds] == ["S1"]
     store.close()
+
+
+def test_an_old_or_unreadable_schema_is_skipped_with_a_rebuild_hint(tmp_path, fixture_db, capsys, monkeypatch):
+    import sqlite3
+
+    import pytest
+
+    from ttc_mcp import runtime
+    from ttc_mcp.static.store import schema_version
+
+    cache = _cache(tmp_path, fixture_db, entry("S0", "20260906", "20261031", "old.sqlite"), entry("SX", "20260906", "20261031", "odd.sqlite"))
+    c = sqlite3.connect(cache / "old.sqlite")
+    c.execute("ALTER TABLE feed_info DROP COLUMN schema_version")
+    c.commit()
+    c.close()
+    c = sqlite3.connect(cache / "odd.sqlite")
+    c.execute("UPDATE feed_info SET schema_version='two'")
+    c.commit()
+    c.close()
+    assert schema_version(cache / "odd.sqlite") == 0
+    assert StaticStore.from_manifest(cache).feeds == []
+    err = capsys.readouterr().err
+    assert "[store] skipping old.sqlite: its schema 1 is old (this server reads 2); the next ttc-mcp-build (or ttc-mcp-build --from-zip for a local feed) rebuilds it" in err
+    assert "skipping odd.sqlite: its schema 0 is old" in err
+    monkeypatch.setenv("TTC_MCP_CACHE", str(cache))
+    runtime.reset()
+    with pytest.raises(runtime.StoreUnavailable, match="a store with an old schema is skipped"):
+        runtime.feed_for(dt.date(2026, 10, 6))
+    runtime.reset()

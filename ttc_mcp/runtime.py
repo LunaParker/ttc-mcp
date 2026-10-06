@@ -48,7 +48,7 @@ def get_store(cache_dir: Path | None = None) -> StaticStore:
 def feed_for(day: dt.date | None = None) -> FeedDb:
     feed = get_store().for_date(day or now().date())
     if feed is None:
-        raise StoreUnavailable("static store not built yet or no feed covers today; run ttc-mcp-build")
+        raise StoreUnavailable("static store not built yet, no feed covers today, or a store with an old schema is skipped; run ttc-mcp-build")
     return feed
 
 

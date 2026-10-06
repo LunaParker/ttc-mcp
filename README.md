@@ -22,7 +22,7 @@ uv run ttc-mcp-build                      # fetch both CKAN packages, build ~/.c
 TTC_MCP_SKIP_REFRESH=1 uv run python scripts/smoke_static.py   # nine live checks against the store
 TTC_MCP_SKIP_REFRESH=1 uv run python scripts/smoke_realtime.py # eight live checks against the TTC's real-time endpoints
 TTC_MCP_SKIP_REFRESH=1 uv run python scripts/smoke_advisories.py # ten live checks of the advisory tools and propagation
-TTC_MCP_SKIP_REFRESH=1 uv run python scripts/smoke_derived.py    # ten live checks of route_shape, accessibility, service levels and connections
+TTC_MCP_SKIP_REFRESH=1 uv run python scripts/smoke_derived.py    # eleven live checks of route_shape, accessibility, service levels and connections
 TTC_MCP_SKIP_REFRESH=1 uv run python scripts/validate_connections.py # twenty origin-destination pairs to compare with the TTC trip planner
 uv run pytest tests/integration -v           # boots the real server over HTTP against the live store and endpoints (needs network)
 uv run ttc-mcp --transport stdio          # MCP server over stdio (checks CKAN on startup unless --no-refresh)
@@ -36,6 +36,8 @@ Claude Code, in a project's `.mcp.json`:
 ```
 
 Environment: `TTC_MCP_CACHE` (default `~/.cache/ttc-mcp`), `TTC_MCP_UA` (User-Agent; the TTC's hosts reject Python's default), `TTC_MCP_SKIP_REFRESH=1` to skip the startup CKAN check. `ttc-mcp-build --no-ttcapi` skips the ttc.ca service-level fetch (one request per route at build time); `--from-zip`/`--surface-zip` build from local GTFS zips.
+
+Upgrading from phase 3 or earlier: a store built before phase 4 has an older schema and is skipped at load (stderr names it). Run `uv run ttc-mcp-build` once to rebuild it, or `ttc-mcp-build --from-zip` for a local feed.
 
 ## Layout
 
@@ -61,3 +63,6 @@ tests/              unit suite on tests/fixtures/gtfs-mini.zip (routes 1, 5, 121
 - Closures publish their nightly windows as `childAlerts`, whose ids are the GTFS-RT `NO_SERVICE` entities listing the closed platform ids. `active_now` and `suspended` come from those; the `REDUCED_SERVICE` umbrella spans whole days and is never read as "closed now".
 - `gtfsrt.ttc.ca/alerts/all` answers JSON unless `?format=binary`; `gtfsrt.ttc.ca/trips/detour` is JSON with no header timestamp (its signal is the HTTP `Date`).
 - BusTime's per-stop XML writes direction text with double spaces ("504A  King"); headsign matching collapses whitespace. The vehicle feed reports an explicit `EMPTY` on most vehicles, hence the low-confidence "Not busy".
+- Rail `shape_dist_traveled` is in kilometres with the first stop of each trip left blank (surface is in metres); the build picks the unit per shape against its measured length and starts every pattern at 0.
+- GTFS-RT `NO_SERVICE` entities list every platform of the affected stations, including other lines' platforms at interchanges (a Line 2 closure lists Line 1's St George and Spadina platforms), so a listing closes a platform only when the entity names no routes or one of the platform's own lines.
+- An active closure's `shuttleType` reads "Running" and a planned one "Will Operate"; any other value means no shuttle, and the planner then routes around the closed span or drops the trip.

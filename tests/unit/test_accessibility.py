@@ -69,3 +69,17 @@ def test_future_elevator_outage_is_upcoming_not_out_of_service(conn):
     period = [start.isoformat(timespec="minutes"), end.isoformat(timespec="minutes")]
     assert r["upcoming"] == [{"alert_id": "77513", "kind": "elevator", "code": "1Y1L", "period": period, "text": future.header}]
     assert r["step_free"] == {"verdict": "unknown", "basis": "uncoded nodes"}
+
+
+def test_a_digit_query_is_a_station_id_then_a_stop_before_any_name(conn, fixture_db, tmp_path):
+    import shutil
+    import sqlite3
+
+    assert acc.resolve(conn, "43274")["name"] == "Eglinton" and acc.resolve(conn, "407")["name"] == "Highway 407"
+    shutil.copy(fixture_db, tmp_path / "s.sqlite")
+    c = sqlite3.connect(tmp_path / "s.sqlite")
+    c.row_factory = sqlite3.Row
+    c.execute("INSERT INTO stops (stop_id, stop_code, name, lat, lon, location_type) VALUES ('99407', '407', 'Test St at 407 Stop', 43.7, -79.4, 0)")
+    row = acc.resolve(c, "407")
+    assert (row["stop_id"], row["location_type"]) == ("99407", 0) and acc.resolve(c, "Highway 407")["stop_id"] == "15208"
+    c.close()

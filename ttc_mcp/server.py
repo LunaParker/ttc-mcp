@@ -17,7 +17,10 @@ INSTRUCTIONS = (
     "Real-time answers (arrivals, next_trains, vehicles) are fetched when asked, cached for the feed's own interval, and fall back to the "
     "timetable with basis 'schedule' when a source has nothing. Disruptions travel with every answer: stop, station, nearest_stops, "
     "route_stops, arrivals and next_trains carry the closures, detours, reduced speed zones and elevator outages that touch them; call "
-    "service_status first for the network picture. Every answer carries meta (source, fetched_at, cache, static_feed, staleness)."
+    "service_status first for the network picture. For trip questions (how do I get from A to B) call connections with stop numbers, "
+    "station names or {lat, lon}: it plans direct and one-transfer rides around closures and detours. route_shape gives a route's "
+    "geometry; accessibility gives a station's step-free picture with elevator status. "
+    "Every answer carries meta (source, fetched_at, cache, static_feed, staleness)."
 )
 
 
