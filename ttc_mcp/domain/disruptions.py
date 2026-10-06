@@ -122,13 +122,20 @@ class Disruptions:
         els = [element(conn, a, now) for a in (alerts.alerts if alerts else [])] + detour_elements(groups)
         return cls(conn, els, platform_closures(rt, now.timestamp()))
 
-    def station_closed_now(self, sid: str) -> dict | None:
-        return next((el for el in self.by_station.get(sid, []) if el["type"] == "closure" and el["active_now"]), None)
+    def station_closed_now(self, sid: str, line: str | None = None) -> dict | None:
+        return next((el for el in self.by_station.get(sid, []) if el["type"] == "closure" and el["active_now"]
+                     and (line is None or line in el["routes"])), None)
 
     def platform_closed_now(self, row) -> dict | None:
-        if not rail_lines_at(self.conn, row["stop_id"]):
+        """Closed when the GTFS-RT entity lists the platform, or its station is closed now on one of the platform's own lines."""
+        lines = rail_lines_at(self.conn, row["stop_id"])
+        if not lines:
             return None
-        return self.platform_closed.get(row["stop_id"]) or (self.station_closed_now(row["parent_station"]) if row["parent_station"] else None)
+        if row["stop_id"] in self.platform_closed:
+            return self.platform_closed[row["stop_id"]]
+        if not row["parent_station"]:
+            return None
+        return next((el for line in lines if (el := self.station_closed_now(row["parent_station"], line))), None)
 
     def stop_skipped(self, number: str) -> dict | None:
         return next((el for el in self.by_stop.get(number, []) if el["source"] == "detour feed" and el["active_now"]), None)

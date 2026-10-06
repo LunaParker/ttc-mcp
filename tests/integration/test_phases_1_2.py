@@ -3,72 +3,23 @@
 Run: uv run pytest tests/integration -v   (needs ~/.cache/ttc-mcp from ttc-mcp-build and network access; not part of the unit suite)
 """
 import datetime as dt
-import os
-import socket
-import subprocess
-import sys
-import time
 
 import pytest
 from fastmcp import Client
+
+from tests.integration.live import call
 
 CHERRY_FRONT = {"lat": 43.6527, "lon": -79.3581}
 STATIC = {"find_stops", "nearest_stops", "stop", "station", "routes", "route_stops", "service_hours", "scheduled_departures"}
 REALTIME = {"arrivals", "next_trains", "vehicles", "feed_status"}
 
 
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-@pytest.fixture(scope="session")
-def server_url():
-    port = _free_port()
-    env = {**os.environ, "TTC_MCP_SKIP_REFRESH": "1"}
-    proc = subprocess.Popen([sys.executable, "-m", "ttc_mcp.server", "--transport", "http", "--host", "127.0.0.1", "--port", str(port)],
-                            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-    deadline = time.time() + 30
-    while time.time() < deadline:
-        if proc.poll() is not None:
-            raise RuntimeError(f"server exited early:\n{proc.stderr.read()}")
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
-                break
-        except OSError:
-            time.sleep(0.2)
-    else:
-        proc.kill()
-        raise RuntimeError("server did not open its port within 30 s")
-    yield f"http://127.0.0.1:{port}/mcp"
-    proc.terminate()
-    try:
-        proc.wait(5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-
-
-@pytest.fixture
-def anyio_backend():
-    return "asyncio"
-
-
-async def call(url: str, name: str, **args) -> dict:
-    async with Client(url) as c:
-        t = time.perf_counter()
-        r = (await c.call_tool(name, args)).data
-    r["_ms"] = round((time.perf_counter() - t) * 1000)
-    assert "error" not in r, (name, args, r.get("error"))
-    return r
-
-
 @pytest.mark.anyio
-async def test_server_lists_both_phases_tools_and_nothing_is_fetched_before_asked(server_url):
-    async with Client(server_url) as c:
+async def test_server_lists_both_phases_tools_and_nothing_is_fetched_before_asked(fresh_server_url):
+    async with Client(fresh_server_url) as c:
         names = {t.name for t in await c.list_tools()}
     assert names >= STATIC | REALTIME
-    fs = await call(server_url, "feed_status")
+    fs = await call(fresh_server_url, "feed_status")
     assert fs["static"]["verdict"] in ("fresh", "expiring") and fs["static"]["feed_version"].startswith("S")
     assert {s["verdict"] for s in fs["sources"]} == {"unused"}
 

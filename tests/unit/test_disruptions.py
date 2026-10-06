@@ -93,3 +93,11 @@ def test_service_status_summary(conn):
     assert (d504["effect"], d504["skipped_stops"], d504["reason"], d504["active_now"]) == ("Detour", 3, "504 King – Temporary route change due to track work", True)
     assert s["reduced_speed_zones"]["count"] == 1 and s["reduced_speed_zones"]["zones"][0]["stations"] == ["York Mills", "Sheppard-Yonge"]
     assert s["elevators_out"] == {"St George": ["1Y1L"]} and s["escalators_out"] == {"Coxwell": ["11D3E"]}
+
+
+def test_station_closure_only_closes_platforms_of_the_closed_line(conn):
+    night = build(conn, NOW_NIGHT)
+    assert night.route_stop_status(stop_row(conn, "13795")) == "closed"
+    assert night.route_stop_status(stop_row(conn, "16073")) == "closed"
+    assert night.route_stop_status(stop_row(conn, "16074")) == "open"
+    assert night.station_closed_now("43274", "5") is None and night.station_closed_now("43274", "1")["alert_id"] == "77519"
