@@ -7,7 +7,7 @@ from fastmcp import Client
 from ttc_mcp import runtime
 from ttc_mcp.static.manifest import FeedEntry, Manifest
 
-TOOLS = {"find_stops", "nearest_stops", "stop", "station", "routes", "route_stops", "service_hours", "scheduled_departures", "arrivals", "next_trains", "vehicles", "feed_status", "alerts", "service_status", "detours", "service_changes", "route_shape"}
+TOOLS = {"find_stops", "nearest_stops", "stop", "station", "routes", "route_stops", "service_hours", "scheduled_departures", "arrivals", "next_trains", "vehicles", "feed_status", "alerts", "service_status", "detours", "service_changes", "route_shape", "accessibility"}
 
 
 @pytest.fixture
