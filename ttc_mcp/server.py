@@ -10,7 +10,7 @@ from ttc_mcp import __version__
 from ttc_mcp.adapters.ckan import make_client
 from ttc_mcp.config import settings
 from ttc_mcp.static.refresh import ensure_static
-from ttc_mcp.tools import advisory_tools, realtime_tools, static_tools
+from ttc_mcp.tools import advisory_tools, derived_tools, realtime_tools, static_tools
 
 INSTRUCTIONS = (
     "TTC network data, fetched on demand. Public stop numbers identify stops and are directional. Stations resolve by name or alias. "
@@ -26,6 +26,7 @@ def create_app() -> FastMCP:
     static_tools.register(mcp)
     realtime_tools.register(mcp)
     advisory_tools.register(mcp)
+    derived_tools.register(mcp)
     return mcp
 
 
