@@ -129,7 +129,7 @@ def search(conn, origin: Endpoint, dest: Endpoint, *, now: dt.datetime, max_tran
             dest_by_pattern.setdefault(pid, []).append((pos, sid))
     for v in dest_by_pattern.values():
         v.sort()
-    metas, rows = {}, {}
+    metas, rows, near = {}, {}, {}
 
     def meta(pid):
         if pid not in metas:
@@ -141,9 +141,16 @@ def search(conn, origin: Endpoint, dest: Endpoint, *, now: dt.datetime, max_tran
             rows[pid] = pattern_rows(conn, pid)
         return rows[pid]
 
+    def nearby(sid):
+        if sid not in near:
+            near[sid] = transfer_stops(conn, sid)
+        return near[sid]
+
     def first_dest(pid, after):
         return next(((pos, sid) for pos, sid in dest_by_pattern.get(pid, []) if pos > after), None)
 
+    # A second ride on a pattern the rider could board at the origin is a pointless transfer.
+    direct_patterns = {pid for o in o_stops for pid, pos_o, _ in o_idx.get(o, []) if first_dest(pid, pos_o)}
     cands = []
     for o, walk_o in o_stops.items():
         for pid, pos_o, _ in o_idx.get(o, []):
@@ -156,15 +163,17 @@ def search(conn, origin: Endpoint, dest: Endpoint, *, now: dt.datetime, max_tran
             nbr: dict[str, tuple[str, int]] = {}
             for pos_x in range(pos_o + 1, len(r1)):
                 x = r1[pos_x][1]
-                for y, walk_xy in transfer_stops(conn, x).items():
+                if not usable(x):
+                    continue
+                for y, walk_xy in nearby(x).items():
                     if usable(y) and (y not in nbr or walk_xy < nbr[y][1]):
                         nbr[y] = (x, walk_xy)
             y_idx = patterns_at(conn, nbr)
             best: dict[tuple, dict] = {}
             for y, (x, walk_xy) in nbr.items():
-                pos_x = next(i for i, r in enumerate(r1) if r[1] == x)
+                pos_x = next(i for i in range(pos_o + 1, len(r1)) if r1[i][1] == x)
                 for qid, pos_y, _ in y_idx.get(y, []):
-                    if qid == pid or qid not in dest_by_pattern or meta(qid)["route"] == meta(pid)["route"]:
+                    if qid == pid or qid in direct_patterns or qid not in dest_by_pattern or meta(qid)["route"] == meta(pid)["route"]:
                         continue
                     hit = first_dest(qid, pos_y)
                     if not hit:
@@ -188,7 +197,7 @@ def search(conn, origin: Endpoint, dest: Endpoint, *, now: dt.datetime, max_tran
             if next_departure(conn, second["board"]["number"], second["pattern_id"], at) is None:
                 continue
         opt["first_departure"] = dep
-        key = tuple((l["route"], l["board"]["number"], l["alight"]["number"]) for l in opt["legs"] if l["mode"] == "ride")
+        key = tuple(l["route"] for l in opt["legs"] if l["mode"] == "ride")
         if key not in seen or opt["typical_min"] < seen[key]["typical_min"]:
             seen[key] = opt
     options = sorted(seen.values(), key=lambda o: (o["transfers"], o["typical_min"], o["stops"]))[:limit]

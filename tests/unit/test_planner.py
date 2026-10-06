@@ -59,20 +59,18 @@ def test_direct_and_one_transfer_options_from_cherry_front_to_union(conn):
     assert first["legs"][0] == {"mode": "walk", "to": {"number": "6604", "name": "Mill St at Trinity St"}, "distance_m": 239, "min": 4}
     assert first["typical_min"] == sum(l["min"] if "min" in l else l["typical_min"] for l in first["legs"]) and first["walk_m"] >= 239
     assert first["first_departure"]["route"] == "121" and 0 <= first["first_departure"]["in_min"] <= 120
-    # Four direct 121 boardings fill the default limit, so look for the transfer option in a wider list.
-    wide = planner.search(conn, planner.resolve_endpoint(conn, CHERRY_FRONT), planner.resolve_endpoint(conn, "Union"), now=NOW, limit=10)
-    xfer = next(o for o in wide if o["transfers"] == 1)
+    xfer = next(o for o in opts if o["transfers"] == 1)
+    assert xfer["rank"] == 2 and all(_rides(o)[1]["route"] != "121" for o in opts if o["transfers"] == 1)
     assert [r["route"] for r in _rides(xfer)] == ["504", "1"] and _rides(xfer)[1]["alight"]["number"] in {"13815", "13816"}
     assert _rides(xfer)[0]["alight"]["number"] in {"15637", "15638"} and _rides(xfer)[1]["transit"] == "subway"
     t = next(l for l in xfer["legs"] if l["mode"] == "transfer")
     assert t["min"] >= planner.TRANSFER_PENALTY_MIN and t["from"]["number"] in {"15637", "15638"} and t["to"]["number"] in {"13813", "13814"}
-    assert wide.index(xfer) > 0
 
 
 def test_limit_max_transfers_and_dedup(conn):
     direct = planner.search(conn, planner.resolve_endpoint(conn, CHERRY_FRONT), planner.resolve_endpoint(conn, "Union"), now=NOW, max_transfers=0, limit=2)
     assert 1 <= len(direct) <= 2 and all(o["transfers"] == 0 for o in direct)
-    keys = [tuple((r["route"], r["board"]["number"], r["alight"]["number"]) for r in _rides(o)) for o in planner.search(
+    keys = [tuple(r["route"] for r in _rides(o)) for o in planner.search(
         conn, planner.resolve_endpoint(conn, CHERRY_FRONT), planner.resolve_endpoint(conn, "Union"), now=NOW, limit=10)]
     assert len(keys) == len(set(keys))
 
@@ -92,3 +90,23 @@ def test_unusable_stops_are_skipped(conn):
     usable = lambda sid: sid != "15246"
     opts = planner.search(conn, planner.resolve_endpoint(conn, CHERRY_FRONT), planner.resolve_endpoint(conn, "Union"), now=NOW, usable=usable)
     assert all(_rides(o)[0]["board"]["number"] != "15246" for o in opts)
+    banned = {"15246", "15637"}
+    opts = planner.search(conn, planner.resolve_endpoint(conn, CHERRY_FRONT), planner.resolve_endpoint(conn, "Union"), now=NOW, limit=10,
+                          usable=lambda sid: sid not in banned)
+    touched = {l[k]["number"] for o in opts for l in o["legs"] for k in ("board", "alight", "from", "to") if k in l}
+    assert opts and not touched & banned
+
+
+def test_rides_move_forward_on_loop_patterns(conn, monkeypatch):
+    # Route 400 runs Mon, Wed and Thu; pattern 41 visits 15607 at pos 33 and 35, either side of 11641 at pos 34.
+    wed = dt.datetime(2026, 10, 7, 10, 0, tzinfo=TZ)
+    hop = planner.search(conn, planner.resolve_endpoint(conn, "11641"), planner.resolve_endpoint(conn, "15607"), now=wed)
+    assert _rides(hop[0])[0]["route"] == "400" and _rides(hop[0])[0]["stops"] == 1
+    # Pretend Line 1's 13835 platform is 50 m from 15607, so a transfer there must alight at pos 35, not the earlier visit.
+    real = planner.transfer_stops
+    monkeypatch.setattr(planner, "transfer_stops", lambda c, sid: {**real(c, sid), **({"13835": 50} if sid == "15607" else {})})
+    opts = planner.search(conn, planner.resolve_endpoint(conn, "11641"), planner.resolve_endpoint(conn, "Union"), now=wed, limit=10)
+    loop = [r for o in opts for r in _rides(o)[:1] if r["pattern_id"] == 41]
+    assert [(r["board_pos"], r["alight_pos"], r["alight"]["number"]) for r in loop] == [(34, 35, "15607")]
+    every = hop + opts + planner.search(conn, planner.resolve_endpoint(conn, CHERRY_FRONT), planner.resolve_endpoint(conn, "Union"), now=NOW, limit=10)
+    assert all(r["stops"] > 0 and r["alight_pos"] > r["board_pos"] for o in every for r in _rides(o))
