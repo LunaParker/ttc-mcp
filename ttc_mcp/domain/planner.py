@@ -241,7 +241,8 @@ def _split_rail_leg(conn, disr: Disruptions, leg: dict, rows: list, found: dict)
             continue
         station = disr.station_closed_now(row["parent_station"], leg["route"])
         # The TTC's RT entities also list other lines' platforms at interchanges; those stay open for this leg.
-        if station is None and el["source"] == "gtfsrt alerts" and leg["route"] not in el["routes"]:
+        # An entity naming no routes is still an explicit platform listing, so it closes every line.
+        if station is None and el["source"] == "gtfsrt alerts" and el["routes"] and leg["route"] not in el["routes"]:
             continue
         closed.append((i, station or el))
     if not closed:

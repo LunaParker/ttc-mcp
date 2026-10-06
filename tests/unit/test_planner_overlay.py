@@ -114,6 +114,15 @@ def test_a_line_5_ride_boarding_at_the_line_1_listed_platform_is_kept_whole(conn
     assert over and over[0]["legs"] == opts[0]["legs"] and "77538" not in {d.get("alert_id") for d in over[0]["disruptions"]}
 
 
+def test_an_rt_listing_without_routes_still_closes_the_platform_for_every_line(conn):
+    feed = rt()
+    unlabelled = dataclasses.replace(feed, alerts=[dataclasses.replace(a, routes=()) if a.id == "77538" else a for a in feed.alerts])
+    disr = Disruptions.build(conn, alerts(), unlabelled, groups(conn), NOW_NIGHT)
+    assert planner.overlay(conn, disr, trip(conn, "16073", "16077")) == []
+    over = planner.overlay(conn, disr, line5(conn))
+    assert over[0]["legs"] == line5(conn)[0]["legs"] and "77538" in {d.get("alert_id") for d in over[0]["disruptions"]}
+
+
 def test_a_line_1_listing_still_closes_line_1_platforms(conn):
     """With the closure on York Mills only, Lawrence is closed by the RT entity alone (routes include "1")."""
     legs = [l for l in planner.overlay(conn, closure_77519(conn, stop_ids=("7462",)), finch_union(conn, NOW_NIGHT))[0]["legs"] if l["mode"] != "walk"]
