@@ -88,3 +88,110 @@ def stop_names(conn, ids) -> dict[str, str]:
 def next_departure(conn, stop_id: str, pattern_id: int, at: dt.datetime) -> dict | None:
     deps = schedule.departures_at(conn, stop_id, at, limit=1, pattern_id=pattern_id)
     return deps[0] if deps and deps[0]["in_min"] <= HORIZON_MIN else None
+
+
+def _ride(conn, meta: dict, rows: list, a: int, b: int, names: dict) -> dict:
+    return {"mode": "ride", "route": meta["route"], "direction_id": meta["direction_id"], "headsign": meta["headsign"], "transit": meta["mode"],
+            "pattern_id": meta["pattern_id"], "board": {"number": rows[a][1], "name": names.get(rows[a][1])},
+            "alight": {"number": rows[b][1], "name": names.get(rows[b][1])}, "board_pos": a, "alight_pos": b,
+            "stops": b - a, "typical_min": round((rows[b][2] - rows[a][2]) / 60)}
+
+
+def _materialize(conn, cand: dict, metas: dict, rows: dict) -> dict:
+    o, walk_o = cand["origin"]
+    d, walk_d = cand["dest"]
+    ids = [o, d] + [rows[p][i][1] for p, a, b in cand["rides"] for i in (a, b)] + ([cand["transfer"][0], cand["transfer"][1]] if cand["transfer"] else [])
+    names = stop_names(conn, ids)
+    legs = []
+    if walk_o:
+        legs.append({"mode": "walk", "to": {"number": o, "name": names.get(o)}, "distance_m": walk_o, "min": walk_minutes(walk_o)})
+    for i, (pid, a, b) in enumerate(cand["rides"]):
+        if i == 1:
+            x, y, walk_xy = cand["transfer"]
+            legs.append({"mode": "transfer", "from": {"number": x, "name": names.get(x)}, "to": {"number": y, "name": names.get(y)},
+                         "distance_m": walk_xy, "min": walk_minutes(walk_xy) + TRANSFER_PENALTY_MIN})
+        legs.append(_ride(conn, metas[pid], rows[pid], a, b, names))
+    if walk_d:
+        legs.append({"mode": "walk", "from": {"number": d, "name": names.get(d)}, "distance_m": walk_d, "min": walk_minutes(walk_d)})
+    total = sum(l["min"] if "min" in l else l["typical_min"] for l in legs)
+    return {"transfers": len(cand["rides"]) - 1, "typical_min": total, "walk_m": walk_o + walk_d + (cand["transfer"][2] if cand["transfer"] else 0),
+            "stops": sum(b - a for _, a, b in cand["rides"]), "legs": legs}
+
+
+def search(conn, origin: Endpoint, dest: Endpoint, *, now: dt.datetime, max_transfers: int = 1, limit: int = 4, usable=lambda sid: True) -> list[dict]:
+    """Direct options, then one-transfer options through shared stops, stations and 150 m neighbours; scheduled departures gate them."""
+    o_stops = {s: w for s, w in origin.stops.items() if usable(s)}
+    d_stops = {s: w for s, w in dest.stops.items() if usable(s)}
+    o_idx = patterns_at(conn, o_stops)
+    dest_by_pattern: dict[int, list[tuple[int, str]]] = {}
+    for sid, hits in patterns_at(conn, d_stops).items():
+        for pid, pos, _ in hits:
+            dest_by_pattern.setdefault(pid, []).append((pos, sid))
+    for v in dest_by_pattern.values():
+        v.sort()
+    metas, rows = {}, {}
+
+    def meta(pid):
+        if pid not in metas:
+            metas[pid] = pattern_meta(conn, pid)
+        return metas[pid]
+
+    def prow(pid):
+        if pid not in rows:
+            rows[pid] = pattern_rows(conn, pid)
+        return rows[pid]
+
+    def first_dest(pid, after):
+        return next(((pos, sid) for pos, sid in dest_by_pattern.get(pid, []) if pos > after), None)
+
+    cands = []
+    for o, walk_o in o_stops.items():
+        for pid, pos_o, _ in o_idx.get(o, []):
+            hit = first_dest(pid, pos_o)
+            if hit:
+                cands.append({"origin": (o, walk_o), "rides": [(pid, pos_o, hit[0])], "transfer": None, "dest": (hit[1], d_stops[hit[1]])})
+            if max_transfers < 1:
+                continue
+            r1 = prow(pid)
+            nbr: dict[str, tuple[str, int]] = {}
+            for pos_x in range(pos_o + 1, len(r1)):
+                x = r1[pos_x][1]
+                for y, walk_xy in transfer_stops(conn, x).items():
+                    if usable(y) and (y not in nbr or walk_xy < nbr[y][1]):
+                        nbr[y] = (x, walk_xy)
+            y_idx = patterns_at(conn, nbr)
+            best: dict[tuple, dict] = {}
+            for y, (x, walk_xy) in nbr.items():
+                pos_x = next(i for i, r in enumerate(r1) if r[1] == x)
+                for qid, pos_y, _ in y_idx.get(y, []):
+                    if qid == pid or qid not in dest_by_pattern or meta(qid)["route"] == meta(pid)["route"]:
+                        continue
+                    hit = first_dest(qid, pos_y)
+                    if not hit:
+                        continue
+                    cand = {"origin": (o, walk_o), "rides": [(pid, pos_o, pos_x), (qid, pos_y, hit[0])], "transfer": (x, y, walk_xy), "dest": (hit[1], d_stops[hit[1]])}
+                    score = (r1[pos_x][2] - r1[pos_o][2]) + walk_xy * 60 / 80 + (prow(qid)[hit[0]][2] - prow(qid)[pos_y][2])
+                    key = (pid, qid)
+                    if key not in best or score < best[key][0]:
+                        best[key] = (score, cand)
+            cands.extend(c for _, c in best.values())
+    options, seen = [], {}
+    for cand in cands:
+        opt = _materialize(conn, cand, {p: meta(p) for p, _, _ in cand["rides"]}, {p: prow(p) for p, _, _ in cand["rides"]})
+        first = next(l for l in opt["legs"] if l["mode"] == "ride")
+        dep = next_departure(conn, first["board"]["number"], first["pattern_id"], now)
+        if dep is None:
+            continue
+        if opt["transfers"]:
+            second = [l for l in opt["legs"] if l["mode"] == "ride"][1]
+            at = now + dt.timedelta(minutes=dep["in_min"] + first["typical_min"] + next(l["min"] for l in opt["legs"] if l["mode"] == "transfer"))
+            if next_departure(conn, second["board"]["number"], second["pattern_id"], at) is None:
+                continue
+        opt["first_departure"] = dep
+        key = tuple((l["route"], l["board"]["number"], l["alight"]["number"]) for l in opt["legs"] if l["mode"] == "ride")
+        if key not in seen or opt["typical_min"] < seen[key]["typical_min"]:
+            seen[key] = opt
+    options = sorted(seen.values(), key=lambda o: (o["transfers"], o["typical_min"], o["stops"]))[:limit]
+    for i, o in enumerate(options, 1):
+        o["rank"] = i
+    return options
