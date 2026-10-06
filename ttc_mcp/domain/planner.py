@@ -252,8 +252,8 @@ def _closed_positions(conn, disr: Disruptions, pattern_id: int, route: str) -> l
 
 def _closure_verdict(conn, disr: Disruptions, pattern_id: int, route: str, mode: str, a: int, b: int, *,
                      closed: list | None = None) -> tuple[str, dict | None]:
-    """"ride" (no closure on the span, or one it runs through or turns back at, which annotates), "split" (ride, shuttle,
-    ride) or "drop" (no shuttle, or a bypassed board or alight station). closed: the pattern's _closed_positions, if known."""
+    """The span's verdict: ride (no closure, or one it runs through or turns back at, which annotates), split (ride, shuttle,
+    ride) or drop (no shuttle, or a bypassed board or alight station). closed: the pattern's _closed_positions, if known."""
     if mode not in RAIL:
         return "ride", None
     hits = [(pos, el) for pos, el in (_closed_positions(conn, disr, pattern_id, route) if closed is None else closed) if a <= pos <= b]
