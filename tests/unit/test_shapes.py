@@ -53,9 +53,19 @@ def test_between_errors_say_why(conn):
         shapes.route_shape(conn, "504", "0", pattern=2, between=("99999", "4569"))
     with pytest.raises(ValueError, match="not after"):
         shapes.route_shape(conn, "504", "0", pattern=2, between=("4569", "4569"))
-    with pytest.raises(ValueError, match="no shape distance"):
-        shapes.route_shape(conn, "1", "0", between=("14111", "13789"))
+    # The build zeroes a blank first-stop distance, so no fixture stop lacks one; exercise the branch directly.
+    with pytest.raises(ValueError, match="no shape distance for stop 14111"):
+        shapes._span([{"number": "14111", "dist_m": None}, {"number": "13789", "dist_m": 1520.0}], "14111", "13789", "the pattern")
 
 
 def test_unknown_route_or_pattern_is_none(conn):
     assert shapes.route_shape(conn, "999", "0") is None and shapes.route_shape(conn, "504", "0", pattern=99) is None
+
+
+def test_rail_stops_between_work_from_the_first_station(conn):
+    r = shapes.route_shape(conn, "1", "0")
+    first, third = r["stops"][0]["number"], r["stops"][2]["number"]
+    assert r["stops"][0]["dist_m"] == 0.0 and abs(r["stops"][-1]["dist_m"] - r["length_m"]) < 150
+    span = shapes.route_shape(conn, "1", "0", between=(first, third))
+    assert span is not None and [s["number"] for s in span["stops"]] == [first, r["stops"][1]["number"], third]
+    assert 1000 < span["between"]["length_m"] < 6000 and 2 < len(decode_polyline(span["polyline"])) < 633

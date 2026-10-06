@@ -63,3 +63,25 @@ def test_transfers_hold_both_directions_within_150_m(conn):
     assert conn.execute("SELECT dist_m FROM transfers WHERE stop_a='15461' AND stop_b='15460'").fetchone()[0] == 42
     assert conn.execute("SELECT MAX(dist_m) FROM transfers").fetchone()[0] <= 150
     assert conn.execute("SELECT COUNT(*) FROM transfers WHERE stop_a=stop_b").fetchone()[0] == 0
+
+
+def test_rail_distances_are_metres_and_start_at_zero(conn):
+    p = conn.execute("SELECT dists, shape_id FROM patterns WHERE pattern_id=54").fetchone()
+    dists = json.loads(p["dists"])
+    s = conn.execute("SELECT length_m, dists FROM shapes WHERE shape_id=?", (p["shape_id"],)).fetchone()
+    sd = array("f")
+    sd.frombytes(s["dists"])
+    assert dists[0] == 0.0 and abs(dists[1] - 1520) < 5 and abs(dists[-1] - s["length_m"]) < 150 and 38000 < s["length_m"] < 40000
+    assert abs(sd[-1] - s["length_m"]) < 150 and sd[0] == 0
+    rows = conn.execute("SELECT pos, dist_m FROM pattern_stops WHERE pattern_id=54 ORDER BY pos").fetchall()
+    assert rows[0]["dist_m"] == 0.0 and abs(rows[1]["dist_m"] - 1520) < 5
+    assert conn.execute("SELECT COUNT(*) FROM patterns WHERE json_extract(dists,'$[0]') IS NULL AND json_extract(dists,'$[1]') IS NOT NULL").fetchone()[0] == 0
+    six = json.loads(conn.execute("SELECT dists FROM patterns WHERE pattern_id=6").fetchone()[0])
+    assert six[0] == 0.0 and abs(six[1] - 623.66) < 1 and abs(six[-1] - 10411.23) < 1
+
+
+def test_dist_scale_rules():
+    from ttc_mcp.static.build import _dist_scale
+
+    assert _dist_scale(9510.19, 9510.2) == 1.0 and _dist_scale(38.98, 38896.7) == 1000.0
+    assert _dist_scale(None, 100) is None and _dist_scale(0, 100) is None and _dist_scale(50, 9510) is None

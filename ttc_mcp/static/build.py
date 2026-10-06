@@ -68,7 +68,8 @@ def build_sqlite(merged_zip: Path, out_path: Path, surface_zip: Path | None = No
         trips = {t["trip_id"]: t for t in gtfs.read_rows(z, "trips.txt")}
         _log(log, f"[build] {info['feed_version']}: {len(trips)} trips, {n_stops} stops; streaming stop_times ...")
         counts = _stream_stop_times(conn, z, trips, routes, service_levels or {})
-        counts["shapes"] = _load_shapes(conn, z) if gtfs.has(z, "shapes.txt") else 0
+        counts["shapes"], scales = _load_shapes(conn, z) if gtfs.has(z, "shapes.txt") else (0, {})
+        _normalize_pattern_dists(conn, scales)
         if gtfs.has(z, "pathways.txt"):
             _load_pathways(conn, z)
         if gtfs.has(z, "levels.txt"):
@@ -213,22 +214,53 @@ def _stream_stop_times(conn, z, trips: dict[str, dict], routes: dict[str, dict],
     return {"patterns": len(pattern_ids), "departures": state["deps"]}
 
 
-def _load_shapes(conn, z) -> int:
-    """Shapes as encoded polylines with a per-point distance array; shape_dist_traveled when the feed has it, else haversine."""
+def _dist_scale(last: float | None, length_m: float) -> float | None:
+    """Live-feed gap: subway and LRT distances come in kilometres, surface ones in metres; decide per shape against its length."""
+    if not last or last <= 0 or length_m <= 0:
+        return None
+    for scale in (1.0, 1000.0):
+        if abs(last * scale - length_m) / length_m <= 0.15:
+            return scale
+    return None
+
+
+def _load_shapes(conn, z) -> tuple[int, dict[str, float | None]]:
+    """Shapes as encoded polylines with a per-point distance array in metres: the feed's distances scaled per shape, else haversine.
+    Returns the shape count and the scale decided for each shape (None when the feed's distances were not usable)."""
     acc: dict[str, list] = defaultdict(list)
     for r in gtfs.read_rows(z, "shapes.txt"):
         acc[r["shape_id"]].append((int(r["shape_pt_sequence"]), float(r["shape_pt_lat"]), float(r["shape_pt_lon"]),
                                    float(r["shape_dist_traveled"]) if r.get("shape_dist_traveled") else None))
-    rows = []
+    rows, scales = [], {}
     for sid, pts in acc.items():
         pts.sort()
         coords = [(lat, lon) for _, lat, lon, _ in pts]
-        dists = [d for _, _, _, d in pts]
-        if any(d is None for d in dists):
-            dists = geo.cumulative_m(coords)
-        rows.append((sid, geo.encode_polyline(coords), round(geo.cumulative_m(coords)[-1], 1), len(coords), array("f", dists).tobytes()))
+        cum = geo.cumulative_m(coords)
+        length = round(cum[-1], 1)
+        feed = [d for _, _, _, d in pts]
+        scale = _dist_scale(feed[-1], length) if all(d is not None for d in feed) else None
+        dists = [d * scale for d in feed] if scale else cum
+        scales[sid] = scale
+        rows.append((sid, geo.encode_polyline(coords), length, len(coords), array("f", dists).tobytes()))
     conn.executemany("INSERT INTO shapes VALUES (?,?,?,?,?)", rows)
-    return len(rows)
+    return len(rows), scales
+
+
+def _normalize_pattern_dists(conn, scales: dict[str, float | None]):
+    """Patterns inherit their shape's unit scale; a pattern without one is read as kilometres when its last value is under 200."""
+    for pid, shape_id, raw in conn.execute("SELECT pattern_id, shape_id, dists FROM patterns").fetchall():
+        dists = json.loads(raw)
+        if not any(d is not None for d in dists):
+            continue
+        scale = scales.get(shape_id)
+        if scale is None:
+            last = next(d for d in reversed(dists) if d is not None)
+            scale = 1000.0 if last < 200 else 1.0
+        dists = [round(d * scale, 2) if d is not None else None for d in dists]
+        if dists[0] is None:
+            dists[0] = 0.0
+        conn.execute("UPDATE patterns SET dists=? WHERE pattern_id=?", (json.dumps(dists), pid))
+        conn.executemany("UPDATE pattern_stops SET dist_m=? WHERE pattern_id=? AND pos=?", [(d, pid, i) for i, d in enumerate(dists)])
 
 
 def _load_pathways(conn, z):
