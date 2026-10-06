@@ -17,7 +17,7 @@ CREATE INDEX stops_name ON stops(name COLLATE NOCASE);
 CREATE TABLE routes (
   route_id TEXT PRIMARY KEY, short_name TEXT NOT NULL, long_name TEXT, route_type INTEGER NOT NULL,
   color TEXT, text_color TEXT, series TEXT NOT NULL, mode TEXT NOT NULL, start_hist TEXT NOT NULL,
-  service_level_name TEXT, service_level_desc TEXT, frequency TEXT, ten_minute INTEGER
+  service_level_name TEXT, service_level_desc TEXT, frequency TEXT, ten_minute INTEGER, map_url TEXT
 );
 CREATE TABLE calendar (service_id TEXT PRIMARY KEY, days INTEGER NOT NULL, start_date TEXT NOT NULL, end_date TEXT NOT NULL);
 CREATE TABLE calendar_dates (service_id TEXT NOT NULL, date TEXT NOT NULL, exception_type INTEGER NOT NULL, PRIMARY KEY (service_id, date));

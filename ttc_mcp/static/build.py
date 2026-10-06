@@ -52,7 +52,7 @@ def _digits(value: str, what: str) -> int:
 
 
 def build_sqlite(merged_zip: Path, out_path: Path, surface_zip: Path | None = None, *, source_url: str = "",
-                 source_etag: str = "", surface_etag: str = "", log=None) -> FeedMeta:
+                 source_etag: str = "", surface_etag: str = "", log=None, service_levels: dict[str, dict] | None = None) -> FeedMeta:
     tmp = out_path.with_suffix(".tmp")
     tmp.unlink(missing_ok=True)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -67,7 +67,7 @@ def build_sqlite(merged_zip: Path, out_path: Path, surface_zip: Path | None = No
         _load_calendar(conn, z)
         trips = {t["trip_id"]: t for t in gtfs.read_rows(z, "trips.txt")}
         _log(log, f"[build] {info['feed_version']}: {len(trips)} trips, {n_stops} stops; streaming stop_times ...")
-        counts = _stream_stop_times(conn, z, trips, routes)
+        counts = _stream_stop_times(conn, z, trips, routes, service_levels or {})
         counts["shapes"] = _load_shapes(conn, z) if gtfs.has(z, "shapes.txt") else 0
         if gtfs.has(z, "pathways.txt"):
             _load_pathways(conn, z)
@@ -137,7 +137,7 @@ class _Pattern:
         self.dists = [array("f") for _ in range(n)]
 
 
-def _stream_stop_times(conn, z, trips: dict[str, dict], routes: dict[str, dict]) -> dict[str, int]:
+def _stream_stop_times(conn, z, trips: dict[str, dict], routes: dict[str, dict], levels: dict[str, dict]) -> dict[str, int]:
     pattern_ids: dict[tuple, int] = {}
     patterns: dict[int, _Pattern] = {}
     trip_rows, dep_batch, stop_routes = [], [], Counter()
@@ -203,10 +203,13 @@ def _stream_stop_times(conn, z, trips: dict[str, dict], routes: dict[str, dict])
         ps_rows.extend((pid, i, sid, run[i], dists[i]) for i, (seq, sid) in enumerate(stops))
     conn.executemany("INSERT INTO patterns VALUES (?,?,?,?,?,?,?,?,?,?)", prow)
     conn.executemany("INSERT INTO pattern_stops VALUES (?,?,?,?,?)", ps_rows)
-    conn.executemany("INSERT INTO routes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                     [(rid, r["route_short_name"], r.get("route_long_name"), r["route_type"], r.get("route_color"),
-                       r.get("route_text_color"), r["series"], r["mode"], json.dumps(r["hist"]), None, None, None, None)
-                      for rid, r in routes.items()])
+    route_rows = []
+    for rid, r in routes.items():
+        lv = levels.get(r["route_short_name"], {})
+        route_rows.append((rid, r["route_short_name"], r.get("route_long_name"), r["route_type"], r.get("route_color"),
+                           r.get("route_text_color"), r["series"], r["mode"], json.dumps(r["hist"]), lv.get("name"), lv.get("description"),
+                           lv.get("frequency"), (1 if lv.get("ten_minute") else 0) if lv else None, lv.get("map_url")))
+    conn.executemany("INSERT INTO routes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", route_rows)
     return {"patterns": len(pattern_ids), "departures": state["deps"]}
 
 

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import html
 import json
 import re
+import sys
 from dataclasses import dataclass
+
+import httpx
 
 from ttc_mcp.adapters.ttc_alerts import local_time
 from ttc_mcp.cache import Parsed
@@ -45,3 +49,35 @@ def parse_service_changes(body: bytes, headers: dict[str, str]) -> Parsed:
                                  local_time(c.get("effectiveStartDate")), local_time(c.get("effectiveEndDate")),
                                  html.unescape(c.get("contentText") or ""), c.get("url") or None, c.get("categoryName") or None))
     return Parsed(out, None, len(out))
+
+
+ROUTE_DETAIL = "https://www.ttc.ca/ttcapi/routedetail/get?id={route}"
+
+
+def _level(doc: dict) -> dict | None:
+    route = doc.get("route") if isinstance(doc, dict) else None
+    if not isinstance(route, dict):
+        return None
+    level = route.get("serviceLevel") or {}
+    return {"name": level.get("name") or None, "description": level.get("description") or None, "frequency": route.get("frequency") or None,
+            "ten_minute": bool(route.get("is10MinutesNetwork")), "map_url": route.get("mapUrl") or None, "route_type": route.get("routeType")}
+
+
+async def fetch_route_levels(client: httpx.AsyncClient, short_names: list[str], *, concurrency: int = 8, log=None) -> dict[str, dict]:
+    """One ttc.ca route-detail request per route; failures are logged and skipped so a build never depends on ttc.ca."""
+    sem = asyncio.Semaphore(concurrency)
+    out: dict[str, dict] = {}
+
+    async def one(short: str) -> None:
+        async with sem:
+            try:
+                r = await client.get(ROUTE_DETAIL.format(route=short))
+                level = _level(r.json()) if r.status_code == 200 else None
+            except (httpx.HTTPError, ValueError) as e:
+                level = None
+                (log or (lambda m: print(m, file=sys.stderr)))(f"[ttcapi] {short}: {type(e).__name__}: {e}")
+            if level and level["name"]:
+                out[short] = level
+
+    await asyncio.gather(*(one(s) for s in short_names))
+    return out

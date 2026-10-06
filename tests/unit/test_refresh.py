@@ -30,7 +30,7 @@ def client(etag_merged='"m1"', etag_surface='"s1"', calls=None):
 
 def test_first_run_downloads_builds_and_writes_manifest(tmp_path):
     calls = []
-    rep = ensure_static(tmp_path, client(calls=calls), today=dt.date(2026, 10, 5))
+    rep = ensure_static(tmp_path, client(calls=calls), today=dt.date(2026, 10, 5), ttcapi=False)
     assert rep["changed"] and rep["feed_version"] == "S1000538"
     m = Manifest.load(tmp_path)
     assert [f.feed_version for f in m.feeds] == ["S1000538"] and (tmp_path / m.feeds[0].path).exists()
@@ -39,17 +39,17 @@ def test_first_run_downloads_builds_and_writes_manifest(tmp_path):
 
 
 def test_second_run_with_same_etags_does_nothing(tmp_path):
-    ensure_static(tmp_path, client(), today=dt.date(2026, 10, 5))
+    ensure_static(tmp_path, client(), today=dt.date(2026, 10, 5), ttcapi=False)
     calls = []
-    rep = ensure_static(tmp_path, client(calls=calls), today=dt.date(2026, 10, 5))
+    rep = ensure_static(tmp_path, client(calls=calls), today=dt.date(2026, 10, 5), ttcapi=False)
     assert rep["changed"] is False and rep["reason"] == "etags unchanged"
     assert not any(c[0] == "GET" and c[1].endswith(".zip") for c in calls)
 
 
 def test_changed_etag_rebuilds_and_force_rebuilds(tmp_path):
-    ensure_static(tmp_path, client(), today=dt.date(2026, 10, 5))
-    assert ensure_static(tmp_path, client(etag_merged='"m2"'), today=dt.date(2026, 10, 5))["changed"] is True
-    assert ensure_static(tmp_path, client(etag_merged='"m2"'), today=dt.date(2026, 10, 5), force=True)["changed"] is True
+    ensure_static(tmp_path, client(), today=dt.date(2026, 10, 5), ttcapi=False)
+    assert ensure_static(tmp_path, client(etag_merged='"m2"'), today=dt.date(2026, 10, 5), ttcapi=False)["changed"] is True
+    assert ensure_static(tmp_path, client(etag_merged='"m2"'), today=dt.date(2026, 10, 5), force=True, ttcapi=False)["changed"] is True
 
 
 def test_build_from_zips_adds_a_feed_without_network(tmp_path):
@@ -58,18 +58,40 @@ def test_build_from_zips_adds_a_feed_without_network(tmp_path):
 
 
 def test_store_built_with_an_older_schema_is_rebuilt_even_when_etags_match(tmp_path):
-    ensure_static(tmp_path, client(), today=dt.date(2026, 10, 5))
+    ensure_static(tmp_path, client(), today=dt.date(2026, 10, 5), ttcapi=False)
     store = tmp_path / Manifest.load(tmp_path).feeds[0].path
     db = sqlite3.connect(store)
     db.execute("ALTER TABLE feed_info DROP COLUMN schema_version")
     db.commit()
     db.close()
     calls = []
-    rep = ensure_static(tmp_path, client(calls=calls), today=dt.date(2026, 10, 5))
+    rep = ensure_static(tmp_path, client(calls=calls), today=dt.date(2026, 10, 5), ttcapi=False)
     assert rep["changed"] is True and rep["reason"] == "schema changed"
     assert any(c[0] == "GET" and c[1].endswith("merged.zip") for c in calls)
     from ttc_mcp.static.store import schema_version
 
     assert schema_version(store) == 2
-    rep = ensure_static(tmp_path, client(), today=dt.date(2026, 10, 5))
+    rep = ensure_static(tmp_path, client(), today=dt.date(2026, 10, 5), ttcapi=False)
     assert rep["changed"] is False and rep["reason"] == "etags unchanged"
+
+
+def test_ensure_static_fetches_service_levels_with_the_sync_clients_user_agent(tmp_path, monkeypatch):
+    agents, msgs = [], []
+    level = {"serviceLevel": {"name": "Regular service", "description": "d"}, "is10MinutesNetwork": True, "frequency": "Frequent",
+             "routeType": 900, "mapUrl": "u"}
+
+    def fake_async_client(user_agent, timeout=10.0):
+        agents.append(user_agent)
+
+        def handler(req):
+            return httpx.Response(200, json={"route": level}) if req.url.params.get("id") == "504" else httpx.Response(404)
+
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler), headers={"User-Agent": user_agent})
+
+    monkeypatch.setattr("ttc_mcp.adapters.http.make_async_client", fake_async_client)
+    rep = ensure_static(tmp_path, client(), today=dt.date(2026, 10, 5), log=msgs.append)
+    db = sqlite3.connect(tmp_path / Manifest.load(tmp_path).feeds[0].path)
+    row = db.execute("SELECT service_level_name, ten_minute, map_url FROM routes WHERE short_name='504'").fetchone()
+    db.close()
+    assert rep["changed"] and agents == ["t/1"] and row == ("Regular service", 1, "u")
+    assert "[refresh] ttc.ca service levels: 1 of 6 routes" in msgs

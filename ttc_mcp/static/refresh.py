@@ -8,6 +8,7 @@ from pathlib import Path
 import httpx
 
 from ttc_mcp.adapters import ckan
+from ttc_mcp.config import settings
 from ttc_mcp.static.build import build_sqlite
 from ttc_mcp.static.manifest import FeedEntry, Manifest
 from ttc_mcp.static.schema import SCHEMA_VERSION
@@ -18,11 +19,31 @@ def _log(log, msg):
     (log or (lambda m: print(m, file=sys.stderr)))(msg)
 
 
+def _levels_for(merged_zip: Path, user_agent: str, log) -> dict[str, dict]:
+    import asyncio
+    import zipfile
+
+    from ttc_mcp.adapters.http import make_async_client
+    from ttc_mcp.adapters.ttcapi import fetch_route_levels
+    from ttc_mcp.static import gtfs
+
+    with zipfile.ZipFile(merged_zip) as z:
+        names = [r["route_short_name"] for r in gtfs.read_rows(z, "routes.txt")]
+
+    async def go():
+        async with make_async_client(user_agent, timeout=30) as client:
+            return await fetch_route_levels(client, names, log=log)
+
+    levels = asyncio.run(go())
+    _log(log, f"[refresh] ttc.ca service levels: {len(levels)} of {len(names)} routes")
+    return levels
+
+
 def _register(cache_dir: Path, manifest: Manifest, merged_zip: Path, surface_zip: Path | None, *,
-              url: str, etag: str | None, surface_etag: str | None, today: dt.date, log) -> dict:
+              url: str, etag: str | None, surface_etag: str | None, today: dt.date, log, service_levels: dict | None = None) -> dict:
     tmp_out = cache_dir / "static-building.sqlite"
     meta = build_sqlite(merged_zip, tmp_out, surface_zip, source_url=url, source_etag=etag or "",
-                        surface_etag=surface_etag or "", log=log)
+                        surface_etag=surface_etag or "", log=log, service_levels=service_levels)
     final = cache_dir / f"static-{meta.feed_version}.sqlite"
     tmp_out.replace(final)
     manifest.upsert(FeedEntry(meta.feed_version, meta.start, meta.end, final.name, etag, url,
@@ -34,7 +55,7 @@ def _register(cache_dir: Path, manifest: Manifest, merged_zip: Path, surface_zip
 
 
 def ensure_static(cache_dir: Path, client: httpx.Client, *, today: dt.date | None = None, force: bool = False,
-                  surface: bool = True, log=None) -> dict:
+                  surface: bool = True, log=None, ttcapi: bool = True) -> dict:
     cache_dir = Path(cache_dir)
     today = today or dt.date.today()
     manifest = Manifest.load(cache_dir)
@@ -59,15 +80,17 @@ def ensure_static(cache_dir: Path, client: httpx.Client, *, today: dt.date | Non
     if surf:
         _log(log, f"[refresh] downloading {surf.url} ({surf.size or '?'} bytes)")
         surface_zip, surf_etag = ckan.download(client, surf.url, dl / "surface.zip")
+    levels = _levels_for(merged_zip, str(client.headers.get("User-Agent", "")), log) if ttcapi else None
     rep = _register(cache_dir, manifest, merged_zip, surface_zip, url=merged.url, etag=merged_etag,
-                     surface_etag=surf_etag, today=today, log=log)
+                     surface_etag=surf_etag, today=today, log=log, service_levels=levels)
     rep["reason"] = reason or rep["reason"]
     return rep
 
 
 def build_from_zips(cache_dir: Path, merged_zip: Path, surface_zip: Path | None, *, today: dt.date | None = None,
-                    log=None) -> dict:
+                    log=None, ttcapi: bool = False) -> dict:
     cache_dir = Path(cache_dir)
+    levels = _levels_for(Path(merged_zip), settings().user_agent, log) if ttcapi else None
     return _register(cache_dir, Manifest.load(cache_dir), Path(merged_zip), Path(surface_zip) if surface_zip else None,
                      url=f"file://{Path(merged_zip).resolve()}", etag=None, surface_etag=None,
-                     today=today or dt.date.today(), log=log)
+                     today=today or dt.date.today(), log=log, service_levels=levels)

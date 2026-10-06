@@ -163,7 +163,7 @@ def list_routes(conn, *, series=None, overnight=None, mode=None) -> list[dict]:
         level = None
         if r["service_level_name"]:
             level = {"name": r["service_level_name"], "description": r["service_level_desc"], "frequency": r["frequency"],
-                     "ten_minute_network": bool(r["ten_minute"])}
+                     "ten_minute_network": bool(r["ten_minute"]), "map_url": r["map_url"]}
         out.append({"route": r["short_name"], "long_name": r["long_name"], "mode": r["mode"], "series": r["series"],
                     "overnight_share": share, "overnight": night, "service": _service_spans(conn, r["route_id"]), "service_level": level})
     return out
