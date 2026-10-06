@@ -6,11 +6,9 @@ from fastmcp import FastMCP
 
 from ttc_mcp import advisory, runtime
 from ttc_mcp.domain import arrivals as arr
-from ttc_mcp.domain import trains
+from ttc_mcp.domain import live, trains
 from ttc_mcp.domain import vehicles as veh
 from ttc_mcp.realtime import attempt as _try
-
-SURFACE = "bustime getStopPredictions.jsp + gtfsrt/vehicles"
 
 
 async def _aguard(fn):
@@ -44,20 +42,7 @@ def register(mcp: FastMCP) -> None:
                 return {"error": f"{stop} is a station, not a stop; use next_trains or a platform number"}, [], ""
             sid = row["stop_id"]
             head = {"stop": {"number": sid, "name": row["name"], "lat": row["lat"], "lon": row["lon"], "station": row["parent_station"] or None}}
-            if arr.rail_lines_at(conn, sid):
-                hit, err = await _try(rt.next_trains(sid))
-                hits = [hit] if hit else []
-                rows = arr.rail_rows(conn, sid, hit.parsed, route=route) if hit else []
-                source, preds = "ntas", None
-            else:
-                (hit, err), (vhit, _) = await asyncio.gather(_try(rt.stop_predictions(sid)), _try(rt.vehicles()))
-                hits = [h for h in (hit, vhit) if h]
-                rows = arr.surface_rows(conn, sid, hit.parsed, vhit.parsed if vhit else None, route=route) if hit else []
-                source, preds = SURFACE, hit.parsed if hit else None
-            note = None
-            if not rows:
-                rows = arr.schedule_rows(conn, sid, now, limit=limit, route=route)
-                note, source = arr.fallback_note(preds, err), source + " + static stop_times"
+            rows, hits, source, note = await live.arrivals_at(feed, rt, row, route=route, limit=limit, now=now)
             snap = await advisory.snapshot(feed)
             active = {g["route"] for g in snap.detours if g["active_today"]}
             vehicle_trip = {}

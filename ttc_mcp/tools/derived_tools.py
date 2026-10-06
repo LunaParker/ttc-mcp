@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import datetime as dt
 from typing import Literal
 
 from fastmcp import FastMCP
 
-from ttc_mcp.domain import accessibility as acc, shapes
-from ttc_mcp.domain.disruptions import station_row
+from ttc_mcp import advisory, runtime
+from ttc_mcp.domain import accessibility as acc, live, planner, shapes
+from ttc_mcp.domain.arrivals import stop_row
+from ttc_mcp.domain.disruptions import Disruptions, station_row
+from ttc_mcp.static.schedule import TZ
+from ttc_mcp.tools.realtime_tools import _aguard
 from ttc_mcp.tools.static_tools import _guard, _with_advisories
 
 
@@ -48,3 +53,43 @@ def register(mcp: FastMCP) -> None:
                 return out
             return {"accessibility": acc.for_stop(f.conn, row)}
         return await _with_advisories(run)
+
+    @mcp.tool
+    async def connections(origin: str | dict, destination: str | dict, max_transfers: int = 1, walk_m: int = 400,
+                          depart_at: str | None = None, limit: int = 4) -> dict:
+        """Trip options between two places on the TTC: direct and one-transfer rides over the scheduled stop patterns with typical
+        minutes, walking legs and a transfer penalty, ranked by transfers then time. origin and destination are a stop number, a
+        station id or alias, or {"lat", "lon"} from a geocoder. The first ride carries live next departures (basis realtime or
+        schedule); closures cut rail legs into ride, shuttle, ride; detour-skipped stops are never used; every option lists the
+        disruptions it touches. Typical minutes come from the timetable, not from live data."""
+        async def run(feed):
+            conn, rt = feed.conn, runtime.get_realtime()
+            now = dt.datetime.fromisoformat(depart_at) if depart_at else runtime.now()
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=TZ)
+            snap = await advisory.snapshot(feed)
+            o, d = planner.resolve_endpoint(conn, origin, walk_m=walk_m), planner.resolve_endpoint(conn, destination, walk_m=walk_m)
+            if o is None or d is None:
+                return {"error": f"could not resolve {'origin' if o is None else 'destination'}: give a stop number, station name or {{lat, lon}}"}, [], ""
+            if o.stops.keys() & d.stops.keys():
+                return {"from": o.label, "to": d.label, "depart_at": now.isoformat(timespec="minutes"), "options": [],
+                        "note": "origin and destination are within walking distance of the same stop; no ride is needed"}, [], ""
+            # The snapshot is evaluated at the clock; a given depart_at re-evaluates its alerts at that time.
+            disr = Disruptions.build(conn, snap.alerts, snap.rt, snap.detours, now) if depart_at else snap.disruptions
+            opts = planner.search(conn, o, d, now=now, max_transfers=max_transfers, limit=limit * 3,
+                                  usable=lambda sid: disr.stop_skipped(sid) is None)
+            opts = planner.overlay(conn, disr, opts)[:limit]
+            hits = []
+            for opt in opts:
+                first = next((l for l in opt["legs"] if l["mode"] == "ride"), None)
+                if first is None:
+                    continue
+                rows, h, _, _ = await live.arrivals_at(feed, rt, stop_row(conn, first["board"]["number"]), route=first["route"], limit=3, now=now)
+                hits += h
+                first["next"] = [{k: r.get(k) for k in ("eta_min", "vehicle_id", "crowding", "basis", "scheduled_at")} for r in rows[:3]]
+                opt["basis"] = rows[0]["basis"] if rows else "schedule"
+            for i, opt in enumerate(opts, 1):
+                opt["rank"] = i
+            return {"from": o.label, "to": d.label, "depart_at": now.isoformat(timespec="minutes"), "options": opts}, hits, \
+                "static patterns + bustime getStopPredictions.jsp + ntas", snap
+        return await _aguard(run)
