@@ -1,4 +1,4 @@
-import json
+import asyncio
 import sqlite3
 from pathlib import Path
 
@@ -39,6 +39,34 @@ async def test_fetch_route_levels_collects_known_routes_and_skips_failures():
                              "ten_minute": True, "map_url": LEVELS["504"]["mapUrl"], "route_type": 900}
     assert levels["300"]["ten_minute"] is False and levels["300"]["frequency"] is None and levels["300"]["map_url"] is None
     assert ROUTE_DETAIL.format(route="504") == "https://www.ttc.ca/ttcapi/routedetail/get?id=504"
+
+
+@pytest.mark.anyio
+async def test_a_malformed_level_or_any_exception_skips_only_that_route():
+    def h(req):
+        rid = req.url.params["id"]
+        if rid == "odd":
+            return httpx.Response(200, json={"route": {**LEVELS["504"], "serviceLevel": "Regular service"}})
+        if rid == "raise":
+            raise RuntimeError("socket closed by a proxy")
+        return handler(req)
+    logged = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(h)) as c:
+        levels = await fetch_route_levels(c, ["504", "odd", "raise", "300"], log=logged.append)
+    assert set(levels) == {"504", "300"} and levels["504"]["name"] == "Regular service"
+    assert [m for m in logged if "raise" in m] == ["[ttcapi] raise: RuntimeError: socket closed by a proxy"]
+
+
+@pytest.mark.anyio
+async def test_an_unanswered_request_returns_the_levels_fetched_before_the_deadline():
+    async def h(req):
+        if req.url.params["id"] == "300":
+            await asyncio.sleep(30)
+        return handler(req)
+    logged = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(h)) as c:
+        levels = await asyncio.wait_for(fetch_route_levels(c, ["504", "300"], deadline=0.2, log=logged.append), 5)
+    assert set(levels) == {"504"} and any("1 of 2 routes" in m for m in logged)
 
 
 def test_build_writes_service_levels_into_routes(tmp_path):

@@ -31,7 +31,7 @@ def _levels_for(merged_zip: Path, user_agent: str, log) -> dict[str, dict]:
         names = [r["route_short_name"] for r in gtfs.read_rows(z, "routes.txt")]
 
     async def go():
-        async with make_async_client(user_agent, timeout=30) as client:
+        async with make_async_client(user_agent, timeout=10) as client:
             return await fetch_route_levels(client, names, log=log)
 
     levels = asyncio.run(go())

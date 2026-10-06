@@ -58,26 +58,34 @@ def _level(doc: dict) -> dict | None:
     route = doc.get("route") if isinstance(doc, dict) else None
     if not isinstance(route, dict):
         return None
-    level = route.get("serviceLevel") or {}
+    level = route.get("serviceLevel")
+    level = level if isinstance(level, dict) else {}
     return {"name": level.get("name") or None, "description": level.get("description") or None, "frequency": route.get("frequency") or None,
             "ten_minute": bool(route.get("is10MinutesNetwork")), "map_url": route.get("mapUrl") or None, "route_type": route.get("routeType")}
 
 
-async def fetch_route_levels(client: httpx.AsyncClient, short_names: list[str], *, concurrency: int = 8, log=None) -> dict[str, dict]:
-    """One ttc.ca route-detail request per route; failures are logged and skipped so a build never depends on ttc.ca."""
+async def fetch_route_levels(client: httpx.AsyncClient, short_names: list[str], *, concurrency: int = 8, deadline: float = 60,
+                             log=None) -> dict[str, dict]:
+    """One ttc.ca route-detail request per route; failures are logged and skipped, and one overall deadline returns what
+    arrived in time, so a build never depends on ttc.ca."""
     sem = asyncio.Semaphore(concurrency)
     out: dict[str, dict] = {}
+    say = log or (lambda m: print(m, file=sys.stderr))
 
     async def one(short: str) -> None:
         async with sem:
             try:
                 r = await client.get(ROUTE_DETAIL.format(route=short))
                 level = _level(r.json()) if r.status_code == 200 else None
-            except (httpx.HTTPError, ValueError) as e:
+            except Exception as e:
                 level = None
-                (log or (lambda m: print(m, file=sys.stderr)))(f"[ttcapi] {short}: {type(e).__name__}: {e}")
+                say(f"[ttcapi] {short}: {type(e).__name__}: {e}")
             if level and level["name"]:
                 out[short] = level
 
-    await asyncio.gather(*(one(s) for s in short_names))
+    try:
+        async with asyncio.timeout(deadline):
+            await asyncio.gather(*(one(s) for s in short_names))
+    except TimeoutError:
+        say(f"[ttcapi] deadline of {deadline:g} s reached; {len(out)} of {len(short_names)} routes fetched")
     return out
