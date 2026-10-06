@@ -29,3 +29,37 @@ def test_pattern_stops_index_mirrors_patterns(conn):
     hits = conn.execute("SELECT pattern_id, pos FROM pattern_stops WHERE stop_id='15461' ORDER BY pattern_id").fetchall()
     assert {r["pattern_id"] for r in hits} == {6, 9, 22}
     assert conn.execute("SELECT COUNT(*) FROM pattern_stops").fetchone()[0] == conn.execute("SELECT SUM(json_array_length(stops)) FROM patterns").fetchone()[0]
+
+
+def test_pathways_and_levels_are_loaded(conn):
+    assert conn.execute("SELECT COUNT(*) FROM pathways").fetchone()[0] == 2682 and conn.execute("SELECT COUNT(*) FROM levels").fetchone()[0] == 160
+    p = conn.execute("SELECT * FROM pathways WHERE pathway_id='201241'").fetchone()
+    assert (p["from_stop"], p["to_stop"], p["mode"], p["bidirectional"], p["traversal_s"]) == ("101300", "101277", 5, 1, 20)
+    assert conn.execute("SELECT name, level_index FROM levels WHERE level_id='300159'").fetchone()[:2] == ("Concourse Level", -1.0)
+
+
+def test_units_are_parsed_from_node_names(conn):
+    q = conn.execute("SELECT node_id, kind, code, level_name, level_index FROM units WHERE station_id='14587' AND code='9Y1L' ORDER BY node_id").fetchall()
+    assert [(r["node_id"], r["kind"], r["level_name"]) for r in q] == [("101277", "elevator", "Concourse Level"), ("101300", "elevator", "Platform Level"), ("101303", "elevator", "Upper Platform Level")]
+    assert q[0]["level_index"] == -1.0
+    assert conn.execute("SELECT COUNT(*) FROM units WHERE station_id='14572' AND kind='elevator' AND code IS NOT NULL").fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) FROM units WHERE station_id='14572' AND kind='elevator' AND code IS NULL").fetchone()[0] >= 3
+    assert conn.execute("SELECT COUNT(*) FROM units WHERE code IS NOT NULL").fetchone()[0] == 862 and conn.execute("SELECT COUNT(*) FROM units").fetchone()[0] == 1476
+    assert {r[0] for r in conn.execute("SELECT DISTINCT kind FROM units")} <= {"elevator", "escalator", "stair", "other"}
+
+
+def test_station_members_cover_parent_suffix_and_nearby_stops(conn):
+    rows = {r["stop_id"]: (r["how"], r["dist_m"]) for r in conn.execute("SELECT * FROM station_members WHERE station_id='15772'")}
+    assert rows["13815"] == ("parent", 0) and rows["10935"] == ("parent", 0)
+    assert rows["16754"][0] == "suffix" and rows["246"][0] == "suffix" and 0 < rows["16754"][1] <= 300
+    assert all(h in ("parent", "suffix", "near") and (h == "parent") == (d == 0) for h, d in rows.values())
+    king = {r["stop_id"]: r["how"] for r in conn.execute("SELECT * FROM station_members WHERE station_id='14586'")}
+    assert king["13813"] == "parent" and king["15637"] == "suffix" and king["15638"] == "suffix"
+    assert conn.execute("SELECT COUNT(*) FROM station_members WHERE how='near'").fetchone()[0] > 0
+
+
+def test_transfers_hold_both_directions_within_150_m(conn):
+    assert conn.execute("SELECT dist_m FROM transfers WHERE stop_a='15460' AND stop_b='15461'").fetchone()[0] == 42
+    assert conn.execute("SELECT dist_m FROM transfers WHERE stop_a='15461' AND stop_b='15460'").fetchone()[0] == 42
+    assert conn.execute("SELECT MAX(dist_m) FROM transfers").fetchone()[0] <= 150
+    assert conn.execute("SELECT COUNT(*) FROM transfers WHERE stop_a=stop_b").fetchone()[0] == 0

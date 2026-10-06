@@ -51,4 +51,16 @@ CREATE TABLE pattern_stops (
   PRIMARY KEY (pattern_id, pos)
 ) WITHOUT ROWID;
 CREATE INDEX pattern_stops_stop ON pattern_stops(stop_id);
+CREATE TABLE pathways (
+  pathway_id TEXT PRIMARY KEY, from_stop TEXT NOT NULL, to_stop TEXT NOT NULL, mode INTEGER NOT NULL, bidirectional INTEGER NOT NULL,
+  length_m REAL, traversal_s INTEGER, stair_count INTEGER
+);
+CREATE INDEX pathways_from ON pathways(from_stop);
+CREATE INDEX pathways_to ON pathways(to_stop);
+CREATE TABLE levels (level_id TEXT PRIMARY KEY, level_index REAL, name TEXT);
+CREATE TABLE units (node_id TEXT PRIMARY KEY, station_id TEXT, kind TEXT NOT NULL, code TEXT, level_name TEXT, level_index REAL);
+CREATE INDEX units_station ON units(station_id);
+CREATE TABLE station_members (station_id TEXT NOT NULL, stop_id TEXT NOT NULL, how TEXT NOT NULL, dist_m INTEGER NOT NULL, PRIMARY KEY (station_id, stop_id));
+CREATE INDEX station_members_stop ON station_members(stop_id);
+CREATE TABLE transfers (stop_a TEXT NOT NULL, stop_b TEXT NOT NULL, dist_m INTEGER NOT NULL, PRIMARY KEY (stop_a, stop_b));
 """

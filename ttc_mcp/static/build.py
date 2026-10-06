@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import math
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -15,11 +17,14 @@ from statistics import median
 from ttc_mcp import __version__
 from ttc_mcp.domain import geo
 from ttc_mcp.static import gtfs
-from ttc_mcp.static.aliases import build_aliases
+from ttc_mcp.static.aliases import SUFFIX, SUFFIX_RADIUS_M, build_aliases, normalize
 from ttc_mcp.static.schema import SCHEMA
 
 DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 BATCH = 50_000
+UNIT_NAME = re.compile(r"^(Elevator|Escalator|Stairs?)[ _-]+(?:([0-9]{1,2}[A-Z][0-9]{1,2}[A-Z])[ _-]+)?(.+)$")
+TRANSFER_M = 150
+NEAR_STATION_M = 150
 
 
 @dataclass(frozen=True)
@@ -64,10 +69,17 @@ def build_sqlite(merged_zip: Path, out_path: Path, surface_zip: Path | None = No
         _log(log, f"[build] {info['feed_version']}: {len(trips)} trips, {n_stops} stops; streaming stop_times ...")
         counts = _stream_stop_times(conn, z, trips, routes)
         counts["shapes"] = _load_shapes(conn, z) if gtfs.has(z, "shapes.txt") else 0
+        if gtfs.has(z, "pathways.txt"):
+            _load_pathways(conn, z)
+        if gtfs.has(z, "levels.txt"):
+            _load_levels(conn, z)
     if surface_zip is not None:
         _load_crosswalk(conn, surface_zip)
     _attach_orphan_platforms(conn)
     build_aliases(conn)
+    _build_units(conn)
+    _build_station_members(conn)
+    _build_transfers(conn)
     conn.execute(
         "INSERT INTO feed_info VALUES (?,?,?,?,?,?,?,?,?)",
         (info["feed_version"], info["feed_start_date"], info["feed_end_date"], info.get("feed_publisher_name"),
@@ -216,6 +228,19 @@ def _load_shapes(conn, z) -> int:
     return len(rows)
 
 
+def _load_pathways(conn, z):
+    rows = [(p["pathway_id"], p["from_stop_id"], p["to_stop_id"], int(p["pathway_mode"] or 0), int(p.get("is_bidirectional") or 0),
+             float(p["length"]) if p.get("length") else None, int(float(p["traversal_time"])) if p.get("traversal_time") else None,
+             int(p["stair_count"]) if p.get("stair_count") else None) for p in gtfs.read_rows(z, "pathways.txt")]
+    conn.executemany("INSERT OR REPLACE INTO pathways VALUES (?,?,?,?,?,?,?,?)", rows)
+
+
+def _load_levels(conn, z):
+    conn.executemany("INSERT OR REPLACE INTO levels VALUES (?,?,?)",
+                     [(lv["level_id"], float(lv["level_index"]) if lv.get("level_index") else None, lv.get("level_name"))
+                      for lv in gtfs.read_rows(z, "levels.txt")])
+
+
 def _load_crosswalk(conn, surface_zip: Path):
     with zipfile.ZipFile(surface_zip) as z:
         conn.executemany("INSERT OR REPLACE INTO crosswalk VALUES (?,?)",
@@ -230,3 +255,69 @@ def _attach_orphan_platforms(conn):
         hits = conn.execute("SELECT stop_id FROM stops WHERE location_type=1 AND name=?", (name.split(" Station - ")[0],)).fetchall()
         if len(hits) == 1:
             conn.execute("UPDATE stops SET parent_station=? WHERE stop_id=?", (hits[0][0], sid))
+
+
+def _build_units(conn):
+    """Pathway nodes named Elevator_{code}_{level} (and Escalator_, Stairs_) become units; nodes without a code keep code NULL."""
+    levels = {r[0]: (r[1], r[2]) for r in conn.execute("SELECT level_id, level_index, name FROM levels")}
+    rows = []
+    for node_id, name, parent, level_id in conn.execute("SELECT stop_id, name, parent_station, level_id FROM stops WHERE location_type=3"):
+        m = UNIT_NAME.match(name or "")
+        kind = {"Elevator": "elevator", "Escalator": "escalator", "Stair": "stair", "Stairs": "stair"}.get(m.group(1), "other") if m else "other"
+        code, level_name = (m.group(2), m.group(3).strip()) if m else (None, None)
+        idx, lname = levels.get(level_id, (None, None))
+        rows.append((node_id, parent, kind, code, level_name or lname, idx))
+    conn.executemany("INSERT INTO units VALUES (?,?,?,?,?,?)", rows)
+
+
+def _build_station_members(conn):
+    """A station's stops: its children, surface stops whose '- X Station' suffix names it, and stops within 150 m of its record."""
+    stations = conn.execute("SELECT stop_id, lat, lon FROM stops WHERE location_type=1").fetchall()
+    by_id = {sid: (lat, lon) for sid, lat, lon in stations}
+    rows: dict[tuple[str, str], tuple[str, int]] = {}
+    for sid, _, _ in stations:
+        for (cid,) in conn.execute("SELECT stop_id FROM stops WHERE parent_station=? AND location_type=0", (sid,)):
+            rows[(sid, cid)] = ("parent", 0)
+    aliased = {r[0]: r[1] for r in conn.execute("SELECT alias, station_id FROM station_aliases WHERE source='suffix' AND external IS NULL")}
+    for sid, name, lat, lon in conn.execute("SELECT stop_id, name, lat, lon FROM stops WHERE location_type=0 "
+                                            "AND (parent_station IS NULL OR parent_station='') AND name LIKE '% - % Station%'"):
+        m = SUFFIX.search(name)
+        station_id = aliased.get(normalize(m.group(1))) if m else None
+        st = by_id.get(station_id)
+        if st is not None and lat is not None and st[0] is not None:
+            d = round(geo.haversine_m(lat, lon, st[0], st[1]))
+            if d <= SUFFIX_RADIUS_M:
+                rows.setdefault((station_id, sid), ("suffix", d))
+    for sid, lat, lon in stations:
+        if lat is None:
+            continue
+        lo, hi, wlo, whi = geo.bbox(lat, lon, NEAR_STATION_M)
+        for cid, clat, clon in conn.execute("SELECT stop_id, lat, lon FROM stops WHERE location_type=0 AND (parent_station IS NULL OR parent_station='') "
+                                            "AND lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?", (lo, hi, wlo, whi)):
+            d = round(geo.haversine_m(clat, clon, lat, lon))
+            if d <= NEAR_STATION_M:
+                rows.setdefault((sid, cid), ("near", d))
+    conn.executemany("INSERT INTO station_members VALUES (?,?,?,?)", [(st, sid, how, d) for (st, sid), (how, d) in rows.items()])
+
+
+def _build_transfers(conn):
+    """Every pair of boarding stops within 150 m, stored in both directions, via a coarse grid."""
+    stops = conn.execute("SELECT stop_id, lat, lon FROM stops WHERE location_type=0 AND lat IS NOT NULL").fetchall()
+    if not stops:
+        return
+    # Cells span at least TRANSFER_M on both axes, so every partner sits in the stop's own or an adjacent cell.
+    cell_lat = TRANSFER_M / 111320
+    cell_lon = TRANSFER_M / (111320 * math.cos(math.radians(max(abs(lat) for _, lat, _ in stops))))
+    grid: dict[tuple[int, int], list] = defaultdict(list)
+    for sid, lat, lon in stops:
+        grid[(math.floor(lat / cell_lat), math.floor(lon / cell_lon))].append((sid, lat, lon))
+    rows = []
+    for (gx, gy), items in grid.items():
+        neigh = [s for dx in (-1, 0, 1) for dy in (-1, 0, 1) for s in grid.get((gx + dx, gy + dy), [])]
+        for sid, lat, lon in items:
+            for sid2, lat2, lon2 in neigh:
+                if sid2 != sid:
+                    d = geo.haversine_m(lat, lon, lat2, lon2)
+                    if d <= TRANSFER_M:
+                        rows.append((sid, sid2, round(d)))
+    conn.executemany("INSERT OR REPLACE INTO transfers VALUES (?,?,?)", rows)
