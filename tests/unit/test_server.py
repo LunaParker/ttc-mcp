@@ -77,3 +77,16 @@ async def test_route_shape_span_errors_name_the_reason(app):
         assert "not after" in r["error"] and r["meta"]["static_feed"] == "S1000538"
         r = (await c.call_tool("route_shape", {"route": "504", "direction": "0", "pattern": 2, "from_stop": "4569", "to_stop": "0"})).data
         assert "stop 0 is not on" in r["error"]
+
+
+@pytest.mark.anyio
+async def test_accessibility_names_the_queried_child_by_kind(app, monkeypatch):
+    async with Client(app) as c:
+        r = (await c.call_tool("accessibility", {"query": "13812"})).data
+        assert r["accessibility"]["station"]["id"] == "14587" and r["queried_platform"] == "13812" and "queried_entrance" not in r
+        r = (await c.call_tool("accessibility", {"query": "101264"})).data
+        assert r["accessibility"]["station"]["id"] == "14587" and r["queried_entrance"] == "101264" and "queried_platform" not in r
+        r = (await c.call_tool("accessibility", {"query": "101303"})).data
+        assert r["accessibility"]["station"]["id"] == "14587" and not {"queried_platform", "queried_entrance"} & r.keys()
+        monkeypatch.setattr("ttc_mcp.tools.derived_tools.station_row", lambda conn, raw: None)
+        assert (await c.call_tool("accessibility", {"query": "13812"})).data["error"] == "stop 13812 has no station record"

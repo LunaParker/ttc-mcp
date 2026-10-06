@@ -20,7 +20,8 @@ def for_stop(conn, row) -> dict:
 
 
 def for_station(conn, station, disr: Disruptions) -> dict:
-    """Decision b summary from the platforms; units from coded nodes joined to live alerts by code; unmatched alert codes kept."""
+    """Decision b summary from the platforms; units from coded nodes joined to alerts active now by code (unmatched codes kept);
+    alerts not active yet are listed under upcoming and leave the units and the verdict alone."""
     detail = station_detail(conn, station["stop_id"])
     sid = station["stop_id"]
     units: dict[tuple[str, str], dict] = {}
@@ -35,8 +36,12 @@ def for_station(conn, station, disr: Disruptions) -> dict:
         rec["nodes"] += 1
         if u["level_name"] and u["level_name"] not in rec["levels"]:
             rec["levels"].append(u["level_name"])
+    upcoming: list[dict] = []
     for el in disr.for_station(sid):
         if el["type"] not in ("elevator", "escalator") or not el.get("unit_code"):
+            continue
+        if not el["active_now"]:
+            upcoming.append({"alert_id": el["alert_id"], "kind": el["type"], "code": el["unit_code"], "period": el["period"], "text": el["text"]})
             continue
         key = (el["type"], el["unit_code"])
         rec = units.setdefault(key, {"code": el["unit_code"], "kind": el["type"], "levels": [], "nodes": 0, "node_match": False,
@@ -46,8 +51,6 @@ def for_station(conn, station, disr: Disruptions) -> dict:
     elevators = [r for r in rows if r["kind"] == "elevator"]
     if any(r["status"] == "out_of_service" for r in elevators):
         verdict = {"verdict": "no", "basis": "alerts"}
-    elif any(not r["node_match"] for r in elevators):
-        verdict = {"verdict": "unknown", "basis": "unmatched alert"}
     elif not elevators and uncoded["elevator"] == 0:
         verdict = {"verdict": "unknown", "basis": "no elevator nodes"}
     elif uncoded["elevator"]:
@@ -57,4 +60,4 @@ def for_station(conn, station, disr: Disruptions) -> dict:
     return {"station": {"id": sid, "name": station["name"]}, "summary": detail["wheelchair_summary"],
             "platforms": [{"platform": p["number"], "name": p["name"], "wheelchair": p["wheelchair"]} for p in detail["platforms"]],
             "entrances": [{"id": e["number"], "name": e["name"], "lat": e["lat"], "lon": e["lon"], "wheelchair": e["wheelchair"]} for e in detail["entrances"]],
-            "units": rows, "uncoded_nodes": uncoded, "step_free": verdict}
+            "units": rows, "uncoded_nodes": uncoded, "step_free": verdict, "upcoming": upcoming}

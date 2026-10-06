@@ -37,6 +37,14 @@ def register(mcp: FastMCP) -> None:
             if row["location_type"] == 1:
                 return {"accessibility": acc.for_station(f.conn, row, snap.disruptions)}
             if row["parent_station"]:
-                return {"accessibility": acc.for_station(f.conn, station_row(f.conn, row["parent_station"]), snap.disruptions), "queried_platform": row["stop_id"]}
+                parent = station_row(f.conn, row["parent_station"])
+                if parent is None:
+                    return {"error": f"stop {query} has no station record"}
+                out = {"accessibility": acc.for_station(f.conn, parent, snap.disruptions)}
+                if row["location_type"] == 0:
+                    out["queried_platform"] = row["stop_id"]
+                elif row["location_type"] == 2:
+                    out["queried_entrance"] = row["stop_id"]
+                return out
             return {"accessibility": acc.for_stop(f.conn, row)}
         return await _with_advisories(run)

@@ -57,3 +57,15 @@ def test_resolve_and_surface_stops(conn):
     assert stop["location_type"] == 0 and acc.for_stop(conn, stop) == {"stop": {"number": "15461", "name": "Cherry St at Front St East"}, "wheelchair": stop["wheelchair"],
                                                                         "boarding": {0: "unknown", 1: "accessible", 2: "not accessible"}[stop["wheelchair"]]}
     assert acc.resolve(conn, "nowhere") is None
+
+
+def test_future_elevator_outage_is_upcoming_not_out_of_service(conn):
+    closure = next(a for a in alerts().alerts if a.id == "77513")
+    assert acc.for_station(conn, acc.resolve(conn, "St George"), disruptions(conn, AlertList(None, None, [closure])))["upcoming"] == []
+    start, end = NOW + dt.timedelta(days=3), NOW + dt.timedelta(days=3, hours=6)
+    future = dataclasses.replace(closure, start=start, end=end, windows=())
+    r = acc.for_station(conn, acc.resolve(conn, "St George"), disruptions(conn, AlertList(None, None, [future])))
+    assert not [u for u in r["units"] if u["code"] == "1Y1L"]
+    period = [start.isoformat(timespec="minutes"), end.isoformat(timespec="minutes")]
+    assert r["upcoming"] == [{"alert_id": "77513", "kind": "elevator", "code": "1Y1L", "period": period, "text": future.header}]
+    assert r["step_free"] == {"verdict": "unknown", "basis": "uncoded nodes"}
