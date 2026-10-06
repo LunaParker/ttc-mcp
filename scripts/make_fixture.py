@@ -55,6 +55,11 @@ def main(merged: Path, surface: Path, out_dir: Path) -> None:
     level_ids = {s.get("level_id") for s in stops if s.get("level_id")}
     levels_all = rows(z, "levels.txt")
     levels = [lv for lv in levels_all if lv["level_id"] in level_ids]
+    shape_ids = {t.get("shape_id") for t in trips if t.get("shape_id")}
+    with z.open("shapes.txt") as f:
+        reader = csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig"))
+        fields_sh = reader.fieldnames
+        shapes = [r for r in reader if r["shape_id"] in shape_ids]
     out_dir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(out_dir / "gtfs-mini.zip", "w", zipfile.ZIP_DEFLATED) as zout:
         for name in ("feed_info.txt", "agency.txt", "calendar.txt", "calendar_dates.txt"):
@@ -65,6 +70,7 @@ def main(merged: Path, surface: Path, out_dir: Path) -> None:
         write(zout, "stop_times.txt", fields_st, stop_times)
         write(zout, "pathways.txt", list(pathways_all[0].keys()), pathways)
         write(zout, "levels.txt", list(levels_all[0].keys()), levels)
+        write(zout, "shapes.txt", fields_sh, shapes)
     codes = {s["stop_code"] for s in stops}
     zs = zipfile.ZipFile(surface)
     srows = [s for s in rows(zs, "stops.txt") if s["stop_code"] in codes]
@@ -72,7 +78,7 @@ def main(merged: Path, surface: Path, out_dir: Path) -> None:
         write(zout, "stops.txt", list(srows[0].keys()), srows)
         zout.writestr("feed_info.txt", zs.read("feed_info.txt"))
     print(f"routes {len(routes)} trips {len(trips)} stop_times {len(stop_times)} stops {len(stops)} "
-          f"pathways {len(pathways)} levels {len(levels)} surface stops {len(srows)}")
+          f"pathways {len(pathways)} levels {len(levels)} shapes {len(shape_ids)} ({len(shapes)} points) surface stops {len(srows)}")
 
 
 if __name__ == "__main__":
