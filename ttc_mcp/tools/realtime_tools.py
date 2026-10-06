@@ -19,9 +19,10 @@ async def _aguard(fn):
     result = await fn(feed)
     payload, hits, source = result[:3]
     snap = result[3] if len(result) > 3 else None
-    if "error" in payload or not source:
+    if "error" in payload:
         return {**payload, "meta": runtime.meta(feed)}
-    meta = runtime.meta_rt(feed, hits, source=source)
+    # No source means no live fetch: static meta, still carrying the advisory snapshot's freshness.
+    meta = runtime.meta_rt(feed, hits, source=source) if source else runtime.meta(feed)
     if snap is not None:
         meta["advisories"] = snap.meta()
     return {**payload, "meta": meta}
