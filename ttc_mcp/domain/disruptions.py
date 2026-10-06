@@ -74,9 +74,10 @@ def detour_elements(groups: list[dict]) -> list[dict]:
     return out
 
 
-def platform_closures(rt: RtAlertFeed | None, now_epoch: float) -> dict[str, dict]:
-    """Per-night NO_SERVICE entities list the closed platform ids; REDUCED_SERVICE umbrellas span whole days and are ignored here."""
-    out: dict[str, dict] = {}
+def platform_closures(rt: RtAlertFeed | None, now_epoch: float) -> dict[str, list[dict]]:
+    """Per-night NO_SERVICE entities list the closed platform ids (every entity per platform, in feed order);
+    REDUCED_SERVICE umbrellas span whole days and are ignored here."""
+    out: dict[str, list[dict]] = {}
     for a in (rt.alerts if rt else []):
         if a.effect != "NO_SERVICE" or not a.stops:
             continue
@@ -86,7 +87,7 @@ def platform_closures(rt: RtAlertFeed | None, now_epoch: float) -> dict[str, dic
               "routes": list(a.routes), "stations": [], "station_names": [], "stops": [], "platforms": list(a.stops), "active_now": True,
               "period": [iso(a.start) if a.start else None, iso(a.end) if a.end else None], "text": a.header, "url": a.url}
         for pid in a.stops:
-            out.setdefault(pid, el)
+            out.setdefault(pid, []).append(el)
     return out
 
 
@@ -104,7 +105,7 @@ def _dedupe(els: list[dict]) -> list[dict]:
 
 
 class Disruptions:
-    def __init__(self, conn, elements: list[dict], platform_closed: dict[str, dict]):
+    def __init__(self, conn, elements: list[dict], platform_closed: dict[str, list[dict]]):
         self.conn, self.elements, self.platform_closed = conn, elements, platform_closed
         self.by_station: dict[str, list[dict]] = {}
         self.by_stop: dict[str, list[dict]] = {}
@@ -127,12 +128,14 @@ class Disruptions:
                      and (line is None or line in el["routes"])), None)
 
     def platform_closed_now(self, row) -> dict | None:
-        """Closed when the GTFS-RT entity lists the platform, or its station is closed now on one of the platform's own lines."""
+        """Closed when a GTFS-RT entity listing the platform names no routes or one of its lines (entities also list other
+        lines' platforms at interchanges), or when its station is closed now on one of the platform's own lines."""
         lines = rail_lines_at(self.conn, row["stop_id"])
         if not lines:
             return None
-        if row["stop_id"] in self.platform_closed:
-            return self.platform_closed[row["stop_id"]]
+        listed = next((el for el in self.platform_closed.get(row["stop_id"], []) if not el["routes"] or set(el["routes"]) & set(lines)), None)
+        if listed:
+            return listed
         if not row["parent_station"]:
             return None
         return next((el for line in lines if (el := self.station_closed_now(row["parent_station"], line))), None)

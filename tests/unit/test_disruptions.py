@@ -98,6 +98,29 @@ def test_service_status_summary(conn):
 def test_station_closure_only_closes_platforms_of_the_closed_line(conn):
     night = build(conn, NOW_NIGHT)
     assert night.route_stop_status(stop_row(conn, "13795")) == "closed"
-    assert night.route_stop_status(stop_row(conn, "16073")) == "closed"
+    # The Line 1 RT entity 77538 lists Line 5's 16073 too; another line's listing leaves the platform open.
+    assert night.route_stop_status(stop_row(conn, "16073")) == "open"
     assert night.route_stop_status(stop_row(conn, "16074")) == "open"
     assert night.station_closed_now("43274", "5") is None and night.station_closed_now("43274", "1")["alert_id"] == "77519"
+
+
+def _rt_with(alerts_):
+    return dataclasses.replace(rt(), alerts=alerts_)
+
+
+def test_an_rt_listing_naming_no_routes_closes_the_platform_for_every_line(conn):
+    feed = rt()
+    unlabelled = _rt_with([dataclasses.replace(a, routes=()) if a.id == "77538" else a for a in feed.alerts])
+    night = Disruptions.build(conn, alerts(), unlabelled, groups(conn), NOW_NIGHT)
+    assert night.route_stop_status(stop_row(conn, "16073")) == "closed" and night.platform_closed_now(stop_row(conn, "16073"))["alert_id"] == "77538"
+
+
+def test_another_lines_entity_listed_first_does_not_hide_the_platforms_own_closure(conn):
+    feed = rt()
+    real = next(a for a in feed.alerts if a.id == "77538")
+    first = _rt_with([dataclasses.replace(real, id="77538-line2", routes=("2",))] + feed.alerts)
+    night = Disruptions.build(conn, AlertList(None, None, []), first, [], NOW_NIGHT)
+    lawrence_sb = stop_row(conn, "13793")
+    assert night.route_stop_status(lawrence_sb) == "closed" and night.platform_closed_now(lawrence_sb)["alert_id"] == "77538"
+    only_line2 = _rt_with([dataclasses.replace(real, routes=("2",))])
+    assert Disruptions.build(conn, AlertList(None, None, []), only_line2, [], NOW_NIGHT).route_stop_status(lawrence_sb) == "open"
