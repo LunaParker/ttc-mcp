@@ -216,8 +216,18 @@ def _station_of(conn, stop_id: str) -> dict:
     return {"station": r["stop_id"], "name": r["name"]} if r else {"station": None, "name": None}
 
 
+def _closure_extent(conn, el: dict, pattern_id: int) -> tuple[int, int] | None:
+    """Lowest and highest pattern positions of the closure's stations; None when it names none on the pattern."""
+    ids = list(el.get("stations") or [])
+    if not ids:
+        return None
+    r = conn.execute(f"SELECT MIN(ps.pos), MAX(ps.pos) FROM pattern_stops ps JOIN stops s ON s.stop_id=ps.stop_id "
+                     f"WHERE ps.pattern_id=? AND s.parent_station IN ({','.join('?' * len(ids))})", (pattern_id, *ids)).fetchone()
+    return (r[0], r[1]) if r[0] is not None else None
+
+
 def _split_rail_leg(conn, disr: Disruptions, leg: dict, rows: list, found: dict) -> list[dict] | None:
-    """Ride, shuttle, ride around a closed block; a one-station block is bypassed. None drops the option."""
+    """Ride, shuttle, ride around a closed block; a lone closed stop is served or bypassed. None drops the option."""
     closed = []
     for i, (_, sid, _) in enumerate(rows):
         row = stop_row(conn, sid)
@@ -230,7 +240,11 @@ def _split_rail_leg(conn, disr: Disruptions, leg: dict, rows: list, found: dict)
     found[_key(el)] = el
     first, last = closed[0][0], closed[-1][0]
     if first == last:
-        # Trains run through a lone closed station but can't be boarded or left there.
+        # A longer closure's end station is served (trains turn back there); any other lone closed station
+        # is run through, so a leg boarding or alighting there is dropped.
+        ext = _closure_extent(conn, el, leg["pattern_id"])
+        if ext and ext[0] < ext[1] and rows[first][0] in ext:
+            return [leg]
         return [leg] if 0 < first < len(rows) - 1 else None
     if el.get("shuttle") != "Will Operate":
         return None

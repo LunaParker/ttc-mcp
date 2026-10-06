@@ -29,6 +29,10 @@ def king_options(conn, disr):
                                   usable=lambda s: disr.stop_skipped(s) is None)
 
 
+def trip(conn, origin, dest):
+    return planner.search(conn, planner.resolve_endpoint(conn, origin), planner.resolve_endpoint(conn, dest), now=NOW_NIGHT, max_transfers=0)
+
+
 def ride_route(opt):
     return next(l["route"] for l in opt["legs"] if l["mode"] == "ride")
 
@@ -94,6 +98,29 @@ def test_the_line_5_ride_through_a_closed_eglinton_platform_is_kept_whole(conn):
 def test_a_one_station_closure_at_the_board_or_alight_stop_drops_the_option(conn, origin, dest):
     opts = planner.search(conn, planner.resolve_endpoint(conn, origin), planner.resolve_endpoint(conn, dest), now=NOW_NIGHT, max_transfers=0)
     assert opts and planner.overlay(conn, closure_77519(conn, rt_feed=False, stop_ids=("2811",)), opts) == []
+
+
+@pytest.mark.parametrize("origin,dest", [("Finch", "York Mills"), ("Eglinton", "Union"), ("York Mills", "Finch"), ("Union", "Eglinton")])
+def test_a_ride_to_or_from_an_end_station_of_the_closure_is_kept_whole(conn, origin, dest):
+    opts = trip(conn, origin, dest)
+    assert opts and ride_route(opts[0]) == "1"
+    over = planner.overlay(conn, build(conn, NOW_NIGHT), opts)
+    assert over and over[0]["legs"] == opts[0]["legs"] and "77519" in {d.get("alert_id") for d in over[0]["disruptions"]}
+
+
+@pytest.mark.parametrize("origin,dest,modes", [("York Mills", "Union", ["shuttle", "ride"]), ("Finch", "Eglinton", ["ride", "shuttle"]),
+                                               ("Finch", "Lawrence", ["ride", "shuttle"])])
+def test_a_ride_into_the_closed_block_is_still_split(conn, origin, dest, modes):
+    over = planner.overlay(conn, build(conn, NOW_NIGHT), trip(conn, origin, dest))
+    assert [l["mode"] for l in over[0]["legs"] if l["mode"] != "walk"] == modes
+
+
+def test_a_two_station_closure_with_no_interior_still_gets_a_shuttle(conn):
+    disr = closure_77519(conn, rt_feed=False, stop_ids=("7462", "2811"))
+    legs = [l for l in planner.overlay(conn, disr, finch_union(conn, NOW_NIGHT))[0]["legs"] if l["mode"] != "walk"]
+    assert [l["mode"] for l in legs] == ["ride", "shuttle", "ride"]
+    assert legs[0]["alight"]["name"].startswith("York Mills") and legs[2]["board"]["name"].startswith("Lawrence")
+    assert (legs[1]["from"]["name"], legs[1]["to"]["name"]) == ("York Mills", "Lawrence")
 
 
 def test_ranks_are_renumbered_after_a_reorder_and_a_drop(conn):
