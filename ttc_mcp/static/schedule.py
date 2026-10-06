@@ -34,7 +34,7 @@ def gtfs_hhmm(secs: int) -> str:
 
 
 def departures_at(conn: sqlite3.Connection, stop_id: str, at: dt.datetime, *, limit: int = 10,
-                  route: str | None = None) -> list[dict]:
+                  route: str | None = None, pattern_id: int | None = None) -> list[dict]:
     at = at.astimezone(TZ)
     out = []
     for day in (at.date(), at.date() - dt.timedelta(days=1)):
@@ -46,8 +46,10 @@ def departures_at(conn: sqlite3.Connection, stop_id: str, at: dt.datetime, *, li
         sql = ("SELECT d.trip_id, d.dep_secs, d.stop_sequence, t.route_id, t.direction_id, t.headsign, t.pattern_id "
                "FROM departures d JOIN trips t ON t.trip_id = CAST(d.trip_id AS TEXT) "
                f"WHERE d.stop_id=? AND d.dep_secs>=? AND t.service_id IN ({marks})"
-               + (" AND t.route_id=?" if route else "") + " ORDER BY d.dep_secs LIMIT ?")
-        params = [int(stop_id), since, *sids] + ([route] if route else []) + [limit]
+               + (" AND t.route_id=?" if route else "") + (" AND t.pattern_id=?" if pattern_id is not None else "")
+               + " ORDER BY d.dep_secs LIMIT ?")
+        params = ([int(stop_id), since, *sids] + ([route] if route else [])
+                  + ([pattern_id] if pattern_id is not None else []) + [limit])
         for r in conn.execute(sql, params):
             when = wall_clock(day, r["dep_secs"])
             out.append({"trip_id": str(r["trip_id"]), "route": r["route_id"], "direction_id": str(r["direction_id"]),
