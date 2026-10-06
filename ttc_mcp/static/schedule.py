@@ -33,8 +33,9 @@ def gtfs_hhmm(secs: int) -> str:
     return f"{secs // 3600:02d}:{(secs % 3600) // 60:02d}"
 
 
-def departures_at(conn: sqlite3.Connection, stop_id: str, at: dt.datetime, *, limit: int = 10,
-                  route: str | None = None, pattern_id: int | None = None) -> list[dict]:
+def departures_at(conn: sqlite3.Connection, stop_id: str, at: dt.datetime, *, limit: int = 10, route: str | None = None,
+                  pattern_id: int | None = None, horizon_min: int | None = None) -> list[dict]:
+    """Departures from `at`, soonest first; horizon_min keeps those leaving within that many whole minutes."""
     at = at.astimezone(TZ)
     out = []
     for day in (at.date(), at.date() - dt.timedelta(days=1)):
@@ -46,12 +47,16 @@ def departures_at(conn: sqlite3.Connection, stop_id: str, at: dt.datetime, *, li
         sql = ("SELECT d.trip_id, d.dep_secs, d.stop_sequence, t.route_id, t.direction_id, t.headsign, t.pattern_id "
                "FROM departures d JOIN trips t ON t.trip_id = CAST(d.trip_id AS TEXT) "
                f"WHERE d.stop_id=? AND d.dep_secs>=? AND t.service_id IN ({marks})"
+               + (" AND d.dep_secs<=?" if horizon_min is not None else "")
                + (" AND t.route_id=?" if route else "") + (" AND t.pattern_id=?" if pattern_id is not None else "")
                + " ORDER BY d.dep_secs LIMIT ?")
-        params = ([int(stop_id), since, *sids] + ([route] if route else [])
-                  + ([pattern_id] if pattern_id is not None else []) + [limit])
+        # The SQL bound is a minute loose (sub-second clocks); in_min below is exact.
+        params = ([int(stop_id), since, *sids] + ([since + (horizon_min + 1) * 60] if horizon_min is not None else [])
+                  + ([route] if route else []) + ([pattern_id] if pattern_id is not None else []) + [limit])
         for r in conn.execute(sql, params):
             when = wall_clock(day, r["dep_secs"])
+            if horizon_min is not None and (when - at).total_seconds() // 60 > horizon_min:
+                continue
             out.append({"trip_id": str(r["trip_id"]), "route": r["route_id"], "direction_id": str(r["direction_id"]),
                         "headsign": r["headsign"], "pattern_id": r["pattern_id"], "stop_sequence": r["stop_sequence"],
                         "service_day": day.isoformat(), "dep_secs": r["dep_secs"], "gtfs_time": gtfs_hhmm(r["dep_secs"]),

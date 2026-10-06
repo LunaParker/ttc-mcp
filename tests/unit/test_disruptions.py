@@ -8,7 +8,7 @@ from ttc_mcp.adapters.gtfsrt_alerts import parse_rt_alerts
 from ttc_mcp.adapters.ttc_alerts import AlertList, parse_alerts
 from ttc_mcp.domain import detours
 from ttc_mcp.domain.arrivals import stop_row
-from ttc_mcp.domain.disruptions import Disruptions
+from ttc_mcp.domain.disruptions import Disruptions, element_key
 from ttc_mcp.domain.trains import rail_platforms
 from ttc_mcp.static.schedule import TZ
 
@@ -124,3 +124,8 @@ def test_another_lines_entity_listed_first_does_not_hide_the_platforms_own_closu
     assert night.route_stop_status(lawrence_sb) == "closed" and night.platform_closed_now(lawrence_sb)["alert_id"] == "77538"
     only_line2 = _rt_with([dataclasses.replace(real, routes=("2",))])
     assert Disruptions.build(conn, AlertList(None, None, []), only_line2, [], NOW_NIGHT).route_stop_status(lawrence_sb) == "open"
+
+
+def test_element_key_tolerates_missing_keys():
+    assert element_key({"source": "detour feed", "detour_id": "9001"}) == ("detour", "9001")
+    assert element_key({"source": "gtfsrt alerts", "alert_id": "77538"}) == ("alert", "77538") and element_key({}) == ("alert", None)

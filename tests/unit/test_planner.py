@@ -44,6 +44,9 @@ def test_next_departure_respects_the_horizon(conn):
     first_stop = planner.pattern_rows(conn, pid)[0][1]
     assert planner.next_departure(conn, first_stop, pid, NOW) is None
     assert planner.next_departure(conn, first_stop, pid, NIGHT_EARLY)["route"] == "300"
+    # Just after midnight pattern 3 leaves 15246 at 24:11 and pattern 37 at 25:11.
+    midnight = dt.datetime(2026, 10, 6, 0, 0, tzinfo=TZ)
+    assert planner.next_departure(conn, "15246", 37, midnight)["gtfs_time"] == "25:11" and planner.next_departure(conn, "15246", 3, midnight)["pattern_id"] == 3
 
 
 def _rides(option):
@@ -117,7 +120,7 @@ def test_transfers_stop_short_of_the_destination_and_never_leave_a_direct_patter
     # Line 1 from Queen reaches Union (pos 16) before St Andrew (pos 17); pretend a 121 stop bound for Union is 50 m from St Andrew.
     monkeypatch.setattr(planner, "transfer_stops", lambda c, sid: {**real(c, sid), **({"13455": 50} if sid == "13817" else {})})
     opts = planner.search(conn, planner.resolve_endpoint(conn, "13811"), union, now=NOW, limit=10)
-    assert opts and _rides(opts[0])[0]["route"] == "1"
+    assert opts and _rides(opts[0])[0]["route"] == "1" and all(o["transfers"] == 0 for o in opts)
     for o in (o for o in opts if o["transfers"] == 1):
         r, rows = _rides(o)[0], planner.pattern_rows(conn, _rides(o)[0]["pattern_id"])
         assert r["alight_pos"] < next((i for i in range(r["board_pos"] + 1, len(rows)) if rows[i][1] in union.stops), len(rows))
@@ -125,3 +128,15 @@ def test_transfers_stop_short_of_the_destination_and_never_leave_a_direct_patter
     monkeypatch.setattr(planner, "transfer_stops", lambda c, sid: {**real(c, sid), **({"13814": 50} if sid == "11169" else {})})
     opts = planner.search(conn, planner.resolve_endpoint(conn, CHERRY_FRONT), union, now=NOW, limit=10)
     assert opts and all(_rides(o)[0]["route"] != "121" for o in opts if o["transfers"] == 1)
+
+
+def test_a_span_that_is_not_rideable_is_no_candidate_so_the_transfer_scan_routes_around_it(conn, monkeypatch):
+    finch, union, real = planner.resolve_endpoint(conn, "Finch"), planner.resolve_endpoint(conn, "Union"), planner.transfer_stops
+    # Pretend a 121 stop bound for Union is 50 m from Sheppard-Yonge's southbound platform.
+    monkeypatch.setattr(planner, "transfer_stops", lambda c, sid: {**real(c, sid), **({"11169": 50} if sid == "13860" else {})})
+    assert all(o["transfers"] == 0 for o in planner.search(conn, finch, union, now=NOW, limit=10))
+    lawrence = {"13793", "13794"}
+    closed = lambda pid, a, b: not any(sid in lawrence for _, sid, _ in planner.pattern_rows(conn, pid)[a:b + 1])
+    opts = planner.search(conn, finch, union, now=NOW, limit=10, rideable=closed)
+    assert opts and all(o["transfers"] == 1 for o in opts)
+    assert [(r["route"], r["board"]["number"], r["alight"]["number"]) for r in _rides(opts[0])] == [("1", "14111", "13860"), ("121", "11169", "16754")]

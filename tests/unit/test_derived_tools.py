@@ -142,3 +142,19 @@ async def test_connections_reject_what_they_cannot_plan(app_env):
         assert (await c.call_tool("connections", {"origin": "15461", "destination": "Union", "limit": 0})).data["error"] == "limit must be at least 1"
         with pytest.raises(ToolError):
             await c.call_tool("connections", {"origin": "15461", "destination": "Union", "max_transfers": 2})
+
+
+@pytest.mark.anyio
+async def test_connections_route_around_a_closure_without_shuttle_service(app_env, monkeypatch):
+    from ttc_mcp.domain import planner
+    real = planner.transfer_stops
+    monkeypatch.setattr("ttc_mcp.runtime.now", lambda: NIGHT)
+    monkeypatch.setattr(planner, "_shuttle_runs", lambda el: False)
+    # Pretend a 121 stop bound for Union is 50 m from Sheppard-Yonge, north of the York Mills to Eglinton closure.
+    monkeypatch.setattr(planner, "transfer_stops", lambda c, sid: {**real(c, sid), **({"11169": 50} if sid == "13860" else {})})
+    async with Client(make_app([])) as c:
+        r = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union"})).data
+    assert r["options"] and "note" not in r
+    rides = [l for l in r["options"][0]["legs"] if l["mode"] == "ride"]
+    assert [(l["route"], l["board"]["number"], l["alight"]["number"]) for l in rides][0] == ("1", "14111", "13860") and r["options"][0]["transfers"] == 1
+    assert (rides[1]["route"], rides[1]["board"]["number"]) == ("121", "11169") and rides[1]["alight"]["number"] in {"16754", "246"}

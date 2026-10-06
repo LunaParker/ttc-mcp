@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 
 from ttc_mcp.domain.arrivals import stop_row
-from ttc_mcp.domain.disruptions import Disruptions, station_by_name, station_row
+from ttc_mcp.domain.disruptions import UNIT_KINDS, Disruptions, element_key, station_by_name, station_row
 from ttc_mcp.domain.geo import bbox, haversine_m, walk_minutes
 from ttc_mcp.static import schedule
 
@@ -15,6 +15,7 @@ TRANSFER_M = 150
 TRANSFER_PENALTY_MIN = 4
 HORIZON_MIN = 120
 SHUTTLE_RUNS = ("will operate", "running", "operating")
+RAIL = ("subway", "lrt")
 
 
 @dataclass
@@ -87,8 +88,8 @@ def stop_names(conn, ids) -> dict[str, str]:
 
 
 def next_departure(conn, stop_id: str, pattern_id: int, at: dt.datetime) -> dict | None:
-    deps = schedule.departures_at(conn, stop_id, at, limit=1, pattern_id=pattern_id)
-    return deps[0] if deps and deps[0]["in_min"] <= HORIZON_MIN else None
+    deps = schedule.departures_at(conn, stop_id, at, limit=1, pattern_id=pattern_id, horizon_min=HORIZON_MIN)
+    return deps[0] if deps else None
 
 
 def _ride(conn, meta: dict, rows: list, a: int, b: int, names: dict) -> dict:
@@ -119,8 +120,10 @@ def _materialize(conn, cand: dict, metas: dict, rows: dict) -> dict:
             "stops": sum(b - a for _, a, b in cand["rides"]), "legs": legs}
 
 
-def search(conn, origin: Endpoint, dest: Endpoint, *, now: dt.datetime, max_transfers: int = 1, limit: int = 4, usable=lambda sid: True) -> list[dict]:
-    """Direct options, then one-transfer options through shared stops, stations and 150 m neighbours; scheduled departures gate them."""
+def search(conn, origin: Endpoint, dest: Endpoint, *, now: dt.datetime, max_transfers: int = 1, limit: int = 4, usable=lambda sid: True,
+           rideable=lambda pid, a, b: True) -> list[dict]:
+    """Direct options, then one-transfer options through shared stops, stations and 150 m neighbours; scheduled departures gate them.
+    Every ride span must be rideable(pattern_id, board_pos, alight_pos) before any pruning, so a closed span is routed around."""
     o_stops = {s: w for s, w in origin.stops.items() if usable(s)}
     d_stops = {s: w for s, w in dest.stops.items() if usable(s)}
     o_idx = patterns_at(conn, o_stops)
@@ -150,13 +153,17 @@ def search(conn, origin: Endpoint, dest: Endpoint, *, now: dt.datetime, max_tran
     def first_dest(pid, after):
         return next(((pos, sid) for pos, sid in dest_by_pattern.get(pid, []) if pos > after), None)
 
+    def direct(pid, pos_o):
+        hit = first_dest(pid, pos_o)
+        return hit if hit and rideable(pid, pos_o, hit[0]) else None
+
     # A transfer off or onto a pattern the rider could ride straight from the origin is pointless.
-    direct_patterns = {pid for o in o_stops for pid, pos_o, _ in o_idx.get(o, []) if first_dest(pid, pos_o)}
+    direct_patterns = {pid for o in o_stops for pid, pos_o, _ in o_idx.get(o, []) if direct(pid, pos_o)}
     cands = []
     for o, walk_o in o_stops.items():
         for pid, pos_o, _ in o_idx.get(o, []):
             hit = first_dest(pid, pos_o)
-            if hit:
+            if hit and rideable(pid, pos_o, hit[0]):
                 cands.append({"origin": (o, walk_o), "rides": [(pid, pos_o, hit[0])], "transfer": None, "dest": (hit[1], d_stops[hit[1]])})
             if max_transfers < 1 or pid in direct_patterns:
                 continue
@@ -165,7 +172,7 @@ def search(conn, origin: Endpoint, dest: Endpoint, *, now: dt.datetime, max_tran
             nbr: dict[str, tuple[str, int]] = {}
             for pos_x in range(pos_o + 1, end):
                 x = r1[pos_x][1]
-                if not usable(x):
+                if not usable(x) or not rideable(pid, pos_o, pos_x):
                     continue
                 for y, walk_xy in nearby(x).items():
                     if usable(y) and (y not in nbr or walk_xy < nbr[y][1]):
@@ -178,7 +185,7 @@ def search(conn, origin: Endpoint, dest: Endpoint, *, now: dt.datetime, max_tran
                     if qid == pid or qid in direct_patterns or qid not in dest_by_pattern or meta(qid)["route"] == meta(pid)["route"]:
                         continue
                     hit = first_dest(qid, pos_y)
-                    if not hit:
+                    if not hit or not rideable(qid, pos_y, hit[0]):
                         continue
                     cand = {"origin": (o, walk_o), "rides": [(pid, pos_o, pos_x), (qid, pos_y, hit[0])], "transfer": (x, y, walk_xy), "dest": (hit[1], d_stops[hit[1]])}
                     score = (r1[pos_x][2] - r1[pos_o][2]) + walk_minutes(walk_xy) * 60 + (prow(qid)[hit[0]][2] - prow(qid)[pos_y][2])
@@ -208,17 +215,13 @@ def search(conn, origin: Endpoint, dest: Endpoint, *, now: dt.datetime, max_tran
     return options
 
 
-def _key(el: dict) -> tuple:
-    return ("detour", el["detour_id"]) if el.get("source") == "detour feed" else ("alert", el.get("alert_id"))
-
-
 def _station_of(conn, stop_id: str) -> dict:
     r = conn.execute("SELECT p.stop_id, p.name FROM stops s JOIN stops p ON p.stop_id=s.parent_station WHERE s.stop_id=?", (stop_id,)).fetchone()
     return {"station": r["stop_id"], "name": r["name"]} if r else {"station": None, "name": None}
 
 
 def _shuttle_runs(el: dict) -> bool:
-    return (el.get("shuttle") or "").strip().lower() in SHUTTLE_RUNS
+    return str(el.get("shuttle") or "").strip().lower() in SHUTTLE_RUNS
 
 
 def _closure_extent(conn, el: dict, pattern_id: int) -> tuple[int, int] | None:
@@ -231,34 +234,66 @@ def _closure_extent(conn, el: dict, pattern_id: int) -> tuple[int, int] | None:
     return (r[0], r[1]) if r[0] is not None else None
 
 
-def _split_rail_leg(conn, disr: Disruptions, leg: dict, rows: list, found: dict) -> list[dict] | None:
-    """Ride, shuttle, ride around a closed block; a lone closed stop is served or bypassed. None drops the option."""
-    closed = []
-    for i, (_, sid, _) in enumerate(rows):
+def _closed_positions(conn, disr: Disruptions, pattern_id: int, route: str) -> list[tuple[int, dict]]:
+    """The pattern positions closed now for this line, with the closing element (its station's closure when there is one)."""
+    out = []
+    for pos, sid, _ in pattern_rows(conn, pattern_id):
         row = stop_row(conn, sid)
         el = disr.platform_closed_now(row)
         if not el:
             continue
-        station = disr.station_closed_now(row["parent_station"], leg["route"])
-        # The TTC's RT entities also list other lines' platforms at interchanges; those stay open for this leg.
-        # An entity naming no routes is still an explicit platform listing, so it closes every line.
-        if station is None and el["source"] == "gtfsrt alerts" and el["routes"] and leg["route"] not in el["routes"]:
+        station = disr.station_closed_now(row["parent_station"], route)
+        # Belt and braces: phase 3 already ignores an RT listing that names only other lines.
+        if station is None and el["source"] == "gtfsrt alerts" and el["routes"] and route not in el["routes"]:
             continue
-        closed.append((i, station or el))
-    if not closed:
-        return [leg]
-    el = closed[0][1]
-    found[_key(el)] = el
-    first, last = closed[0][0], closed[-1][0]
+        out.append((pos, station or el))
+    return out
+
+
+def _closure_verdict(conn, disr: Disruptions, pattern_id: int, route: str, mode: str, a: int, b: int, *,
+                     closed: list | None = None) -> tuple[str, dict | None]:
+    """"ride" (no closure on the span, or one it runs through or turns back at, which annotates), "split" (ride, shuttle,
+    ride) or "drop" (no shuttle, or a bypassed board or alight station). closed: the pattern's _closed_positions, if known."""
+    if mode not in RAIL:
+        return "ride", None
+    hits = [(pos, el) for pos, el in (_closed_positions(conn, disr, pattern_id, route) if closed is None else closed) if a <= pos <= b]
+    if not hits:
+        return "ride", None
+    (first, el), last = hits[0], hits[-1][0]
     if first == last:
         # A longer closure's end station is served (trains turn back there); any other lone closed station
         # is run through, so a leg boarding or alighting there is dropped.
-        ext = _closure_extent(conn, el, leg["pattern_id"])
-        if ext and ext[0] < ext[1] and rows[first][0] in ext:
-            return [leg]
-        return [leg] if 0 < first < len(rows) - 1 else None
-    if not _shuttle_runs(el):
-        return None
+        ext = _closure_extent(conn, el, pattern_id)
+        if ext and ext[0] < ext[1] and first in ext:
+            return "ride", el
+        return ("ride" if a < first < b else "drop"), el
+    return ("split" if _shuttle_runs(el) else "drop"), el
+
+
+def closure_verdicts(conn, disr: Disruptions):
+    """verdict(pattern_id, a, b) for search's rideable predicate, memoising each pattern's line, mode and closed positions."""
+    memo: dict[int, tuple[dict, list]] = {}
+
+    def verdict(pid: int, a: int, b: int) -> str:
+        if pid not in memo:
+            m = pattern_meta(conn, pid)
+            memo[pid] = m, (_closed_positions(conn, disr, pid, m["route"]) if m["mode"] in RAIL else [])
+        m, closed = memo[pid]
+        return _closure_verdict(conn, disr, pid, m["route"], m["mode"], a, b, closed=closed)[0]
+    return verdict
+
+
+def _split_rail_leg(conn, disr: Disruptions, leg: dict, rows: list, found: dict) -> list[dict] | None:
+    """Ride, shuttle, ride around a closed block; a lone closed stop is served or bypassed. None drops the option."""
+    lo, hi = leg["board_pos"], leg["alight_pos"]
+    closed = _closed_positions(conn, disr, leg["pattern_id"], leg["route"])
+    verdict, el = _closure_verdict(conn, disr, leg["pattern_id"], leg["route"], leg["transit"], lo, hi, closed=closed)
+    if el:
+        found[element_key(el)] = el
+    if verdict != "split":
+        return [leg] if verdict == "ride" else None
+    inside = [pos - lo for pos, _ in closed if lo <= pos <= hi]
+    first, last = inside[0], inside[-1]
     names = stop_names(conn, [r[1] for r in rows])
     meta = {"pattern_id": leg["pattern_id"], "route": leg["route"], "direction_id": leg["direction_id"], "headsign": leg["headsign"], "mode": leg["transit"]}
     out = []
@@ -276,7 +311,7 @@ def _split_rail_leg(conn, disr: Disruptions, leg: dict, rows: list, found: dict)
 
 
 def overlay(conn, disr: Disruptions, options: list[dict]) -> list[dict]:
-    """Decision h: closures cut rail legs (shuttle when offered, else drop); RSZ, suspensions and detours annotate."""
+    """Decision h: closures cut rail legs (shuttle when offered, else drop); RSZ, suspensions, detours and route-level alerts annotate."""
     kept = []
     for opt in options:
         legs, found, dropped = [], {}, False
@@ -286,7 +321,7 @@ def overlay(conn, disr: Disruptions, options: list[dict]) -> list[dict]:
                 continue
             rows = pattern_rows(conn, leg["pattern_id"])[leg["board_pos"]:leg["alight_pos"] + 1]
             traversed = [r[1] for r in rows]
-            if leg["transit"] in ("subway", "lrt"):
+            if leg["transit"] in RAIL:
                 parts = _split_rail_leg(conn, disr, leg, rows, found)
                 if parts is None:
                     dropped = True
@@ -294,14 +329,18 @@ def overlay(conn, disr: Disruptions, options: list[dict]) -> list[dict]:
                 stations = {s["station"] for s in (_station_of(conn, sid) for sid in traversed) if s["station"]}
                 for el in disr.elements:
                     if el["type"] == "rsz" and el["active_now"] and leg["route"] in el["routes"] and stations & set(el["stations"]):
-                        found[_key(el)] = el
+                        found[element_key(el)] = el
                 legs.extend(parts)
             else:
                 for sid in traversed:
                     for el in disr.by_stop.get(sid, []):
                         if el["type"] in ("suspension", "detour") and el["active_now"] and (not el["routes"] or leg["route"] in el["routes"]):
-                            found[_key(el)] = el
+                            found[element_key(el)] = el
                 legs.append(leg)
+            # Route-level alerts (delays, stopless detours and suspensions) touch every ride on the route.
+            for el in disr.by_route.get(leg["route"], []):
+                if el["active_now"] and not el["stations"] and not el["stops"] and el["type"] not in (*UNIT_KINDS, "rsz"):
+                    found[element_key(el)] = el
         if dropped:
             continue
         total = sum(l["min"] if "min" in l else (l["typical_min"] or 0) for l in legs)

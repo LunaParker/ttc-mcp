@@ -87,8 +87,9 @@ def register(mcp: FastMCP) -> None:
             snap = await advisory.snapshot(feed)
             # The snapshot is evaluated at the clock; a given depart_at re-evaluates its alerts at that time.
             disr = Disruptions.build(conn, snap.alerts, snap.rt, snap.detours, now) if depart_at else snap.disruptions
-            found = planner.search(conn, o, d, now=now, max_transfers=max_transfers, limit=limit * 3,
-                                   usable=lambda sid: disr.stop_skipped(sid) is None)
+            usable, verdict = (lambda sid: disr.stop_skipped(sid) is None), planner.closure_verdicts(conn, disr)
+            found = planner.search(conn, o, d, now=now, max_transfers=max_transfers, limit=limit * 3, usable=usable,
+                                   rideable=lambda pid, a, b: verdict(pid, a, b) != "drop")
             opts = planner.overlay(conn, disr, found)[:limit]
             use_live = depart_at is None or abs(now - runtime.now()) <= LIVE_WINDOW
             rides = [(opt, leg) for opt in opts if (leg := next((l for l in opt["legs"] if l["mode"] != "walk"), None)) and leg["mode"] == "ride"]
@@ -101,7 +102,8 @@ def register(mcp: FastMCP) -> None:
                     leg["next_note"] = note
                 opt["basis"] = rows[0]["basis"] if rows else "schedule"
             out = {**head, "options": opts}
-            if not opts and found:
+            # Closed spans are pruned inside search; an unconstrained search tells a closure from an empty timetable.
+            if not opts and (found or planner.search(conn, o, d, now=now, max_transfers=max_transfers, limit=1, usable=usable)):
                 out["note"] = "every option passes through a closure without shuttle service"
             elif not opts:
                 trip = "direct" if max_transfers == 0 else "direct or one-transfer"

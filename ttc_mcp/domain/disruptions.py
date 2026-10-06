@@ -91,15 +91,15 @@ def platform_closures(rt: RtAlertFeed | None, now_epoch: float) -> dict[str, lis
     return out
 
 
-def _key(el: dict) -> tuple:
-    return ("detour", el["detour_id"]) if el["source"] == "detour feed" else ("alert", el["alert_id"])
+def element_key(el: dict) -> tuple:
+    return ("detour", el.get("detour_id")) if el.get("source") == "detour feed" else ("alert", el.get("alert_id"))
 
 
 def _dedupe(els: list[dict]) -> list[dict]:
     seen, out = set(), []
     for el in els:
-        if _key(el) not in seen:
-            seen.add(_key(el))
+        if element_key(el) not in seen:
+            seen.add(element_key(el))
             out.append(el)
     return out
 

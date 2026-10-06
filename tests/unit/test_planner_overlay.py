@@ -72,7 +72,7 @@ def test_a_running_shuttle_splits_the_ride_like_will_operate(conn, shuttle):
     assert [l["mode"] for l in over[0]["legs"] if l["mode"] != "walk"] == ["ride", "shuttle", "ride"] and over[0]["legs"] == expected[0]["legs"]
 
 
-@pytest.mark.parametrize("shuttle", ["Will Not Operate", "Not Running", None])
+@pytest.mark.parametrize("shuttle", ["Will Not Operate", "Not Running", None, 1, ["Running"]])
 def test_a_shuttle_that_does_not_run_drops_the_option(conn, shuttle):
     assert planner.overlay(conn, closure_77519(conn, shuttle=shuttle), finch_union(conn, NOW_NIGHT)) == []
 
@@ -183,3 +183,39 @@ def test_surface_annotation_needs_the_ride_route_or_no_route(conn, routes, annot
     detour = next(el for el in disr.elements if el.get("detour_id") == "9001")
     over = planner.overlay(conn, Disruptions(conn, [detour | {"routes": routes}], {}), opts)
     assert ("9001" in {d.get("detour_id") for d in over[0]["disruptions"]}) is annotated
+
+
+def test_the_closure_verdict_of_a_span_on_pattern_54(conn):
+    night = build(conn, NOW_NIGHT)
+
+    def v(disr, a, b, mode="subway"):
+        verdict, el = planner._closure_verdict(conn, disr, 54, "1", mode, a, b)
+        return verdict, el and el.get("alert_id")
+    assert v(night, 0, 16) == ("split", "77519") and v(closure_77519(conn, shuttle="Will Not Operate"), 0, 16) == ("drop", "77519")
+    assert v(night, 0, 3) == ("ride", "77519") and v(night, 0, 2) == ("ride", None) and v(night, 0, 16, "bus") == ("ride", None)
+    # Sheppard-Yonge (2), Lawrence (4) and Eglinton (5): extent 2..5 with York Mills (3) open and Lawrence interior.
+    copy = closure_77519(conn, rt_feed=False, stop_ids=("7129", "43275", "43274"))
+    assert v(copy, 3, 4) == ("drop", "77519") and v(copy, 0, 2) == ("ride", "77519") and v(copy, 0, 4) == ("split", "77519")
+
+
+def test_route_level_alerts_annotate_every_ride_leg_of_their_route_once(conn):
+    """A Line 1 delay and a stopless 121 detour name no stations or stops; RSZ and unit alerts keep their own rules."""
+    base = [a for a in alerts().alerts if a.id != "77530"]
+    detour = next(a for a in alerts().alerts if a.id == "77530")
+    delay = dataclasses.replace(detour, id="90001", kind="other", routes=("1",), header="Line 1: Delays of up to 10 minutes")
+    later = dataclasses.replace(delay, id="90002", windows=(), start=NOW_DAY.replace(hour=20), end=None)
+    disr = Disruptions.build(conn, AlertList(None, None, base + [delay, later, dataclasses.replace(detour, routes=("121",))]), rt(), groups(conn), NOW_DAY)
+    cherry_front = planner.resolve_endpoint(conn, {"lat": 43.6527, "lon": -79.3581})
+    over = planner.overlay(conn, disr, planner.search(conn, cherry_front, planner.resolve_endpoint(conn, "Union"), now=NOW_DAY, limit=10))
+    ids = {tuple(l["route"] for l in o["legs"] if l["mode"] == "ride"): [d.get("alert_id") or d.get("detour_id") for d in o["disruptions"]] for o in over}
+    assert ids[("121",)] == ["77530"] and ids[("504", "1")].count("90001") == 1 and "90002" not in ids[("504", "1")]
+    assert not {"77513", "77535", "77530"} & set(ids[("504", "1")])
+
+
+def test_a_lone_closed_stop_inside_the_extent_is_bypassed_while_an_end_station_is_served(conn):
+    """Sheppard-Yonge (2), Lawrence (4) and Eglinton (5) closed, York Mills (3) open: extent 2..5 on pattern 54."""
+    disr = closure_77519(conn, rt_feed=False, stop_ids=("7129", "43275", "43274"))
+    into = trip(conn, "York Mills", "Lawrence")
+    assert into and planner.overlay(conn, disr, into) == []
+    whole = trip(conn, "Finch", "Sheppard-Yonge")
+    assert planner.overlay(conn, disr, whole)[0]["legs"] == whole[0]["legs"]

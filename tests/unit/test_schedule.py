@@ -1,5 +1,7 @@
 import datetime as dt
 
+import pytest
+
 from ttc_mcp.static.schedule import TZ, day_label, departures_at, service_hours, service_ids_on, wall_clock
 
 
@@ -30,6 +32,13 @@ def test_departures_filter_by_route_and_are_sorted(conn):
     rows = departures_at(conn, "15461", at, limit=4, route="504")
     assert len(rows) == 4 and [r["when"] for r in rows] == sorted(r["when"] for r in rows)
     assert all(r["route"] == "504" and r["in_min"] >= 0 and r["gtfs_time"] for r in rows)
+
+
+@pytest.mark.parametrize("at", [dt.datetime(2026, 10, 6, 8, 0, tzinfo=TZ), dt.datetime(2026, 10, 6, 0, 40, 59, 500000, tzinfo=TZ)])
+def test_departures_stop_at_the_horizon_when_one_is_given(conn, at):
+    full = departures_at(conn, "15461", at, limit=500)
+    near = departures_at(conn, "15461", at, limit=500, horizon_min=30)
+    assert near and near == [r for r in full if r["in_min"] <= 30] and len(near) < len(full)
 
 
 def test_service_hours_for_a_blue_night_route(conn):
