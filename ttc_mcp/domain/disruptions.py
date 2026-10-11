@@ -85,7 +85,7 @@ def surface_alert(el: dict) -> dict:
     span = el["span"] or [None, None]
     return {"route": el["route"], "effect": "No Service" if el["type"] == "suspension" else "Detour", "source": el["source"],
             "alert_id": el["alert_id"], "detour_id": None, "direction": el["direction"], "from": span[0], "to": span[1],
-            "skipped_stops": len(el["stops"]), "reason": el["cause"], "active_now": el["active_now"], "text": el["text"]}
+            "skipped_stops": len(el["stops"]), "reason": el["cause"], "service_dates": None, "active_now": el["active_now"], "text": el["text"]}
 
 
 def surface_detour(g: dict) -> dict:
@@ -94,7 +94,7 @@ def surface_detour(g: dict) -> dict:
     return {"route": g["route"], "effect": "Detour", "source": "detour feed", "alert_id": None, "detour_id": g["detour_id"],
             "direction": "Both ways" if ids >= {"0", "1"} else d["headsign"], "from": (d["leaves_after"] or {}).get("name"),
             "to": (d["rejoins_at"] or {}).get("name"), "skipped_stops": len(g["skipped_stops"]), "reason": reason.get("title"),
-            "active_now": g["active_today"], "text": reason.get("text")}
+            "service_dates": g["service_dates"], "active_now": g["active_today"], "text": reason.get("text")}
 
 
 def platform_closures(rt: RtAlertFeed | None, now_epoch: float) -> dict[str, list[dict]]:
