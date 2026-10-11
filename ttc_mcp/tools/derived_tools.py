@@ -111,7 +111,8 @@ def register(mcp: FastMCP) -> None:
         search over scheduled patterns, so a ride, shuttle, ride option reports 2 transfers under max_transfers=1.
         Detour-skipped stops are never used (a skipped stop number plans from the served stops within walk_m of it, with a note);
         every option lists the disruptions it touches, including route-level delays, each naming the legs it affects, and an
-        empty answer says why. Typical minutes come from the timetable, not from live data."""
+        empty answer says why. Typical minutes come from the timetable, not from live data; live departures and disruptions are
+        best effort, from the TTC's own site endpoints."""
         async def run(feed):
             if err := _input_error(origin, destination, walk_m, limit, depart_at):
                 return {"error": err}, [], ""

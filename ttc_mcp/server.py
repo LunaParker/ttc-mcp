@@ -22,7 +22,9 @@ INSTRUCTIONS = (
     "service_status first for the network picture. For trip questions (how do I get from A to B) call connections with stop numbers, "
     "station names or {lat, lon}: it plans direct and one-transfer rides around closures and detours. route_shape gives a route's "
     "geometry; accessibility gives a station's step-free picture with elevator status. "
-    "Every answer carries meta (source, fetched_at, cache, static_feed, staleness)."
+    "Every answer carries meta (source, fetched_at, cache, static_feed, staleness). "
+    "Contains information licensed under the Open Government Licence – Toronto. "
+    "Real-time and advisory answers are best effort, read from the TTC's own site endpoints, none of which publish terms."
 )
 RECHECK_S = 24 * 3600
 

@@ -176,3 +176,21 @@ async def test_scheduled_departures_resolve_a_stop_code_and_reject_an_unknown_st
         assert len(by_code["departures"]) == 3 and by_code["departures"] == by_id["departures"] and by_code["stop"] == "407"
         r = (await c.call_tool("scheduled_departures", {"stop": "nowhere"})).data
         assert r["error"] == "stop nowhere not found" and "departures" not in r and r["meta"]["static_feed"] == "S1000538"
+
+
+def test_instructions_carry_the_licence_attribution_and_the_best_effort_wording():
+    from ttc_mcp.server import INSTRUCTIONS
+
+    assert "Contains information licensed under the Open Government Licence – Toronto" in INSTRUCTIONS
+    assert "Real-time and advisory answers are best effort, read from the TTC's own site endpoints, none of which publish terms" in INSTRUCTIONS
+
+
+@pytest.mark.anyio
+async def test_live_tool_descriptions_say_best_effort_and_the_occupancy_scope(app):
+    async with Client(app) as c:
+        desc = {t.name: t.description for t in await c.list_tools()}
+    for name in ("arrivals", "next_trains", "vehicles", "alerts", "service_status", "detours", "service_changes", "connections"):
+        assert "best effort" in desc[name], name
+    for name in ("vehicles", "arrivals"):
+        assert "historical occupancy" in desc[name] and "out of scope" in desc[name], name
+    assert "best effort" not in desc["routes"]

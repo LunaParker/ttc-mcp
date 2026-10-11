@@ -34,7 +34,8 @@ def register(mcp: FastMCP) -> None:
         """Next vehicles at a bus or streetcar stop (BusTime predictions, crowding from the vehicle feed) or next trains at a rail
         platform (NTAS). Rows carry basis realtime or schedule: when no real-time prediction exists the timetable fills in and a note says so.
         A rail platform inside an active closure answers no arrivals at all (NTAS keeps predicting there) with a note and the closure.
-        Every row carries detour_id (the vehicle's trip is on a detour) and the answer lists the stop's disruptions."""
+        Every row carries detour_id (the vehicle's trip is on a detour) and the answer lists the stop's disruptions.
+        Answers are best effort, from the TTC's own site endpoints; historical occupancy is out of scope."""
         async def run(feed):
             conn, rt, now = feed.conn, runtime.get_realtime(), runtime.now()
             row = arr.stop_row(conn, stop)
@@ -67,7 +68,8 @@ def register(mcp: FastMCP) -> None:
         """Next trains at every rail platform of a station (id, name or alias such as "Dundas" or "Bloor") or at one platform id,
         from the TTC's NTAS. A platform with no prediction falls back to the timetable (service no_prediction); an empty NTAS answer never means no trains.
         A platform inside an active closure is service suspended with the closure and no minutes (next_min [], no basis, NTAS's own
-        numbers in ntas_min, no timetable); a closure's end station keeps real minutes on the platform facing the open line."""
+        numbers in ntas_min, no timetable); a closure's end station keeps real minutes on the platform facing the open line.
+        Answers are best effort, from the TTC's own site endpoint."""
         async def run(feed):
             conn, rt, now = feed.conn, runtime.get_realtime(), runtime.now()
             res = trains.resolve(conn, query)
@@ -87,7 +89,8 @@ def register(mcp: FastMCP) -> None:
     @mcp.tool
     async def vehicles(route: str | None = None, vehicle_id: str | None = None) -> dict:
         """Live positions of the buses and streetcars on a route, or one vehicle by fleet number: coordinates, bearing, speed, current stop
-        (public number), headsign and crowding. Rail lines (1, 2, 4, 5, 6) publish no positions and answer unavailable; use next_trains."""
+        (public number), headsign and crowding. Rail lines (1, 2, 4, 5, 6) publish no positions and answer unavailable; use next_trains.
+        Answers are best effort, from the TTC's own site endpoint; historical occupancy is out of scope."""
         async def run(feed):
             if not (route or vehicle_id):
                 return {"error": "give a route or a vehicle_id"}, [], ""
