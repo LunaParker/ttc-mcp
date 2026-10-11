@@ -203,3 +203,27 @@ def test_store_feeds_open_lazily_and_share_nothing_across_threads(tmp_path, fixt
         t.join()
     assert len({id(c) for c in conns}) == 3 and all(c is not feed.conn for c in conns)
     store.close()
+
+
+def test_a_threads_connection_is_closed_and_forgotten_when_the_thread_exits(fixture_db):
+    """anyio stops worker threads idle for 10 s; their connections must not pile up on a long-lived server."""
+    import gc
+    import sqlite3
+    import threading
+
+    import pytest
+
+    from ttc_mcp.static.store import FeedDb
+
+    feed = FeedDb("S1000538", dt.date(2026, 9, 1), dt.date(2026, 10, 31), fixture_db)
+    main = feed.conn
+    seen = []
+    t = threading.Thread(target=lambda: seen.append(feed.conn))
+    t.start()
+    t.join()
+    gc.collect()
+    assert seen[0] is not main and feed._opened == [main]
+    with pytest.raises(sqlite3.ProgrammingError):
+        seen[0].execute("SELECT 1")
+    assert main.execute("SELECT 1").fetchone()[0] == 1
+    feed.close()
