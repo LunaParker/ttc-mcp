@@ -48,7 +48,7 @@ def platform_entry(conn, platform, trains: list[NextTrains] | None, error: str |
 
 
 def suspended(entry: dict, closure: dict) -> dict:
-    """A suspended platform's entry: no minutes, live or timetable (NTAS predicts at closed platforms, spec 8 item 7); what
-    NTAS said stays visible as ntas_min and basis stays as it was."""
-    rest = {k: v for k, v in entry.items() if k != "scheduled_next_min"}
-    return {**rest, "next_min": [], "ntas_min": entry["next_min"], "service": "suspended", "disruption": closure, "note": SUSPENDED_NOTE}
+    """Spec 4.4's suspended platform: next_min [], service and the closure, no basis and no timetable; what NTAS said (it keeps
+    predicting at closed platforms, spec 8 item 7) stays visible as ntas_min."""
+    rest = {k: v for k, v in entry.items() if k not in ("basis", "scheduled_next_min")}
+    return {**rest, "next_min": [], "ntas_min": entry["next_min"], "service": "suspended", "disruption": closure, "note": SUSPENDED_NOTE, "source": "ntas"}

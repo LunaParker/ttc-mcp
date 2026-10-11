@@ -66,8 +66,8 @@ def register(mcp: FastMCP) -> None:
     async def next_trains(query: str) -> dict:
         """Next trains at every rail platform of a station (id, name or alias such as "Dundas" or "Bloor") or at one platform id,
         from the TTC's NTAS. A platform with no prediction falls back to the timetable (service no_prediction); an empty NTAS answer never means no trains.
-        A platform inside an active closure is service suspended with the closure and no minutes (next_min [], NTAS's own numbers in
-        ntas_min, no timetable); a closure's end station keeps real minutes on the platform facing the open line."""
+        A platform inside an active closure is service suspended with the closure and no minutes (next_min [], no basis, NTAS's own
+        numbers in ntas_min, no timetable); a closure's end station keeps real minutes on the platform facing the open line."""
         async def run(feed):
             conn, rt, now = feed.conn, runtime.get_realtime(), runtime.now()
             res = trains.resolve(conn, query)
@@ -78,7 +78,8 @@ def register(mcp: FastMCP) -> None:
             entries = [trains.platform_entry(conn, p, h.parsed if h else None, err, now) for p, (h, err) in zip(platforms, results)]
             snap = await advisory.snapshot(feed)
             entries = [trains.suspended(e, closed) if (closed := snap.disruptions.platform_closed_now(p)) else e for p, e in zip(platforms, entries)]
-            source = "ntas" + (" + static stop_times" if any(e["basis"] == "schedule" for e in entries) else "")
+            # The timetable counts as a source only where a platform actually answered from it; suspended entries carry no basis.
+            source = "ntas" + (" + static stop_times" if any(e.get("basis") == "schedule" and e.get("scheduled_next_min") for e in entries) else "")
             return {"station": {"id": station["stop_id"], "name": station["name"]}, "platforms": entries,
                     "disruptions": snap.disruptions.for_station(station["stop_id"])}, [h for h, _ in results if h], source, snap
         return await _aguard(run)
