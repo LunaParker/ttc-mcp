@@ -16,6 +16,7 @@ TRANSFER_PENALTY_MIN = 4
 HORIZON_MIN = 120
 SHUTTLE_RUNS = ("will operate", "running", "operating")
 RAIL = ("subway", "lrt")
+DIRECTION_WORDS = ("northbound", "southbound", "eastbound", "westbound")
 
 
 @dataclass
@@ -224,6 +225,21 @@ def _shuttle_runs(el: dict) -> bool:
     return str(el.get("shuttle") or "").strip().lower() in SHUTTLE_RUNS
 
 
+def _platforms(conn, ids: list[str]) -> list[tuple[str | None, str]]:
+    """(parent station, name) of the stops, in the given order."""
+    if not ids:
+        return []
+    rows = {r[0]: (r[1], r[2]) for r in conn.execute(f"SELECT stop_id, parent_station, name FROM stops WHERE stop_id IN ({','.join('?' * len(ids))})", ids)}
+    return [rows[sid] for sid in ids if sid in rows]
+
+
+def _rsz_touches(el: dict, platforms: list[tuple[str | None, str]]) -> bool:
+    """The zone names a traversed station and its direction word, if any, is in that platform's name (Line 1 headsigns carry none)."""
+    at = [name for station, name in platforms if station in el["stations"]]
+    word = next((w for w in DIRECTION_WORDS if w in (el.get("direction") or "").lower()), None)
+    return bool(at) and (word is None or any(word in name.lower() for name in at))
+
+
 def _closure_extent(conn, el: dict, pattern_id: int) -> tuple[int, int] | None:
     """Lowest and highest pattern positions of the closure's stations; None when it names none on the pattern."""
     ids = list(el.get("stations") or [])
@@ -326,9 +342,9 @@ def overlay(conn, disr: Disruptions, options: list[dict]) -> list[dict]:
                 if parts is None:
                     dropped = True
                     break
-                stations = {s["station"] for s in (_station_of(conn, sid) for sid in traversed) if s["station"]}
+                platforms = _platforms(conn, traversed)
                 for el in disr.elements:
-                    if el["type"] == "rsz" and el["active_now"] and leg["route"] in el["routes"] and stations & set(el["stations"]):
+                    if el["type"] == "rsz" and el["active_now"] and leg["route"] in el["routes"] and _rsz_touches(el, platforms):
                         found[element_key(el)] = el
                 legs.extend(parts)
             else:

@@ -52,6 +52,18 @@ def test_night_closure_splits_the_line_1_ride_into_ride_shuttle_ride(conn):
     assert over[0]["stops"] == legs[0]["stops"] + legs[2]["stops"]
 
 
+def test_rsz_annotation_respects_the_zone_direction(conn):
+    """Platform names carry the direction word (Line 1 headsigns do not): a southbound ride lists southbound and two-way zones only."""
+    rsz = next(a for a in alerts().alerts if a.id == "77535")
+    zones = [dataclasses.replace(rsz, id=i, direction=d) for i, d in
+             (("90001", "Southbound From Finch"), ("90002", "Northbound To Finch"), ("90003", "Both ways"), ("90004", None))]
+    disr = Disruptions.build(conn, AlertList(None, None, zones), None, [], NOW_DAY)
+    south = planner.overlay(conn, disr, finch_union(conn, NOW_DAY))
+    assert {d["alert_id"] for d in south[0]["disruptions"]} == {"90001", "90003", "90004"}
+    north = planner.search(conn, planner.resolve_endpoint(conn, "Union"), planner.resolve_endpoint(conn, "Finch"), now=NOW_DAY, max_transfers=0)
+    assert {d["alert_id"] for d in planner.overlay(conn, disr, north)[0]["disruptions"]} == {"90002", "90003", "90004"}
+
+
 def test_day_closure_not_active_leaves_the_ride_whole_but_notes_the_rsz(conn):
     over = planner.overlay(conn, build(conn, NOW_DAY), finch_union(conn, NOW_DAY))
     assert [l["mode"] for l in over[0]["legs"] if l["mode"] != "walk"] == ["ride"]
