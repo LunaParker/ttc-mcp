@@ -158,3 +158,48 @@ def test_get_store_keeps_its_connections_over_a_check_only_manifest_save_and_reo
     reopened = app_env.get_store()
     assert reopened is not store and [f.version for f in reopened.feeds] == ["S1000538", "S1000542"]
     assert reopened.status(dt.date(2026, 10, 6))["last_check"] == "2026-10-06T03:00:00-04:00"
+
+
+def test_each_thread_gets_its_own_read_only_connection_and_close_closes_them_all(fixture_db):
+    """SQLite in multi-thread mode forbids using one connection from two threads at once; the store hands each thread its own."""
+    import sqlite3
+    import threading
+
+    import pytest
+
+    from ttc_mcp.static.store import FeedDb
+
+    feed = FeedDb("S1000538", dt.date(2026, 9, 1), dt.date(2026, 10, 31), fixture_db)
+    main = feed.conn
+    assert feed.conn is main and main.row_factory is sqlite3.Row
+    seen = {}
+
+    def worker():
+        seen["conn"] = feed.conn
+        seen["name"] = feed.conn.execute("SELECT name FROM stops WHERE stop_id='15772'").fetchone()["name"]
+    t = threading.Thread(target=worker)
+    t.start()
+    t.join()
+    assert seen["conn"] is not main and seen["name"] == main.execute("SELECT name FROM stops WHERE stop_id='15772'").fetchone()["name"]
+    feed.close()
+    with pytest.raises(sqlite3.ProgrammingError):
+        main.execute("SELECT 1")
+    with pytest.raises(sqlite3.ProgrammingError):
+        seen["conn"].execute("SELECT 1")
+    assert feed.conn.execute("SELECT 1").fetchone()[0] == 1
+    feed.close()
+
+
+def test_store_feeds_open_lazily_and_share_nothing_across_threads(tmp_path, fixture_db):
+    import threading
+
+    store = StaticStore.from_manifest(_cache(tmp_path, fixture_db, entry("S1000538", "20260901", "20261031", "static-S1000538.sqlite")))
+    feed = store.feeds[0]
+    conns = []
+    threads = [threading.Thread(target=lambda: conns.append(feed.conn)) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len({id(c) for c in conns}) == 3 and all(c is not feed.conn for c in conns)
+    store.close()

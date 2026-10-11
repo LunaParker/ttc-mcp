@@ -35,7 +35,7 @@ async def test_set_realtime_replaces_the_singleton():
 def test_meta_rt_merges_hits_worst_first():
     runtime.reset()
     now = runtime.get_realtime().clock()
-    feed = FeedDb("S1000538", None, None, None, None)
+    feed = FeedDb("S1000538", None, None, None)
     hits = [hit(STOP_XML, "ttl", now - 20), hit(VEHICLES, "live", now - 1, feed_ts=int(now) - 25)]
     m = runtime.meta_rt(feed, hits, source="bustime getStopPredictions.jsp + gtfsrt/vehicles")
     assert m["source"].startswith("bustime") and m["cache"] == "ttl" and m["staleness"] == "fresh"
