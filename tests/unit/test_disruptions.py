@@ -15,6 +15,7 @@ from ttc_mcp.static.schedule import TZ
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "advisories"
 NOW_DAY = dt.datetime(2026, 10, 6, 8, 0, tzinfo=TZ)
 NOW_NIGHT = dt.datetime(2026, 10, 6, 23, 30, tzinfo=TZ)
+SURFACE_KEYS = {"route", "effect", "source", "alert_id", "detour_id", "direction", "from", "to", "skipped_stops", "reason", "active_now", "text"}
 
 
 def alerts():
@@ -91,6 +92,18 @@ def test_service_status_summary(conn):
     assert {x["route"] for x in s["surface"]} == {"512", "13", "504", "77"}
     d504 = next(x for x in s["surface"] if x.get("detour_id") == "9001")
     assert (d504["effect"], d504["skipped_stops"], d504["reason"], d504["active_now"]) == ("Detour", 3, "504 King – Temporary route change due to track work", True)
+    assert all(set(x) == SURFACE_KEYS for x in s["surface"]), [set(x) for x in s["surface"]]
+    name = lambda n: conn.execute("SELECT name FROM stops WHERE stop_id=?", (n,)).fetchone()[0]
+    assert (d504["source"], d504["alert_id"], d504["direction"], d504["from"], d504["to"], d504["text"]) == \
+        ("detour feed", None, "East - 504A King towards Distillery", name("4569"), name("4573"), "504 King streetcars will divert via Queen St.")
+    d77 = next(x for x in s["surface"] if x.get("detour_id") == "9002")
+    assert (d77["direction"], d77["from"], d77["to"], d77["skipped_stops"], d77["reason"], d77["text"]) == (None, None, None, 0, None, None)
+    s512 = next(x for x in s["surface"] if x["alert_id"] == "77545")
+    assert (s512["effect"], s512["source"], s512["detour_id"], s512["direction"], s512["skipped_stops"], s512["reason"], s512["active_now"]) == \
+        ("No Service", "alerts.ttc.ca", None, "Both ways", 34, "Collision", True)
+    assert (s512["from"], s512["to"]) == ("Gunns Loop at St Clair Ave West", "Lansdowne Ave at St. Clair Ave West South Side") and s512["text"].startswith("512 St Clair: No service")
+    a13 = next(x for x in s["surface"] if x["alert_id"] == "77530")
+    assert (a13["effect"], a13["direction"], a13["from"], a13["skipped_stops"], a13["reason"]) == ("Detour", "Southbound", "University Ave at Gerrard St West", 0, "Police activity")
     assert s["reduced_speed_zones"]["count"] == 1 and s["reduced_speed_zones"]["zones"][0]["stations"] == ["York Mills", "Sheppard-Yonge"]
     assert s["elevators_out"] == {"St George": ["1Y1L"]} and s["escalators_out"] == {"Coxwell": ["11D3E"]}
 

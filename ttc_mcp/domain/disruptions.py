@@ -80,6 +80,23 @@ def detour_elements(groups: list[dict]) -> list[dict]:
     return out
 
 
+def surface_alert(el: dict) -> dict:
+    """A service_status.surface row from an alert element: the one shape the detour-feed rows share (spec 4.4)."""
+    span = el["span"] or [None, None]
+    return {"route": el["route"], "effect": "No Service" if el["type"] == "suspension" else "Detour", "source": el["source"],
+            "alert_id": el["alert_id"], "detour_id": None, "direction": el["direction"], "from": span[0], "to": span[1],
+            "skipped_stops": len(el["stops"]), "reason": el["cause"], "active_now": el["active_now"], "text": el["text"]}
+
+
+def surface_detour(g: dict) -> dict:
+    """A service_status.surface row from a detour group: its first direction's span, both ways when the group has both."""
+    d, ids, reason = g["directions"][0], {x["direction_id"] for x in g["directions"]}, g["reason"] or {}
+    return {"route": g["route"], "effect": "Detour", "source": "detour feed", "alert_id": None, "detour_id": g["detour_id"],
+            "direction": "Both ways" if ids >= {"0", "1"} else d["headsign"], "from": (d["leaves_after"] or {}).get("name"),
+            "to": (d["rejoins_at"] or {}).get("name"), "skipped_stops": len(g["skipped_stops"]), "reason": reason.get("title"),
+            "active_now": g["active_today"], "text": reason.get("text")}
+
+
 def platform_closures(rt: RtAlertFeed | None, now_epoch: float) -> dict[str, list[dict]]:
     """Per-night NO_SERVICE entities list the closed platform ids (every entity per platform, in feed order);
     REDUCED_SERVICE umbrellas span whole days and are ignored here."""
@@ -212,10 +229,8 @@ class Disruptions:
 
     def service_status(self, alerts: AlertList | None, groups: list[dict]) -> dict:
         closures = sorted((el for el in self.elements if el["type"] == "closure"), key=lambda el: (not el["active_now"], el["route"] or ""))
-        surface = [el for el in self.elements if el["type"] in ("suspension", "detour") and el["source"] == "alerts.ttc.ca"]
-        surface += [{"route": g["route"], "effect": "Detour", "source": "detour feed", "detour_id": g["detour_id"],
-                     "skipped_stops": len(g["skipped_stops"]), "active_now": g["active_today"], "service_dates": g["service_dates"],
-                     "reason": g["reason"]["title"] if g["reason"] else None} for g in groups]
+        surface = [surface_alert(el) for el in self.elements if el["type"] in ("suspension", "detour") and el["source"] == "alerts.ttc.ca"]
+        surface += [surface_detour(g) for g in groups]
         rsz = [el for el in self.elements if el["type"] == "rsz"]
         units: dict[str, dict[str, list]] = {"elevator": {}, "escalator": {}}
         for el in self.elements:

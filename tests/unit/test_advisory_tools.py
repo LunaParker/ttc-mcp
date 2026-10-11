@@ -42,6 +42,9 @@ async def test_service_status_summarises_the_network(app_env):
         assert {s["route"] for s in r["surface"]} == {"512", "13", "504", "77"}
         d504 = next(s for s in r["surface"] if s.get("detour_id") == "9001")
         assert (d504["skipped_stops"], d504["active_now"]) == (3, True) and d504["reason"].startswith("504 King")
+        keys = {"route", "effect", "source", "alert_id", "detour_id", "direction", "from", "to", "skipped_stops", "reason", "active_now", "text"}
+        assert all(set(s) == keys for s in r["surface"]) and {s["effect"] for s in r["surface"]} == {"No Service", "Detour"}
+        assert {(s["alert_id"], s["detour_id"]) for s in r["surface"]} == {("77545", None), ("77530", None), (None, "9001"), (None, "9002")}
         assert r["reduced_speed_zones"]["count"] == 1 and r["elevators_out"] == {"St George": ["1Y1L"]} and r["escalators_out"] == {"Coxwell": ["11D3E"]}
         assert r["as_of"] == "2026-10-05T13:42-04:00" and r["meta"]["cache"] == "live"
 
