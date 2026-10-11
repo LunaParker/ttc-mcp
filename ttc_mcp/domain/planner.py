@@ -361,7 +361,9 @@ def _option(opt: dict, legs: list[dict], disruptions: list[dict]) -> dict:
     vehicles = [l for l in legs if l["mode"] in ("ride", "shuttle")]
     known = sum(l["min"] if "min" in l else (l["typical_min"] or 0) for l in legs)
     unknown = any(l["typical_min"] is None for l in vehicles)
-    return {**opt, "legs": legs, "transfers": len(vehicles) - 1, "typical_min": None if unknown else known,
+    # The departure record belongs to the first ride the search found; a shuttle in its place has no timetable.
+    departure = None if vehicles and vehicles[0]["mode"] == "shuttle" else opt.get("first_departure")
+    return {**opt, "legs": legs, "first_departure": departure, "transfers": len(vehicles) - 1, "typical_min": None if unknown else known,
             **({"known_min": known, "typical_min_note": "excludes the shuttle leg"} if unknown else {}),
             "stops": sum(l["stops"] for l in legs if l["mode"] == "ride"), "disruptions": disruptions}
 
@@ -400,9 +402,9 @@ def overlay(conn, disr: Disruptions, options: list[dict]) -> list[dict]:
                 if part["mode"] == "ride":
                     for el in _annotations(conn, disr, part, rows):
                         touch(el, [n])
-            # Route-level alerts (delays, stopless detours and suspensions) touch every ride on the route.
+            # Route-level alerts (delays, stopless detours and suspensions) touch every ride on the route, none once a shuttle replaced it.
             rides = [n for n, part in zip(numbers, parts) if part["mode"] == "ride"]
-            for el in disr.by_route.get(leg["route"], []):
+            for el in disr.by_route.get(leg["route"], []) if rides else ():
                 if el["active_now"] and not el["stations"] and not el["stops"] and el["type"] not in (*UNIT_KINDS, "rsz"):
                     touch(el, rides)
         if not dropped:

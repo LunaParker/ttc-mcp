@@ -69,15 +69,16 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool
     async def station(query: str) -> dict:
-        """A subway or LRT station by id, name or alias: platforms (with open/closed status), entrances, accessibility summary,
-        service per line (normal / reduced / suspended with the closure), and every disruption touching the station."""
+        """A subway or LRT station by id, name or alias: rail platforms (with open/closed status), surface stops at the station
+        (bus bays, streetcar platforms, with status), entrances, accessibility summary from the rail platforms, service per line
+        (normal / reduced / suspended with the closure), and every disruption touching the station."""
         def run(f, snap):
             d = network.station_detail(f.conn, query)
             if not d:
                 return {"error": f"station {query!r} not found"}
             d["disruptions"] = snap.disruptions.for_station(d["id"])
             d["service"] = snap.disruptions.station_service(d["id"], d["lines"])
-            for p in d["platforms"]:
+            for p in d["platforms"] + d["surface_stops"]:
                 p["status"] = snap.disruptions.route_stop_status(stop_row(f.conn, p["number"]))
             return {"station": d}
         return await _with_advisories(run)
@@ -121,6 +122,7 @@ def register(mcp: FastMCP) -> None:
             row = stop_row(f.conn, stop)
             if row is None:
                 return {"error": f"stop {stop} not found"}
-            return {"stop": stop, "from": when.isoformat(timespec="seconds"), "basis": "schedule",
+            head = {"number": row["stop_id"], "name": row["name"], "lat": row["lat"], "lon": row["lon"], "station": row["parent_station"] or None}
+            return {"stop": head, "from": when.isoformat(timespec="seconds"), "basis": "schedule",
                     "departures": schedule.departures_at(f.conn, row["stop_id"], when, limit=limit, route=route)}
         return _guard(run)

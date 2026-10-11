@@ -69,8 +69,8 @@ def test_future_elevator_outage_is_upcoming_not_out_of_service(conn):
     assert not [u for u in r["units"] if u["code"] == "1Y1L"]
     period = [start.isoformat(timespec="minutes"), end.isoformat(timespec="minutes")]
     assert r["upcoming"] == [{"alert_id": "77513", "kind": "elevator", "code": "1Y1L", "period": period, "text": future.header}]
-    # St George has two platforms flagged 0 in the fixture: unknown, never accessible (spec 6.2), so no confident no.
-    assert r["step_free"] == {"verdict": "unknown", "basis": "platforms unknown"}
+    # St George's rail platforms are all flagged 1; its bus bays (flagged 0) are not platforms, and its elevator nodes are uncoded.
+    assert r["step_free"] == {"verdict": "unknown", "basis": "uncoded nodes"}
 
 
 def test_a_digit_query_is_a_station_id_then_a_stop_before_any_name(conn, fixture_db, tmp_path):
@@ -113,10 +113,15 @@ def test_step_free_yes_needs_an_accessible_summary_and_no_from_an_alert_notes_a_
     flagged.execute("UPDATE stops SET wheelchair=0 WHERE parent_station='14587' AND location_type=0")
     r = acc.for_station(flagged, acc.resolve(flagged, "Queen"), disruptions(flagged, quiet))
     assert (r["summary"], r["step_free"]) == ("unknown", {"verdict": "unknown", "basis": "platforms unknown"})
-    # A 0 flag beside a 1 reads partially accessible, but 0 means unknown: no platform is flagged 2, so no confident no.
+    # A 0 flag beside a 1 proves nothing either way: the summary stays unknown, and so does the verdict.
     flagged.execute("UPDATE stops SET wheelchair=1 WHERE stop_id='13811'")
     r = acc.for_station(flagged, acc.resolve(flagged, "Queen"), disruptions(flagged, quiet))
-    assert (r["summary"], r["step_free"]) == ("partially accessible", {"verdict": "unknown", "basis": "platforms unknown"})
+    assert (r["summary"], r["step_free"]) == ("unknown", {"verdict": "unknown", "basis": "platforms unknown"})
+    # A 0 beside a 2 is unknown too: one platform is known inaccessible, the other unknown, so the verdict says no.
+    flagged.execute("UPDATE stops SET wheelchair=2 WHERE stop_id='13811'")
+    r = acc.for_station(flagged, acc.resolve(flagged, "Queen"), disruptions(flagged, quiet))
+    assert (r["summary"], r["step_free"]) == ("unknown", {"verdict": "no", "basis": "platforms"})
+    flagged.execute("UPDATE stops SET wheelchair=1 WHERE stop_id='13811'")
     flagged.execute("UPDATE stops SET wheelchair=2 WHERE stop_id='13812'")
     r = acc.for_station(flagged, acc.resolve(flagged, "Queen"), disruptions(flagged, quiet))
     assert (r["summary"], r["step_free"]) == ("partially accessible", {"verdict": "no", "basis": "platforms"})
@@ -124,7 +129,8 @@ def test_step_free_yes_needs_an_accessible_summary_and_no_from_an_alert_notes_a_
     out = dataclasses.replace(next(a for a in alerts().alerts if a.id == "77513"), stop_ids=("14587",), unit_code="9Y1L")
     r = acc.for_station(conn, acc.resolve(conn, "Queen"), disruptions(conn, AlertList(None, None, [out])))
     assert r["step_free"] == {"verdict": "no", "basis": "alerts", "basis_note": "a step-free path may remain through another elevator"}
+    # St George's bus bays are flagged 0 but are not platforms: the summary reads its rail platforms, all flagged 1.
     st_george = acc.for_station(conn, acc.resolve(conn, "St George"), disruptions(conn))
-    assert st_george["summary"] == "partially accessible" and st_george["step_free"]["basis"] == "alerts"
-    assert acc.for_station(conn, acc.resolve(conn, "St George"), disruptions(conn, quiet))["step_free"] == {"verdict": "unknown", "basis": "platforms unknown"}
+    assert st_george["summary"] == "accessible" and st_george["step_free"]["basis"] == "alerts"
+    assert acc.for_station(conn, acc.resolve(conn, "St George"), disruptions(conn, quiet))["step_free"] == {"verdict": "unknown", "basis": "uncoded nodes"}
     assert acc.for_station(conn, acc.resolve(conn, "King"), disruptions(conn, quiet))["step_free"] == {"verdict": "no", "basis": "platforms"}

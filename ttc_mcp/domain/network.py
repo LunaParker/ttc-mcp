@@ -10,10 +10,19 @@ KINDS = {1: "station", 2: "entrance", 3: "node"}
 OVERNIGHT_SHARE = 0.85
 
 
-def _kind(row) -> str:
+RAIL_SERVED = ("SELECT 1 FROM stop_routes sr JOIN routes r ON r.route_id=sr.route_id "
+               "WHERE sr.stop_id=? AND r.mode IN ('subway','lrt') LIMIT 1")
+
+
+def is_rail_platform(conn, row) -> bool:
+    """A station child served by a subway or LRT route; bus bays and streetcar platforms under a station are surface stops."""
+    return bool(row["parent_station"]) and row["location_type"] == 0 and conn.execute(RAIL_SERVED, (row["stop_id"],)).fetchone() is not None
+
+
+def _kind(conn, row) -> str:
     if row["location_type"] in KINDS:
         return KINDS[row["location_type"]]
-    return "platform" if row["parent_station"] else "stop"
+    return "platform" if is_rail_platform(conn, row) else "stop"
 
 
 def _served(conn, stop_id: str) -> list[dict]:
@@ -35,7 +44,7 @@ def _aliases(conn, station_id: str) -> list[str]:
 def stop_record(conn, row) -> dict:
     """A stop, platform or station as the list tools return it; a station's canonical key is its id (number kept one release)."""
     rec = {"number": row["stop_id"], "name": row["name"], "lat": row["lat"], "lon": row["lon"], "wheelchair": row["wheelchair"],
-           "kind": _kind(row), "station": row["parent_station"] or None}
+           "kind": _kind(conn, row), "station": row["parent_station"] or None}
     if rec["kind"] in ("stop", "platform"):
         rec["served"] = _served(conn, row["stop_id"])
     if rec["kind"] == "station":
@@ -121,20 +130,22 @@ def station_detail(conn, query: str) -> dict | None:
     st = hits[0]
     sid = st["stop_id"]
     kids = conn.execute("SELECT * FROM stops WHERE parent_station=? ORDER BY location_type, name", (sid,)).fetchall()
-    platforms = [stop_record(conn, k) for k in kids if k["location_type"] == 0]
+    boarding = [stop_record(conn, k) for k in kids if k["location_type"] == 0]
+    platforms = [p for p in boarding if p["kind"] == "platform"]
     entrances = [{"number": k["stop_id"], "name": k["name"], "lat": k["lat"], "lon": k["lon"], "wheelchair": k["wheelchair"]}
                  for k in kids if k["location_type"] == 2]
+    # Decision b from the rail platforms: a 0 flag is unknown, so it only yields a summary beside both a 1 and a 2.
     flags = {p["wheelchair"] for p in platforms}
-    if not flags or flags <= {0}:
-        summary = "unknown"
-    elif flags == {1}:
+    if flags == {1}:
         summary = "accessible"
     elif flags == {2}:
         summary = "not accessible"
-    else:
+    elif {1, 2} <= flags:
         summary = "partially accessible"
+    else:
+        summary = "unknown"
     return {"id": sid, "name": st["name"], "aliases": _aliases(conn, sid), "lat": st["lat"], "lon": st["lon"], "lines": _lines(conn, sid),
-            "platforms": platforms, "entrances": entrances, "node_count": sum(1 for k in kids if k["location_type"] == 3),
+            "platforms": platforms, "surface_stops": [p for p in boarding if p["kind"] == "stop"], "entrances": entrances, "node_count": sum(1 for k in kids if k["location_type"] == 3),
             "wheelchair_summary": summary, "candidates": [h["name"] for h in hits[1:]]}
 
 

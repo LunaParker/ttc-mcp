@@ -282,3 +282,29 @@ def test_a_lone_closed_stop_inside_the_extent_is_bypassed_while_an_end_station_i
     assert into and planner.overlay(conn, disr, into) == []
     whole = trip(conn, "Finch", "Sheppard-Yonge")
     assert planner.overlay(conn, disr, whole)[0]["legs"] == whole[0]["legs"]
+
+
+def test_an_option_that_starts_with_a_shuttle_states_no_first_departure(conn):
+    """The departure record came from the ride the closure replaced; a shuttle has no timetable, so the option states none."""
+    over = planner.overlay(conn, build(conn, NOW_NIGHT), trip(conn, "Lawrence", "Union"))
+    assert over and [l["mode"] for l in over[0]["legs"] if l["mode"] != "walk"][0] == "shuttle" and over[0]["first_departure"] is None
+    whole = planner.overlay(conn, build(conn, NOW_NIGHT), finch_union(conn, NOW_NIGHT))
+    assert whole[0]["first_departure"]["in_min"] >= 0
+
+
+def test_a_route_level_alert_is_not_listed_when_the_whole_ride_became_a_shuttle(conn):
+    """A Line 1 delay touches rides on Line 1; an option whose only vehicle leg is the shuttle has none, so the delay is left out."""
+    detour = next(a for a in alerts().alerts if a.id == "77530")
+    delay = dataclasses.replace(detour, id="90001", kind="delay", routes=("1",), header="Line 1: Delays of up to 10 minutes",
+                                windows=(), start=NOW_NIGHT.replace(hour=20), end=None)
+    disr = Disruptions.build(conn, AlertList(None, None, [*alerts().alerts, delay]), rt(), groups(conn), NOW_NIGHT)
+    over = planner.overlay(conn, disr, trip(conn, "Lawrence", "Eglinton"))
+    assert over and [l["mode"] for l in over[0]["legs"] if l["mode"] != "walk"] == ["shuttle"]
+    affects = {d.get("alert_id"): d["affects"] for d in over[0]["disruptions"]}
+    assert "90001" not in affects and affects["77519"] == [n for n, l in enumerate(over[0]["legs"], 1) if l["mode"] == "shuttle"]
+    whole = planner.overlay(conn, disr, finch_union(conn, NOW_NIGHT))[0]
+    assert affects_of(whole, "90001") == [n for n, l in enumerate(whole["legs"], 1) if l["mode"] == "ride"]
+
+
+def affects_of(opt, alert_id):
+    return next(d["affects"] for d in opt["disruptions"] if d.get("alert_id") == alert_id)
