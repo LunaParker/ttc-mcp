@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 from tests.rtfeeds import make_vehicle_feed
-from ttc_mcp.realtime import Realtime
+from ttc_mcp.realtime import Realtime, attempt
 
 XML = b"<stop><id>15461</id><nm>Cherry</nm><pre><pt>2 MIN</pt><fd>East</fd><v>4617</v><scheduled>false</scheduled><rn>504</rn></pre></stop>"
 NTAS = {"13863": b'[{"line":"1","direction":"1","nextTrains":"0, 4","directionText":"Northbound to Finch","stopCode":"13863"}]',
@@ -87,4 +87,16 @@ async def test_advisory_fetches_hit_their_urls_and_parse(app_env):
     assert sorted(c.split("/")[2] for c in calls) == ["alerts.ttc.ca", "bustime.ttc.ca", "gtfsrt.ttc.ca", "gtfsrt.ttc.ca", "www.ttc.ca"]
     second = await rt.alerts()
     assert second.cache == "ttl" and len(calls) == 5
+    await rt.aclose()
+
+
+@pytest.mark.anyio
+async def test_status_rows_carry_the_hold_and_the_per_host_status_counts():
+    calls = []
+    rt = make(calls, ntas_status=403)
+    for platform in ("13863", "13864", "13863", "13864", "13863"):
+        assert (await attempt(rt.next_trains(platform)))[1] is not None
+    row = {r["name"]: r for r in rt.status()}["ntas"]
+    assert (row["failures"], row["status_counts"], row["last_error"]) == (1, {"403": 2}, "HTTP 403")
+    assert row["retry_after"].startswith("20") and len([c for c in calls if "ntas" in c]) == 2
     await rt.aclose()

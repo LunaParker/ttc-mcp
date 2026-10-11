@@ -28,13 +28,18 @@ def _lines(conn, station_id: str) -> list[str]:
     return [r[0] for r in rows]
 
 
+def _aliases(conn, station_id: str) -> list[str]:
+    return [r[0] for r in conn.execute("SELECT DISTINCT alias FROM station_aliases WHERE station_id=? ORDER BY alias", (station_id,))]
+
+
 def stop_record(conn, row) -> dict:
+    """A stop, platform or station as the list tools return it; a station's canonical key is its id (number kept one release)."""
     rec = {"number": row["stop_id"], "name": row["name"], "lat": row["lat"], "lon": row["lon"], "wheelchair": row["wheelchair"],
            "kind": _kind(row), "station": row["parent_station"] or None}
     if rec["kind"] in ("stop", "platform"):
         rec["served"] = _served(conn, row["stop_id"])
     if rec["kind"] == "station":
-        rec["lines"] = _lines(conn, row["stop_id"])
+        rec.update(id=row["stop_id"], aliases=_aliases(conn, row["stop_id"]), lines=_lines(conn, row["stop_id"]))
     return rec
 
 
@@ -128,8 +133,7 @@ def station_detail(conn, query: str) -> dict | None:
         summary = "not accessible"
     else:
         summary = "partially accessible"
-    aliases = [r[0] for r in conn.execute("SELECT DISTINCT alias FROM station_aliases WHERE station_id=? ORDER BY alias", (sid,))]
-    return {"id": sid, "name": st["name"], "aliases": aliases, "lat": st["lat"], "lon": st["lon"], "lines": _lines(conn, sid),
+    return {"id": sid, "name": st["name"], "aliases": _aliases(conn, sid), "lat": st["lat"], "lon": st["lon"], "lines": _lines(conn, sid),
             "platforms": platforms, "entrances": entrances, "node_count": sum(1 for k in kids if k["location_type"] == 3),
             "wheelchair_summary": summary, "candidates": [h["name"] for h in hits[1:]]}
 

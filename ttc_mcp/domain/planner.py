@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 from dataclasses import dataclass
 
 from ttc_mcp.domain.arrivals import stop_row
@@ -16,6 +17,9 @@ TRANSFER_PENALTY_MIN = 4
 HORIZON_MIN = 120
 SHUTTLE_RUNS = ("will operate", "running", "operating")
 RAIL = ("subway", "lrt")
+DIRECTION_WORDS = ("northbound", "southbound", "eastbound", "westbound")
+# The terminal an RSZ's direction text names ("Southbound From Finch", "Eastbound To Kennedy"); the last To/From wins.
+TERMINAL = re.compile(r"^.*\b(to|from)\s+(\S.*?)\s*$", re.IGNORECASE)
 
 
 @dataclass
@@ -224,6 +228,39 @@ def _shuttle_runs(el: dict) -> bool:
     return str(el.get("shuttle") or "").strip().lower() in SHUTTLE_RUNS
 
 
+def _platforms(conn, ids: list[str]) -> list[tuple[str | None, str]]:
+    """(parent station, name) of the stops, in the given order."""
+    if not ids:
+        return []
+    rows = {r[0]: (r[1], r[2]) for r in conn.execute(f"SELECT stop_id, parent_station, name FROM stops WHERE stop_id IN ({','.join('?' * len(ids))})", ids)}
+    return [rows[sid] for sid in ids if sid in rows]
+
+
+def _norm(s: str | None) -> str:
+    return " ".join((s or "").lower().replace("-", " ").replace(".", "").split())
+
+
+def _headsign_names(headsign: str | None, name: str) -> bool:
+    """The headsign points at the terminal: the name is a prefix of the station after 'towards' ('... towards Finch Station')."""
+    h, x = _norm(headsign), _norm(name)
+    tail = h.split(" towards ")[-1]
+    return bool(x) and (tail.startswith(x) or f" {x}" in f" {h}")
+
+
+def _rsz_touches(el: dict, leg: dict, platforms: list[tuple[str | None, str]]) -> bool:
+    """The zone names a traversed station and runs the leg's way: by its terminal when the text says "To X" (the headsign names X)
+    or "From X" (it does not), else by its direction word in that platform's name; "Both ways" or no direction always does."""
+    at = [name for station, name in platforms if station in el["stations"]]
+    if not at:
+        return False
+    text = el.get("direction") or ""
+    if m := TERMINAL.match(text):
+        named = _headsign_names(leg["headsign"], m.group(2))
+        return named if m.group(1).lower() == "to" else not named
+    word = next((w for w in DIRECTION_WORDS if w in text.lower()), None)
+    return word is None or any(word in name.lower() for name in at)
+
+
 def _closure_extent(conn, el: dict, pattern_id: int) -> tuple[int, int] | None:
     """Lowest and highest pattern positions of the closure's stations; None when it names none on the pattern."""
     ids = list(el.get("stations") or [])
@@ -235,18 +272,18 @@ def _closure_extent(conn, el: dict, pattern_id: int) -> tuple[int, int] | None:
 
 
 def _closed_positions(conn, disr: Disruptions, pattern_id: int, route: str) -> list[tuple[int, dict]]:
-    """The pattern positions closed now for this line, with the closing element (its station's closure when there is one)."""
+    """The pattern positions closed now for this line with the closing element: the station's closure (the whole span, so the
+    split reaches both ends although an end platform may be served), else the platform's own listing."""
     out = []
     for pos, sid, _ in pattern_rows(conn, pattern_id):
         row = stop_row(conn, sid)
-        el = disr.platform_closed_now(row)
+        el = disr.station_closed_now(row["parent_station"], route) or disr.platform_closed_now(row)
         if not el:
             continue
-        station = disr.station_closed_now(row["parent_station"], route)
         # Belt and braces: phase 3 already ignores an RT listing that names only other lines.
-        if station is None and el["source"] == "gtfsrt alerts" and el["routes"] and route not in el["routes"]:
+        if el["source"] == "gtfsrt alerts" and el["routes"] and route not in el["routes"]:
             continue
-        out.append((pos, station or el))
+        out.append((pos, el))
     return out
 
 
@@ -283,15 +320,14 @@ def closure_verdicts(conn, disr: Disruptions):
     return verdict
 
 
-def _split_rail_leg(conn, disr: Disruptions, leg: dict, rows: list, found: dict) -> list[dict] | None:
-    """Ride, shuttle, ride around a closed block; a lone closed stop is served or bypassed. None drops the option."""
+def _split_rail_leg(conn, disr: Disruptions, leg: dict, rows: list) -> tuple[list[dict] | None, dict | None]:
+    """The leg's parts (ride, shuttle, ride around a closed block; the leg itself when a lone closed stop is served or run through;
+    None when the option drops) and the closure that decided it."""
     lo, hi = leg["board_pos"], leg["alight_pos"]
     closed = _closed_positions(conn, disr, leg["pattern_id"], leg["route"])
     verdict, el = _closure_verdict(conn, disr, leg["pattern_id"], leg["route"], leg["transit"], lo, hi, closed=closed)
-    if el:
-        found[element_key(el)] = el
     if verdict != "split":
-        return [leg] if verdict == "ride" else None
+        return ([leg] if verdict == "ride" else None), el
     inside = [pos - lo for pos, _ in closed if lo <= pos <= hi]
     first, last = inside[0], inside[-1]
     names = stop_names(conn, [r[1] for r in rows])
@@ -307,47 +343,71 @@ def _split_rail_leg(conn, disr: Disruptions, leg: dict, rows: list, found: dict)
                 "note": f"{'subway' if leg['transit'] == 'subway' else 'LRT'} suspended {a} to {b}; shuttle buses operating per alert {el.get('alert_id')}"})
     if last < len(rows) - 1:
         out.append(_ride(conn, meta, rows, last, len(rows) - 1, names) | {"board_pos": leg["board_pos"] + last, "alight_pos": leg["alight_pos"]})
-    return out
+    return out, el
+
+
+def _annotations(conn, disr: Disruptions, leg: dict, rows: list) -> list[dict]:
+    """What a ride passes through: active zones in its direction on rail; suspensions and detours at the stops of a surface leg."""
+    traversed = [r[1] for r in rows[leg["board_pos"]:leg["alight_pos"] + 1]]
+    if leg["transit"] in RAIL:
+        platforms = _platforms(conn, traversed)
+        return [el for el in disr.elements if el["type"] == "rsz" and el["active_now"] and leg["route"] in el["routes"] and _rsz_touches(el, leg, platforms)]
+    return [el for sid in traversed for el in disr.by_stop.get(sid, [])
+            if el["type"] in ("suspension", "detour") and el["active_now"] and (not el["routes"] or leg["route"] in el["routes"])]
+
+
+def _option(opt: dict, legs: list[dict], disruptions: list[dict]) -> dict:
+    """Spec 6.7 item 5: every vehicle change is a transfer; a shuttle's unknown minutes leave typical_min null, known_min covering the rest."""
+    vehicles = [l for l in legs if l["mode"] in ("ride", "shuttle")]
+    known = sum(l["min"] if "min" in l else (l["typical_min"] or 0) for l in legs)
+    unknown = any(l["typical_min"] is None for l in vehicles)
+    return {**opt, "legs": legs, "transfers": len(vehicles) - 1, "typical_min": None if unknown else known,
+            **({"known_min": known, "typical_min_note": "excludes the shuttle leg"} if unknown else {}),
+            "stops": sum(l["stops"] for l in legs if l["mode"] == "ride"), "disruptions": disruptions}
+
+
+def _rank(o: dict) -> tuple:
+    """Transfers, then complete options before those with an unknown leg, then minutes (known_min for the latter), then stops."""
+    return o["transfers"], o["typical_min"] is None, o["known_min"] if o["typical_min"] is None else o["typical_min"], o["stops"]
 
 
 def overlay(conn, disr: Disruptions, options: list[dict]) -> list[dict]:
-    """Decision h: closures cut rail legs (shuttle when offered, else drop); RSZ, suspensions, detours and route-level alerts annotate."""
+    """Decision h: closures cut rail legs (shuttle when offered, else drop); RSZ, suspensions, detours and route-level alerts
+    annotate. Each disruption names the legs it touches (affects, 1-based) on a copy; the snapshot's dicts are never mutated."""
     kept = []
     for opt in options:
-        legs, found, dropped = [], {}, False
+        legs, found, affects, dropped = [], {}, {}, False
+
+        def touch(el: dict, numbers: list[int]) -> None:
+            key = element_key(el)
+            found.setdefault(key, el)
+            affects[key] = sorted(set(affects.get(key, ())) | set(numbers))
+
         for leg in opt["legs"]:
             if leg["mode"] != "ride":
                 legs.append(leg)
                 continue
-            rows = pattern_rows(conn, leg["pattern_id"])[leg["board_pos"]:leg["alight_pos"] + 1]
-            traversed = [r[1] for r in rows]
-            if leg["transit"] in RAIL:
-                parts = _split_rail_leg(conn, disr, leg, rows, found)
-                if parts is None:
-                    dropped = True
-                    break
-                stations = {s["station"] for s in (_station_of(conn, sid) for sid in traversed) if s["station"]}
-                for el in disr.elements:
-                    if el["type"] == "rsz" and el["active_now"] and leg["route"] in el["routes"] and stations & set(el["stations"]):
-                        found[element_key(el)] = el
-                legs.extend(parts)
-            else:
-                for sid in traversed:
-                    for el in disr.by_stop.get(sid, []):
-                        if el["type"] in ("suspension", "detour") and el["active_now"] and (not el["routes"] or leg["route"] in el["routes"]):
-                            found[element_key(el)] = el
-                legs.append(leg)
+            rows = pattern_rows(conn, leg["pattern_id"])
+            parts, el = _split_rail_leg(conn, disr, leg, rows[leg["board_pos"]:leg["alight_pos"] + 1]) if leg["transit"] in RAIL else ([leg], None)
+            if parts is None:
+                dropped = True
+                break
+            numbers = list(range(len(legs) + 1, len(legs) + len(parts) + 1))
+            legs.extend(parts)
+            if el:
+                touch(el, numbers)
+            for n, part in zip(numbers, parts):
+                if part["mode"] == "ride":
+                    for el in _annotations(conn, disr, part, rows):
+                        touch(el, [n])
             # Route-level alerts (delays, stopless detours and suspensions) touch every ride on the route.
+            rides = [n for n, part in zip(numbers, parts) if part["mode"] == "ride"]
             for el in disr.by_route.get(leg["route"], []):
                 if el["active_now"] and not el["stations"] and not el["stops"] and el["type"] not in (*UNIT_KINDS, "rsz"):
-                    found[element_key(el)] = el
-        if dropped:
-            continue
-        total = sum(l["min"] if "min" in l else (l["typical_min"] or 0) for l in legs)
-        kept.append({**opt, "legs": legs, "typical_min": total, "stops": sum(l["stops"] for l in legs if l["mode"] == "ride"),
-                     "disruptions": list(found.values()),
-                     **({"typical_min_note": "excludes the shuttle leg"} if any(l["mode"] == "shuttle" for l in legs) else {})})
-    kept.sort(key=lambda o: (o["transfers"], o["typical_min"], o["stops"]))
+                    touch(el, rides)
+        if not dropped:
+            kept.append(_option(opt, legs, [{**el, "affects": affects[key]} for key, el in found.items()]))
+    kept.sort(key=_rank)
     for i, o in enumerate(kept, 1):
         o["rank"] = i
     return kept

@@ -8,7 +8,9 @@ DEFAULT_TIMEOUT = 10.0
 
 
 class FetchError(RuntimeError):
-    pass
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 @dataclass(frozen=True)
@@ -28,17 +30,17 @@ def make_async_client(user_agent: str, timeout: float = DEFAULT_TIMEOUT) -> http
     return httpx.AsyncClient(headers={"User-Agent": user_agent}, timeout=timeout, follow_redirects=True)
 
 
-async def fetch(client: httpx.AsyncClient, url: str, validators: Validators = Validators()) -> Fetched:
-    """GET with optional conditional headers; 200 and 304 are answers, everything else is a FetchError."""
+async def fetch(client: httpx.AsyncClient, url: str, validators: Validators = Validators(), *, timeout: float | None = None) -> Fetched:
+    """GET with optional conditional headers and a per-request timeout; 200 and 304 are answers, everything else is a FetchError."""
     headers = {}
     if validators.etag:
         headers["If-None-Match"] = validators.etag
     if validators.last_modified:
         headers["If-Modified-Since"] = validators.last_modified
     try:
-        r = await client.get(url, headers=headers)
+        r = await client.get(url, headers=headers, timeout=httpx.USE_CLIENT_DEFAULT if timeout is None else timeout)
     except httpx.HTTPError as e:
         raise FetchError(f"{type(e).__name__}: {e}") from e
     if r.status_code not in (200, 304):
-        raise FetchError(f"HTTP {r.status_code}")
+        raise FetchError(f"HTTP {r.status_code}", r.status_code)
     return Fetched(r.status_code, r.content, {k.lower(): v for k, v in r.headers.items()})

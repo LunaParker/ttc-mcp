@@ -9,7 +9,9 @@ from tests.rtfeeds import make_alert_feed, make_trip_feed, make_vehicle_feed
 
 FIX = Path(__file__).resolve().parent / "fixtures"
 NTAS = {"13863": b'[{"line":"1","direction":"1","nextTrains":"0, 4, 5","directionText":"Northbound to Finch","stopCode":"13863"}]',
-        "13864": b'[{"line":"1","direction":"0","nextTrains":"","directionText":"Southbound to Vaughan Metropolitan Centre","stopCode":"13864"}]'}
+        "13864": b'[{"line":"1","direction":"0","nextTrains":"","directionText":"Southbound to Vaughan Metropolitan Centre","stopCode":"13864"}]',
+        "13791": b'[{"line":"1","direction":"1","nextTrains":"3, 9","directionText":"Northbound to Finch","stopCode":"13791"}]',
+        "13793": b'[{"line":"1","direction":"0","nextTrains":"1, 4, 8","directionText":"Southbound to Vaughan Metropolitan Centre","stopCode":"13793"}]'}
 LINE1_PLATFORMS = [("1", p) for p in ("16073", "13796", "13794", "13793", "13791", "13792")]
 NIGHTS = {"77537": (1791255600, 1791268200), "77538": (1791342000, 1791354600), "77539": (1791428400, 1791441000)}
 CLOSURE_TEXT = "Line 1 Yonge-University: There is no subway service between York Mills and Eglinton stations due to planned maintenance work. Shuttle buses are running."

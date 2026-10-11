@@ -62,3 +62,16 @@ def test_reason_falls_back_to_ttcapi_and_respects_dates():
 
 def test_trip_detour_map():
     assert detours.trip_detour_map(feed()) == {"100677020": "9001", "100895020": "9001", "101100020": "9001", "999999999": "9002"}
+
+
+def test_a_trip_held_by_the_other_loaded_feed_resolves_its_pattern_and_skipped_stops(two_feeds):
+    from ttc_mcp import runtime
+
+    active = runtime.feed_for(TODAY)
+    alone = detours.resolve_entity(active.conn, feed().entities[0], feed().shapes)
+    assert (active.version, alone["pattern"], alone["skipped"]) == ("S1000542", "unknown", [])
+    r = detours.resolve_entity(active.conn, feed().entities[0], feed().shapes, lookup=runtime.trip_lookup(TODAY))
+    assert (r["pattern"], r["headsign"], [s["number"] for s in r["skipped"]]) == (6, "East - 504A King towards Distillery", ["15039", "14994", "14993"])
+    assert (r["leaves_after"]["number"], r["rejoins_at"]["number"]) == ("4569", "4573")
+    g = next(g for g in detours.resolve_detours(active.conn, feed(), TODAY, lookup=runtime.trip_lookup(TODAY)) if g["detour_id"] == "9001")
+    assert g["skipped_stops"] == ["14993", "14994", "15039"]

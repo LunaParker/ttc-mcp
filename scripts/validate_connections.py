@@ -1,7 +1,7 @@
 """Twenty origin-destination pairs across the city for a reviewer to compare with the TTC trip planner (spec validation item 8).
 
 Run: TTC_MCP_SKIP_REFRESH=1 uv run python scripts/validate_connections.py
-Exit 0 when at least 18 pairs return an option under 150 typical minutes.
+Exit 0 when at least 18 pairs return an option under 150 typical minutes (known_min for an option with a shuttle leg).
 """
 import asyncio
 import sys
@@ -26,21 +26,25 @@ PAIRS = [
 
 
 async def main() -> int:
-    ok = 0
+    ok = shuttles = 0
     async with Client(create_app()) as c:
         for origin, destination in PAIRS:
             r = (await c.call_tool("connections", {"origin": origin, "destination": destination})).data
             label = f"{origin if isinstance(origin, str) else (origin['lat'], origin['lon'])} -> {destination if isinstance(destination, str) else (destination['lat'], destination['lon'])}"
             if "error" in r or not r["options"]:
-                print(f"NONE  {label}: {r.get('error', 'no option')}")
+                print(f"NONE    {label}: {r.get('error', 'no option')}")
                 continue
             o = r["options"][0]
             legs = " > ".join(f"{l['route']} ({l['board']['name']} to {l['alight']['name']})" if l["mode"] == "ride" else l["mode"] for l in o["legs"])
-            good = o["typical_min"] is not None and o["typical_min"] < 150
+            shuttle = o["typical_min"] is None
+            mins = o["known_min"] if shuttle else o["typical_min"]
+            good = mins < 150
             ok += good
-            print(f"{'OK   ' if good else 'SLOW '} {label}: {o['typical_min']} min, {o['transfers']} transfer(s), {len(r['options'])} options, basis={o.get('basis')}")
+            shuttles += shuttle
+            tag = "SHUTTLE" if shuttle else ("OK     " if good else "SLOW   ")
+            print(f"{tag} {label}: {mins} min{' known, shuttle leg unknown' if shuttle else ''}, {o['transfers']} transfer(s), {len(r['options'])} options, basis={o.get('basis')}")
             print(f"       {legs}")
-    print(f"{ok}/{len(PAIRS)} pairs with an option under 150 min")
+    print(f"{ok}/{len(PAIRS)} pairs with an option under 150 min; {shuttles} with a shuttle leg (counted by known_min)")
     return 0 if ok >= 18 else 1
 
 

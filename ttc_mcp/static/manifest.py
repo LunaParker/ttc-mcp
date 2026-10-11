@@ -22,19 +22,24 @@ class FeedEntry:
 
 @dataclass
 class Manifest:
+    """The loaded feeds plus the last CKAN check: when it ran (Toronto time) and the package's last_modified."""
     feeds: list[FeedEntry]
+    checked_at: str | None = None
+    ckan_last_modified: str | None = None
 
     @classmethod
     def load(cls, cache_dir: Path) -> "Manifest":
         p = Path(cache_dir) / NAME
         if not p.exists():
             return cls([])
-        return cls([FeedEntry(**f) for f in json.loads(p.read_text()).get("feeds", [])])
+        doc = json.loads(p.read_text())
+        return cls([FeedEntry(**f) for f in doc.get("feeds", [])], doc.get("checked_at"), doc.get("ckan_last_modified"))
 
     def save(self, cache_dir: Path) -> None:
         Path(cache_dir).mkdir(parents=True, exist_ok=True)
         tmp = Path(cache_dir) / (NAME + ".tmp")
-        tmp.write_text(json.dumps({"feeds": [asdict(f) for f in self.feeds]}, indent=1))
+        tmp.write_text(json.dumps({"feeds": [asdict(f) for f in self.feeds], "checked_at": self.checked_at,
+                                   "ckan_last_modified": self.ckan_last_modified}, indent=1))
         tmp.replace(Path(cache_dir) / NAME)
 
     def upsert(self, entry: FeedEntry) -> None:

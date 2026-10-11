@@ -105,10 +105,14 @@ def register(mcp: FastMCP) -> None:
         station id or alias, or {"lat", "lon"} from a geocoder; depart_at is ISO, Toronto time when it has no offset (default now);
         walk_m (metres to and from the stops) is 1 to 2000 and limit 1 to 10.
         The first leg, when it is a ride, carries next departures in its direction: live (basis realtime, or schedule with next_note)
-        when depart_at is within an hour of now, else from the timetable. Closures cut rail legs into ride, shuttle, ride;
-        detour-skipped stops are never used (a skipped stop number plans from the served stops within walk_m of it, with a note);
-        every option lists the disruptions it touches, including route-level delays, and an empty answer says why.
-        Typical minutes come from the timetable, not from live data."""
+        when depart_at is within an hour of now, else from the timetable. Closures cut rail legs into ride, shuttle, ride: the
+        shuttle's minutes are unknown, so such an option has typical_min null with known_min for its other legs and ranks after
+        complete options with the same transfers; every vehicle change counts as a transfer, and max_transfers bounds only the
+        search over scheduled patterns, so a ride, shuttle, ride option reports 2 transfers under max_transfers=1.
+        Detour-skipped stops are never used (a skipped stop number plans from the served stops within walk_m of it, with a note);
+        every option lists the disruptions it touches, including route-level delays, each naming the legs it affects, and an
+        empty answer says why. Typical minutes come from the timetable, not from live data; live departures and disruptions are
+        best effort, from the TTC's own site endpoints."""
         async def run(feed):
             if err := _input_error(origin, destination, walk_m, limit, depart_at):
                 return {"error": err}, [], ""
@@ -148,6 +152,12 @@ def register(mcp: FastMCP) -> None:
                 if note:
                     leg["next_note"] = note
                 opt["basis"] = rows[0]["basis"] if rows else "schedule"
+            # Pattern positions index a private table and the departure record is the timetable's; neither is part of the answer.
+            for opt in opts:
+                for leg in opt["legs"]:
+                    for key in ("board_pos", "alight_pos"):
+                        leg.pop(key, None)
+                opt["first_departure"] = {k: opt["first_departure"][k] for k in ("when", "in_min", "trip_id")}
             # Closed spans are pruned inside search; an unconstrained search tells a closure from an empty timetable.
             if not opts and (found or planner.search(conn, o, d, now=now, max_transfers=max_transfers, limit=1, usable=usable)):
                 notes.append(CLOSED)

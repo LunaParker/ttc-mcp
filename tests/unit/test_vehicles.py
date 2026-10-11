@@ -29,3 +29,16 @@ def test_vehicle_by_id_with_unknown_trip_and_no_stop(conn):
 
 def test_is_rail(conn):
     assert vehicles.is_rail(conn, "1") and vehicles.is_rail(conn, "5") and not vehicles.is_rail(conn, "504") and not vehicles.is_rail(conn, "999")
+
+
+def test_a_vehicle_on_a_trip_held_by_the_other_loaded_feed_keeps_its_headsign(two_feeds):
+    import datetime as dt
+
+    from ttc_mcp import runtime
+
+    today = dt.date(2026, 10, 6)
+    active = runtime.feed_for(today)
+    live = parse_vehicles(make_vehicle_feed(TS, [{"id": "4617", "route": "504", "trip": "100677020", "lat": 43.65, "lon": -79.36}]), {}).value
+    assert active.version == "S1000542" and vehicles.vehicles_on(active.conn, live, route="504")[0]["headsign"] is None
+    row = vehicles.vehicles_on(active.conn, live, route="504", lookup=runtime.trip_lookup(today))[0]
+    assert (row["headsign"], row["direction_id"]) == ("East - 504A King towards Distillery", "0")

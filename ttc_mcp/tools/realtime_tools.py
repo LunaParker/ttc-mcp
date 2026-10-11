@@ -33,7 +33,9 @@ def register(mcp: FastMCP) -> None:
     async def arrivals(stop: str, route: str | None = None, limit: int = 10) -> dict:
         """Next vehicles at a bus or streetcar stop (BusTime predictions, crowding from the vehicle feed) or next trains at a rail
         platform (NTAS). Rows carry basis realtime or schedule: when no real-time prediction exists the timetable fills in and a note says so.
-        Every row carries detour_id (the vehicle's trip is on a detour) and the answer lists the stop's disruptions."""
+        A rail platform inside an active closure answers no arrivals at all (NTAS keeps predicting there) with a note and the closure.
+        Every row carries detour_id (the vehicle's trip is on a detour) and the answer lists the stop's disruptions.
+        Answers are best effort, from the TTC's own site endpoints; historical occupancy is out of scope."""
         async def run(feed):
             conn, rt, now = feed.conn, runtime.get_realtime(), runtime.now()
             row = arr.stop_row(conn, stop)
@@ -45,6 +47,8 @@ def register(mcp: FastMCP) -> None:
             head = {"stop": {"number": sid, "name": row["name"], "lat": row["lat"], "lon": row["lon"], "station": row["parent_station"] or None}}
             rows, hits, source, note = await live.arrivals_at(feed, rt, row, route=route, limit=limit, now=now)
             snap = await advisory.snapshot(feed)
+            if snap.disruptions.platform_closed_now(row):
+                rows, source, note = [], "ntas", trains.SUSPENDED_NOTE
             active = {g["route"] for g in snap.detours if g["active_today"]}
             vehicle_trip = {}
             if active & set(arr.served_at(conn, sid)) and any(r["basis"] == "realtime" for r in rows):
@@ -63,7 +67,9 @@ def register(mcp: FastMCP) -> None:
     async def next_trains(query: str) -> dict:
         """Next trains at every rail platform of a station (id, name or alias such as "Dundas" or "Bloor") or at one platform id,
         from the TTC's NTAS. A platform with no prediction falls back to the timetable (service no_prediction); an empty NTAS answer never means no trains.
-        A platform inside an active closure is reported as service suspended with the closure, whatever NTAS says."""
+        A platform inside an active closure is service suspended with the closure and no minutes (next_min [], no basis, NTAS's own
+        numbers in ntas_min, no timetable); a closure's end station keeps real minutes on the platform facing the open line.
+        Answers are best effort, from the TTC's own site endpoint."""
         async def run(feed):
             conn, rt, now = feed.conn, runtime.get_realtime(), runtime.now()
             res = trains.resolve(conn, query)
@@ -73,11 +79,9 @@ def register(mcp: FastMCP) -> None:
             results = await asyncio.gather(*(_try(rt.next_trains(p["stop_id"])) for p in platforms))
             entries = [trains.platform_entry(conn, p, h.parsed if h else None, err, now) for p, (h, err) in zip(platforms, results)]
             snap = await advisory.snapshot(feed)
-            for p, e in zip(platforms, entries):
-                closed = snap.disruptions.platform_closed_now(p)
-                if closed:
-                    e["service"], e["disruption"] = "suspended", closed
-            source = "ntas" + (" + static stop_times" if any(e["basis"] == "schedule" for e in entries) else "")
+            entries = [trains.suspended(e, closed) if (closed := snap.disruptions.platform_closed_now(p)) else e for p, e in zip(platforms, entries)]
+            # The timetable counts as a source only where a platform actually answered from it; suspended entries carry no basis.
+            source = "ntas" + (" + static stop_times" if any(e.get("basis") == "schedule" and e.get("scheduled_next_min") for e in entries) else "")
             return {"station": {"id": station["stop_id"], "name": station["name"]}, "platforms": entries,
                     "disruptions": snap.disruptions.for_station(station["stop_id"])}, [h for h, _ in results if h], source, snap
         return await _aguard(run)
@@ -85,7 +89,8 @@ def register(mcp: FastMCP) -> None:
     @mcp.tool
     async def vehicles(route: str | None = None, vehicle_id: str | None = None) -> dict:
         """Live positions of the buses and streetcars on a route, or one vehicle by fleet number: coordinates, bearing, speed, current stop
-        (public number), headsign and crowding. Rail lines (1, 2, 4, 5, 6) publish no positions and answer unavailable; use next_trains."""
+        (public number), headsign and crowding. Rail lines (1, 2, 4, 5, 6) publish no positions and answer unavailable; use next_trains.
+        Answers are best effort, from the TTC's own site endpoint; historical occupancy is out of scope."""
         async def run(feed):
             if not (route or vehicle_id):
                 return {"error": "give a route or a vehicle_id"}, [], ""
@@ -95,7 +100,7 @@ def register(mcp: FastMCP) -> None:
             if hit is None:
                 return {"route": route, "vehicle_id": vehicle_id, "vehicles": [], "note": f"vehicle feed unavailable ({err})"}, [], "bustime vehicles"
             return {"route": route, "vehicle_id": vehicle_id,
-                    "vehicles": veh.vehicles_on(feed.conn, hit.parsed, route=route, vehicle_id=vehicle_id)}, [hit], "bustime vehicles"
+                    "vehicles": veh.vehicles_on(feed.conn, hit.parsed, route=route, vehicle_id=vehicle_id, lookup=runtime.trip_lookup())}, [hit], "bustime vehicles"
         return await _aguard(run)
 
     @mcp.tool
@@ -109,6 +114,7 @@ def register(mcp: FastMCP) -> None:
         info = dict(active.conn.execute("SELECT * FROM feed_info").fetchone()) if active else {}
         static = {"feed_version": st["active"], "start": info.get("feed_start_date"), "end": info.get("feed_end_date"),
                   "etag": info.get("source_etag"), "built_at": info.get("built_at"), "days_remaining": st["days_remaining"],
-                  "newer_seen": st["newer_seen"], "verdict": st["verdict"], "feeds": st["feeds"]}
+                  "newer_package_seen": st["newer_package_seen"], "last_check": st["last_check"],
+                  "ckan_last_refreshed": st["ckan_last_refreshed"], "verdict": st["verdict"], "feeds": st["feeds"]}
         return {"static": static, "sources": rt.status(), "ntas_coverage": rt.ntas_coverage(),
                 **({"probed": probed} if probed is not None else {}), "meta": runtime.meta(active)}

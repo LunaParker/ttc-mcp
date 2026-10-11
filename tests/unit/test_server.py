@@ -96,3 +96,103 @@ def test_instructions_point_trip_questions_at_connections_and_name_the_derived_t
     from ttc_mcp.server import INSTRUCTIONS
 
     assert "connections" in INSTRUCTIONS and "route_shape" in INSTRUCTIONS and "accessibility" in INSTRUCTIONS and "trip" in INSTRUCTIONS
+
+
+@pytest.mark.anyio
+async def test_the_recheck_lifespan_runs_ensure_static_on_the_interval_and_stops_cleanly(app_env, monkeypatch, capsys):
+    import asyncio
+    from pathlib import Path
+
+    from ttc_mcp import server
+
+    calls = []
+
+    def fake_ensure(cache_dir, client):
+        calls.append((Path(cache_dir), client.headers["user-agent"]))
+        return {"changed": False, "feed_version": "S1000538", "reason": "etags unchanged"}
+
+    monkeypatch.setattr(server, "RECHECK_S", 0.01)
+    monkeypatch.setattr(server, "ensure_static", fake_ensure)
+    async with Client(server.create_app(recheck=True)) as c:
+        await c.list_tools()
+        await asyncio.sleep(0.15)
+    # The loop is cancelled with the server; a check already running in its worker thread finishes on its own first.
+    await asyncio.sleep(0.05)
+    n = len(calls)
+    assert n >= 2 and calls[0][0] == Path(runtime.settings().cache_dir) and calls[0][1].startswith("ttc-mcp/")
+    await asyncio.sleep(0.05)
+    assert len(calls) == n, "the loop must stop with the server"
+    assert "[ttc-mcp] static recheck: etags unchanged (S1000538)" in capsys.readouterr().err
+    async with Client(server.create_app()) as c:
+        await c.list_tools()
+        await asyncio.sleep(0.05)
+    assert len(calls) == n, "no recheck unless asked (http, --no-refresh, TTC_MCP_SKIP_REFRESH)"
+
+
+@pytest.mark.anyio
+async def test_a_failing_recheck_is_logged_and_the_loop_goes_on(app_env, monkeypatch, capsys):
+    import asyncio
+
+    from ttc_mcp import server
+
+    calls = []
+
+    def fake_ensure(cache_dir, client):
+        calls.append(1)
+        raise RuntimeError("ckan down")
+
+    monkeypatch.setattr(server, "RECHECK_S", 0.01)
+    monkeypatch.setattr(server, "ensure_static", fake_ensure)
+    async with Client(server.create_app(recheck=True)) as c:
+        await asyncio.sleep(0.1)
+        assert "error" not in (await c.call_tool("routes", {"overnight": True})).data
+    assert len(calls) >= 2 and "[ttc-mcp] static recheck failed: ckan down" in capsys.readouterr().err
+
+
+@pytest.mark.anyio
+async def test_station_results_carry_id_and_aliases_beside_number(app_env):
+    from tests.mockttc import make_app
+
+    async with Client(make_app([])) as c:
+        near = (await c.call_tool("nearest_stops", {"lat": 43.6527, "lon": -79.3581, "radius_m": 2500, "kind": "station", "limit": 10})).data["results"]
+        union = next(r for r in near if r["name"] == "Union")
+        assert (union["id"], union["number"], union["aliases"], union["kind"], union["lines"]) == ("15772", "15772", ["union"], "station", ["1"])
+        found = (await c.call_tool("find_stops", {"query": "Union"})).data["stops"]
+        st = next(s for s in found if s["kind"] == "station")
+        assert (st["id"], st["number"], st["aliases"]) == ("15772", "15772", ["union"])
+        assert all(not {"id", "aliases"} & s.keys() for s in found if s["kind"] != "station") and len(found) > 1
+
+
+@pytest.mark.anyio
+async def test_scheduled_departures_resolve_a_stop_code_and_reject_an_unknown_stop(app, tmp_path):
+    import sqlite3
+
+    db = sqlite3.connect(tmp_path / "static-S1000538.sqlite")
+    db.execute("INSERT INTO stops (stop_id, stop_code, name, lat, lon, location_type) VALUES ('99407', '407', 'Test St at 407 Stop', 43.7, -79.4, 0)")
+    db.execute("INSERT INTO departures (stop_id, dep_secs, trip_id, stop_sequence) SELECT 99407, dep_secs, trip_id, stop_sequence FROM departures WHERE stop_id=15461")
+    db.commit()
+    db.close()
+    async with Client(app) as c:
+        by_code = (await c.call_tool("scheduled_departures", {"stop": "407", "limit": 3})).data
+        by_id = (await c.call_tool("scheduled_departures", {"stop": "99407", "limit": 3})).data
+        assert len(by_code["departures"]) == 3 and by_code["departures"] == by_id["departures"] and by_code["stop"] == "407"
+        r = (await c.call_tool("scheduled_departures", {"stop": "nowhere"})).data
+        assert r["error"] == "stop nowhere not found" and "departures" not in r and r["meta"]["static_feed"] == "S1000538"
+
+
+def test_instructions_carry_the_licence_attribution_and_the_best_effort_wording():
+    from ttc_mcp.server import INSTRUCTIONS
+
+    assert "Contains information licensed under the Open Government Licence – Toronto" in INSTRUCTIONS
+    assert "Real-time and advisory answers are best effort, read from the TTC's own site endpoints, none of which publish terms" in INSTRUCTIONS
+
+
+@pytest.mark.anyio
+async def test_live_tool_descriptions_say_best_effort_and_the_occupancy_scope(app):
+    async with Client(app) as c:
+        desc = {t.name: t.description for t in await c.list_tools()}
+    for name in ("arrivals", "next_trains", "vehicles", "alerts", "service_status", "detours", "service_changes", "connections"):
+        assert "best effort" in desc[name], name
+    for name in ("vehicles", "arrivals"):
+        assert "historical occupancy" in desc[name] and "out of scope" in desc[name], name
+    assert "best effort" not in desc["routes"]

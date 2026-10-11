@@ -95,3 +95,17 @@ def test_ensure_static_fetches_service_levels_with_the_sync_clients_user_agent(t
     db.close()
     assert rep["changed"] and agents == ["t/1"] and row == ("Regular service", 1, "u")
     assert "[refresh] ttc.ca service levels: 1 of 6 routes" in msgs
+
+
+def test_every_run_records_the_check_time_and_ckans_last_modified(tmp_path):
+    ensure_static(tmp_path, client(), today=dt.date(2026, 10, 5), ttcapi=False)
+    m = Manifest.load(tmp_path)
+    assert m.ckan_last_modified == "2026-09-30T14:17:52" and m.checked_at.endswith(("-04:00", "-05:00"))
+    first = dt.datetime.fromisoformat(m.checked_at)
+    assert abs((dt.datetime.now(first.tzinfo) - first).total_seconds()) < 60
+    rep = ensure_static(tmp_path, client(), today=dt.date(2026, 10, 5), ttcapi=False)
+    m2 = Manifest.load(tmp_path)
+    assert rep["changed"] is False and dt.datetime.fromisoformat(m2.checked_at) >= first and m2.ckan_last_modified == "2026-09-30T14:17:52"
+    assert [f.feed_version for f in m2.feeds] == ["S1000538"]
+    rep = build_from_zips(tmp_path, MERGED, SURFACE, today=dt.date(2026, 10, 5))
+    assert rep["changed"] and Manifest.load(tmp_path).checked_at == m2.checked_at

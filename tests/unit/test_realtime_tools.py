@@ -53,6 +53,7 @@ async def test_arrivals_on_a_rail_platform_use_ntas_and_reject_stations(app_env)
     async with Client(make_app([])) as c:
         r = (await c.call_tool("arrivals", {"stop": "13863"})).data
         assert [a["eta_min"] for a in r["arrivals"]] == [0, 4, 5] and r["arrivals"][0]["route"] == "1" and r["meta"]["source"] == "ntas"
+        assert all(a["crowding"] == {"label": "No info", "gtfs": None, "confidence": "none"} for a in r["arrivals"])
         assert "error" in (await c.call_tool("arrivals", {"stop": "14572"})).data
         assert "error" in (await c.call_tool("arrivals", {"stop": "0"})).data
 
@@ -91,6 +92,8 @@ async def test_feed_status_reports_static_and_sources_and_probes(app_env):
     async with Client(make_app(calls)) as c:
         r = (await c.call_tool("feed_status", {})).data
         assert r["static"]["feed_version"] == "S1000538" and r["static"]["verdict"] == "fresh" and r["static"]["end"] == "20261031"
+        assert (r["static"]["last_check"], r["static"]["ckan_last_refreshed"], r["static"]["newer_package_seen"]) == (None, None, False)
+        assert "newer_seen" not in r["static"]
         assert {s["name"]: s["verdict"] for s in r["sources"]} == {n: "unused" for n in NAMES}
         assert r["ntas_coverage"] == {} and "probed" not in r
         p = (await c.call_tool("feed_status", {"probe": True})).data
@@ -113,3 +116,13 @@ def test_feed_status_without_a_store(tmp_path, monkeypatch):
     r = asyncio.run(go())
     assert r["static"]["verdict"] == "unavailable" and r["static"]["feed_version"] is None and r["meta"]["static_feed"] is None
     runtime.reset()
+
+
+@pytest.mark.anyio
+async def test_vehicles_and_arrivals_resolve_trips_held_by_the_other_loaded_feed(two_feeds):
+    async with Client(make_app([])) as c:
+        v = (await c.call_tool("vehicles", {"route": "504"})).data
+        assert v["meta"]["static_feed"] == "S1000542" and v["vehicles"][0]["headsign"] == "East - 504A King towards Distillery"
+        a = (await c.call_tool("arrivals", {"stop": "15461"})).data
+        assert a["arrivals"][0]["vehicle_id"] == "4617" and a["arrivals"][0]["detour_id"] == "9001"
+        assert [e["detour_id"] for e in a["disruptions"]] == ["9001"]

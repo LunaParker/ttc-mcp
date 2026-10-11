@@ -45,12 +45,14 @@ def reset() -> None:
 
 
 async def snapshot(feed: FeedDb) -> Snapshot:
-    rt_, now = runtime.get_realtime(), runtime.now()
+    rt_, now, store = runtime.get_realtime(), runtime.now(), runtime.get_store()
     (ah, ae), (rh, re_), (dh, de) = await asyncio.gather(attempt(rt_.alerts()), attempt(rt_.rt_alerts()), attempt(rt_.detours()))
-    key = (id(rt_), feed.version, now.replace(second=0, microsecond=0),
+    # Keyed on every loaded feed (detour trips resolve across them) and on the store object: a reopened store has new connections.
+    key = (id(rt_), id(store), tuple(f.version for f in store.feeds), feed.version, now.replace(second=0, microsecond=0),
            ah.fetched_at if ah else None, rh.fetched_at if rh else None, dh.fetched_at if dh else None)
     if _memo.get("key") != key:
-        groups = detours.resolve_detours(feed.conn, dh.parsed, now.date(), rt=rh.parsed if rh else None) if dh else []
+        groups = detours.resolve_detours(feed.conn, dh.parsed, now.date(), rt=rh.parsed if rh else None,
+                                         lookup=runtime.trip_lookup(now.date())) if dh else []
         disr = Disruptions.build(feed.conn, ah.parsed if ah else None, rh.parsed if rh else None, groups, now)
         _memo.update(key=key, value=(disr, groups, detours.trip_detour_map(dh.parsed) if dh else {}))
     disr, groups, tmap = _memo["value"]

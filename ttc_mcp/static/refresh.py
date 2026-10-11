@@ -11,6 +11,7 @@ from ttc_mcp.adapters import ckan
 from ttc_mcp.config import settings
 from ttc_mcp.static.build import build_sqlite
 from ttc_mcp.static.manifest import FeedEntry, Manifest
+from ttc_mcp.static.schedule import TZ
 from ttc_mcp.static.schema import SCHEMA_VERSION
 from ttc_mcp.static.store import schema_version
 
@@ -63,11 +64,14 @@ def ensure_static(cache_dir: Path, client: httpx.Client, *, today: dt.date | Non
     merged_etag = ckan.head_etag(client, merged.url)
     surf = ckan.resolve_zip(client, ckan.PKG_SURFACE) if surface else None
     surf_etag = ckan.head_etag(client, surf.url) if surf else None
+    # Recorded on every run, changed or not: feed_status's evidence that the daily check ran (spec 4.4).
+    manifest.checked_at, manifest.ckan_last_modified = dt.datetime.now(TZ).isoformat(timespec="seconds"), merged.last_modified
     known = next((f for f in manifest.feeds
                   if f.source_url == merged.url and f.etag == merged_etag and f.surface_etag == surf_etag), None)
     if known and not force and merged_etag:
         found = schema_version(cache_dir / known.path)
         if found == SCHEMA_VERSION:
+            manifest.save(cache_dir)
             return {"changed": False, "feed_version": known.feed_version, "reason": "etags unchanged", "manifest": manifest}
         _log(log, f"[refresh] {known.feed_version}: store schema {found} != {SCHEMA_VERSION}; rebuilding")
         reason = "schema changed"

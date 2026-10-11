@@ -12,7 +12,7 @@ An MCP server that lets Claude reason about the TTC network live: stops, station
 
 Phase 1 (static core) is implemented: a SQLite store built from the City of Toronto's merged GTFS and the eight static tools (`find_stops`, `nearest_stops`, `stop`, `station`, `routes`, `route_stops`, `service_hours`, `scheduled_departures`).
 
-Phase 2 (real-time core) is implemented: `arrivals`, `next_trains`, `vehicles` and `feed_status` fetch the TTC's per-stop BusTime XML, GTFS-RT vehicle feed and NTAS on demand through a TTL cache (single-flight, last-known-good) and fall back to the timetable with `basis: "schedule"` when a source has nothing. Phase 3 (advisory layer) is implemented: `alerts`, `service_status`, `detours` and `service_changes` read alerts.ttc.ca, the GTFS-RT alert feed, the TripModifications detour feed and ttc.ca's service changes on demand, and every stop, station, route and arrivals answer carries the disruptions that touch it (closures with nightly windows, detoured stops, reduced speed zones, elevator and escalator outages). Phase 4 (derived static) is implemented: `route_shape`, `accessibility` and `connections`, plus route service levels from ttc.ca; the static build now carries shapes, per-stop distances, pathways, levels, units, station membership and a 150 m transfer graph. Cloud Run hosting is a later phase.
+Phase 2 (real-time core) is implemented: `arrivals`, `next_trains`, `vehicles` and `feed_status` fetch the TTC's per-stop BusTime XML, GTFS-RT vehicle feed and NTAS on demand through a TTL cache (single-flight, last-known-good) and fall back to the timetable with `basis: "schedule"` when a source has nothing. Phase 3 (advisory layer) is implemented: `alerts`, `service_status`, `detours` and `service_changes` read alerts.ttc.ca, the GTFS-RT alert feed, the TripModifications detour feed and ttc.ca's service changes on demand, and every stop, station, route and arrivals answer carries the disruptions that touch it (closures with nightly windows, detoured stops, reduced speed zones, elevator and escalator outages). Phase 4 (derived static) is implemented: `route_shape`, `accessibility` and `connections`, plus route service levels from ttc.ca; the static build now carries shapes, per-stop distances, pathways, levels, units, station membership and a 150 m transfer graph. Phases 1 to 4 passed a spec-correctness review on 2026-10-11 and its fixes landed: closure end stations are served on their open side, suspended platforms report no minutes, shuttle options rank honestly, failing sources back off, trip ids resolve against both loaded feeds, and the stdio server rechecks CKAN every 24 h (spec v0.7). Cloud Run hosting is a later phase.
 
 ## Quick start
 
@@ -23,9 +23,9 @@ TTC_MCP_SKIP_REFRESH=1 uv run python scripts/smoke_static.py   # nine live check
 TTC_MCP_SKIP_REFRESH=1 uv run python scripts/smoke_realtime.py # eight live checks against the TTC's real-time endpoints
 TTC_MCP_SKIP_REFRESH=1 uv run python scripts/smoke_advisories.py # ten live checks of the advisory tools and propagation
 TTC_MCP_SKIP_REFRESH=1 uv run python scripts/smoke_derived.py    # eleven live checks of route_shape, accessibility, service levels and connections
-TTC_MCP_SKIP_REFRESH=1 uv run python scripts/validate_connections.py # twenty origin-destination pairs to compare with the TTC trip planner
+TTC_MCP_SKIP_REFRESH=1 uv run python scripts/validate_connections.py # twenty origin-destination pairs to compare with the TTC trip planner; an option with a shuttle leg prints as SHUTTLE with its known_min
 uv run pytest tests/integration -v           # boots the real server over HTTP against the live store and endpoints (needs network)
-uv run ttc-mcp --transport stdio          # MCP server over stdio (checks CKAN on startup unless --no-refresh)
+uv run ttc-mcp --transport stdio          # MCP server over stdio (checks CKAN on startup and every 24 h unless --no-refresh)
 uv run pytest                             # unit suite on the committed mini feed
 ```
 
@@ -56,7 +56,7 @@ tests/              unit suite on tests/fixtures/gtfs-mini.zip (routes 1, 5, 121
 .run/               PyCharm run configurations: Tests, Server (stdio), Build static
 ```
 
-## Gotchas the code encodes (verified live 2026-10-05)
+## Gotchas the code encodes (verified live 2026-10-05 and 2026-10-11)
 
 - `alerts.ttc.ca` stamps Toronto local time with a `Z` suffix; `childAlerts` start times match the GTFS-RT per-night entity epochs only when read as local. Year 1 (`0001-01-01`) means open-ended.
 - `getallroutesandstopsalerts` no longer carries a `serviceChanges` key; the route changes are GTFS-RT `MODIFIED_SERVICE` entities, so `service_changes` reads those first and merges ttc.ca rows when they reappear.
@@ -66,3 +66,6 @@ tests/              unit suite on tests/fixtures/gtfs-mini.zip (routes 1, 5, 121
 - Rail `shape_dist_traveled` is in kilometres with the first stop of each trip left blank (surface is in metres); the build picks the unit per shape against its measured length and starts every pattern at 0.
 - GTFS-RT `NO_SERVICE` entities list every platform of the affected stations, including other lines' platforms at interchanges (a Line 2 closure lists Line 1's St George and Spadina platforms), so a listing closes a platform only when the entity names no routes or one of the platform's own lines.
 - An active closure's `shuttleType` reads "Running" and a planned one "Will Operate"; any other value means no shuttle, and the planner then routes around the closed span or drops the trip.
+- NTAS keeps publishing predictions at closed platforms during a closure (Old Mill eastbound "1", Jane westbound "1, 4, 8" inside the Kipling to Jane closure), so a suspended platform is decided by the closure, never by NTAS: `next_min: []`, what NTAS said in `ntas_min`, and a note.
+- The TTC's closure station list is the shuttle span inclusive of its ends, and GTFS-RT lists every platform of every listed station; the end stations' open-side platforms are served (trains turn back there), so only the interior is closed and an end station is `reduced` with `role: shuttle_terminus`. A terminal end, or a one-station closure, is closed on both platforms.
+- `connections` reports an option with a shuttle leg as `typical_min: null` with `known_min` for its other legs; the shuttle counts as a transfer and the option ranks after complete options with the same transfers.

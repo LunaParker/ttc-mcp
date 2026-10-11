@@ -1,7 +1,9 @@
-# TTC network MCP server: specification v0.6
+# TTC network MCP server: specification v0.7
 
-**Date:** 2026-09-13 | **Status:** decisions a to j accepted; ready to implement | **Supersedes:** v0.5 (history in `docs/spec-history/`)
+**Date:** 2026-10-11 | **Status:** decisions a to j accepted; phases 1 to 4 implemented and corrected against the code after the 2026-10-11 spec-correctness review | **Supersedes:** v0.6 (history in `docs/spec-history/`)
 **Companions (in this repository):** `docs/investigation-2026-09-13.md` (source survey), `docs/detours-addendum.md` (detours), `scripts/ttc_transit_probe.py` (reference behaviour for most tools)
+
+**What changed in v0.7:** the document now describes what the code does, following the spec-correctness review of phases 1 to 4 (2026-10-11, 26 findings, none critical) and the fixes that landed with it. Closures follow the span model: a station strictly inside a closure's span is closed, a span end station is served on the platform facing the open line and is the shuttle terminus, and `next_trains` reports `next_min: []` on a suspended platform because NTAS keeps publishing predictions inside a closure (6.7 item 4, 6.8, 8 item 7). A `connections` option with a shuttle leg reports `typical_min: null` with `known_min`, counts the shuttle as a transfer and ranks after complete options; every disruption names the legs it `affects`; the leg vocabulary gains `transfer` (4.1, 4.4, 6.7 item 5). The step-free verdict is `yes | no | unknown` with a `basis` (4.4, 6.2). `service_status` closures are the shared disruptions element, `reduced_speed_zones` is `{count, zones}` and every `surface` row has one shape (4.4). Source facts corrected: the detour feed is JSON, service changes come from GTFS-RT `MODIFIED_SERVICE` first, `trips/subway` is unused, and alert station names resolve at answer time (2, 2.3, 3, 4.3, 6.4, 6.5). Fetch layer: a failing source is held with exponential backoff and its 403/429 answers counted in `feed_status`, trip ids resolve against every loaded feed, and the stdio server rechecks CKAN every 24 h in a worker thread (2.1, 2.2, 6.9, 8 items 2 and 10). Inputs and outputs recorded as implemented: `connections`, `routes`, `scheduled_departures`, `route_shape` and `alerts.type` names, `meta.cache` adds `static`, `feed_status` rows add `expired`, `detours` carries `entity_id` and a local `fetched_at`, station results carry `id` and `aliases` (4, 4.1, 4.2, 4.4). Section 9 records Python 3.14, the stdio default and the licence wording; section 11 gains the 2026-10-05, 2026-10-06 and 2026-10-11 entries.
 
 **What changed in v0.6:** transport and hosting. The server speaks **streamable HTTP** and is deployed on **Google Cloud Run** (decision j, section 6.9): a FastMCP 3 application with the Google OAuth gate and email allowlist in-process, stateless JSON responses so idle clients do not keep an instance alive, `us-east1` for the always-free tier, and the daily static check moved out of the process into a Cloud Scheduler-driven Cloud Run Job that publishes the SQLite store to a bucket. Local development keeps a stdio mode.
 
@@ -18,7 +20,7 @@
 The server exists so that Claude (and any MCP client) can reason about the TTC network as it is right now, not as it was when a dataset was pasted in.
 
 1. **Nothing baked in.** Static data is resolved through the City of Toronto CKAN API and re-downloaded only when the resource ETag changes.
-2. **Fetch on demand, never in the background.** No poller runs while nobody is asking. The only scheduled work is one `HEAD` per day per static package, and it runs outside the serving process (a Cloud Run Job). Repeated questions inside a feed's update interval are served from a TTL cache.
+2. **Fetch on demand, never in the background.** No poller runs while nobody is asking. The only scheduled work is one `HEAD` per day per static package, and it runs outside the serving process (a Cloud Run Job; in local stdio mode, a once-a-day worker thread inside the process, section 2.1). Repeated questions inside a feed's update interval are served from a TTL cache.
 3. **Public stop numbers are the canonical identifier** in every tool input and output. Other ID spaces stay inside the server.
 4. **Every answer carries provenance and freshness**: source, feed timestamp, when it was fetched, whether it came live, from the TTL cache, or from the last-known-good fallback, and a staleness verdict.
 5. **Undocumented endpoints are fragile**: one adapter each, defensive parsing, "unavailable" in the output rather than a crashed tool.
@@ -42,10 +44,10 @@ The server exists so that Claude (and any MCP client) can reason about the TTC n
    bustime.ttc.ca/gtfsrt/vehicles (protobuf)           90 KB   0.06 s  30 s     crowding on arrivals, vehicles
    bustime.ttc.ca/gtfsrt/trips (protobuf)              568 KB  0.10 s  30 s     trip ids for detour flags (lazy), route-wide questions
    ntas.ttc.ca/api/ntas/get-next-train-time/{platform} <1 KB   0.2 s   10 s/platform  next_trains
-   gtfsrt.ttc.ca/trips/subway (protobuf)               12 KB   0.06 s  30 s     next_trains epochs (optional)
+   gtfsrt.ttc.ca/trips/subway (protobuf)               12 KB   0.06 s  --       not used; candidate for the parity suite
    alerts.ttc.ca/api/alerts/list (ETag -> 304)         51 KB   0.07 s  25 s     alerts, accessibility, stop/station enrichment
    gtfsrt.ttc.ca/alerts/{all,accessibility} (protobuf) 40 KB   0.15 s  60 s     cause/effect, platform ids
-   gtfsrt.ttc.ca/trips/detour (protobuf)               163 KB  0.10 s  5 min    detours, detoured-route set, detour flags on arrivals
+   gtfsrt.ttc.ca/trips/detour (JSON)                   163 KB  0.10 s  5 min    detours, detoured-route set, detour flags on arrivals
    www.ttc.ca/ttcapi/routedetail/getallroutesandstopsalerts  80 KB 0.43 s 10 min  service_changes, detour reasons
    gtfsrt.ttc.ca/trips/modified_update                 574 KB  3.0 s   --       parity tests only (server-side generation cost)
 
@@ -54,11 +56,11 @@ The server exists so that Claude (and any MCP client) can reason about the TTC n
 
 ### 2.1 Static layer
 
-- **Where it runs (v0.6):** the daily check and the rebuild are a Cloud Run Job (`ttc-mcp-static`), triggered by Cloud Scheduler at 04:30 America/Toronto. The Job resolves both packages, compares ETags with `manifest.json` in the bucket, rebuilds on change into `static-<feed_version>.sqlite`, uploads it, and rewrites the manifest (which lists the active feed and, during a period change, the incoming one). The serving instance never builds anything: at cold start it reads the manifest and downloads the referenced database(s) to `/tmp` (in-memory on Cloud Run, so the memory limit must cover it; the build keeps the file compact, see 6.9). In local stdio mode the same code runs the check in-process on startup and every 24 h.
+- **Where it runs (v0.6):** the daily check and the rebuild are a Cloud Run Job (`ttc-mcp-static`), triggered by Cloud Scheduler at 04:30 America/Toronto. The Job resolves both packages, compares ETags with `manifest.json` in the bucket, rebuilds on change into `static-<feed_version>.sqlite`, uploads it, and rewrites the manifest (which lists the active feed and, during a period change, the incoming one). The serving instance never builds anything: at cold start it reads the manifest and downloads the referenced database(s) to `/tmp` (in-memory on Cloud Run, so the memory limit must cover it; the build keeps the file compact, see 6.9). In local stdio mode the same code runs the check in-process: once before the server starts (a rebuild at that point blocks server start, not tool calls) and then every 24 h in a worker thread while the server runs (`create_app(recheck=...)`, enabled from `main` for stdio with refresh on; `--no-refresh` or `TTC_MCP_SKIP_REFRESH` turns both off, and the HTTP transport never rechecks because that is the Job's role). Every check, changed or not, records `checked_at` and the CKAN `last_modified` in `manifest.json`, which `feed_status` shows as `last_check` and `ckan_last_refreshed`.
 - Packages: `merged-gtfs-ttc-routes-and-schedules` (primary) and `surface-routes-and-schedules-for-bustime` (crosswalk only). Once a day: `package_show`, then `HEAD` on each zip and compare ETags; download and rebuild only on change (about 84 MB + 83 MB per board period, roughly every six weeks). The CKAN API is cached 15 minutes upstream, so a new feed can take that long to become visible; this does not matter at a daily cadence.
-- Rebuild is one streaming pass over `stop_times.txt` (~7.7 M rows; measured 2026-10-05: 13 s on an M4 Pro, 104 MB SQLite per feed, downloads of both zips about 3 s) into a temporary database swapped in atomically. It runs in the background; tool calls keep using the previous database until the swap. A first-ever start with no database is the one case where a tool call must wait, and it says so.
+- Rebuild is one streaming pass over `stop_times.txt` (~7.7 M rows; measured 2026-10-05: 13 s on an M4 Pro, 104 MB SQLite per feed, downloads of both zips about 3 s) into a temporary database swapped in atomically. An external build (`ttc-mcp-build`, or the Job) never touches the serving process: tool calls keep using the previous database until `manifest.json` changes on disk, and the store is reopened on the next call. The in-process startup build in stdio mode blocks server start, not tool calls. A server with no database answers static tools with an explicit error (`static store not built yet ...; run ttc-mcp-build`) rather than blocking.
 - Patterns store `(stop_sequence, stop_id)` pairs because 9,099 of 137,912 trips do not number stops from 1 and GTFS-RT selectors reference `stop_sequence`.
-- **Board-period overlap (decided):** keep the outgoing and incoming feeds loaded together from the moment the new package is seen until the old `feed_end_date` passes. When two feeds cover the same date (the Sept 30 revision S1000542 overlapped S1000538 to the same end date), the one with the later start, then the later version, wins. Trip ids resolve against whichever feed contains them; detours whose trips resolve in neither are reported with `pattern: "unknown"`.
+- **Board-period overlap (decided):** keep the outgoing and incoming feeds loaded together from the moment the new package is seen until the old `feed_end_date` passes. When two feeds cover the same date (the Sept 30 revision S1000542 overlapped S1000538 to the same end date), the one with the later start, then the later version, wins. Trip ids resolve against whichever loaded feed contains them (implemented: `StaticStore.lookup_trip` tries today's feed first, then every other loaded feed, and `detours`, `vehicles`, `arrivals` and the advisory snapshot resolve through it); detours whose trips resolve in neither are reported with `pattern: "unknown"`. The first period change, due about 2026-10-31, is validation item 2.
 - The ttc.ca route-detail call (`serviceLevel`, branch metadata, 235 requests) runs once per static rebuild, not daily.
 
 ### 2.2 On-demand fetch layer
@@ -68,6 +70,7 @@ Each source has one adapter returning typed records plus a `SourceStatus`. Adapt
 - **TTL cache.** A response is reused for the source's TTL (table above), which equals the feed's own update interval, so a burst of tool calls costs one fetch and never sees older data than a poller would.
 - **Single-flight.** If a fetch for a source is in progress, other callers await that same fetch instead of starting another (an `asyncio.Lock` or future per cache key).
 - **Last-known-good.** The last successful response is kept beyond its TTL. When a fetch fails (timeout, 5xx, 403, parse error), the tool answers from it with `meta.cache = "stale_fallback"` and its real age, up to a maximum stale age (10 minutes for real-time sources, 1 hour for advisories); past that the tool reports `unavailable`.
+- **Backoff (implemented 2026-10-11, principle 7).** A failed fetch holds its cache entry for `min(ttl x 2^failures, max_stale / 4)` seconds; inside the hold the entry answers from last-known-good (`stale_fallback`, with `"<error>; retry in N s"`) or raises `unavailable` without a request, and a success clears the hold. 403 and 429 answers are counted per source and shown by `feed_status` (`failures`, `retry_after`, `status_counts`); `probe: true` bypasses the hold. Requests time out at 5 s for the advisory sources and 10 s for the real-time ones.
 - **Conditional requests.** `alerts.ttc.ca` honours `If-None-Match` (a 304 costs 0.05 s and no body); the CKAN zips expose ETags for the daily `HEAD`. The GTFS-RT hosts send no validators, so their fetches are unconditional.
 - **Cache keys** include parameters for per-stop and per-platform endpoints (`getStopPredictions:15461`, `ntas:13863`).
 
@@ -77,7 +80,7 @@ Each source has one adapter returning typed records plus a `SourceStatus`. Adapt
 
 ### 2.3 Advisory layer
 
-- `alerts.ttc.ca` is primary (closures, RSZ, elevators with unit codes, unplanned detours); GTFS-RT alerts supply `cause`/`effect` and platform ids; service changes exist only in `getallroutesandstopsalerts.serviceChanges`. All fetched on demand with the TTLs above.
+- `alerts.ttc.ca` is primary (closures, RSZ, elevators with unit codes, unplanned detours); GTFS-RT alerts supply `cause`/`effect` and platform ids; service changes are read from GTFS-RT `MODIFIED_SERVICE` alerts first, with `getallroutesandstopsalerts.serviceChanges` rows merged in when that key is present (it has been absent since October 2026). All fetched on demand with the TTLs above.
 - Station references in alerts are resolved with `stop_id OR stop_code` (section 3).
 
 ## 3. Identifier model
@@ -92,11 +95,11 @@ Each source has one adapter returning typed records plus a `SourceStatus`. Adapt
 | Vehicle | `vehicle.id` (fleet number, e.g. `4502`) | present on trip updates (1,697/1,699), vehicle positions, and the per-stop XML (`<v>`) |
 | Detour | `detourId` (grouping key) with member entity ids `detour_{n}_{detourId}:{dir}_{dir}_{pattern}_{route}_{dest}` | `selectedTrips.tripIds` for membership |
 | Elevator / escalator | unit code (`12D2L`, `16B4E`) | pathway nodes named `Elevator_{code}_{level}` where present |
-| Station alias | any name a rider or a TTC feed uses (`TMU`, `Dundas`, `Bloor`, `Yonge`, `Sheppard`, `St. Clair`) | `station_aliases` table built from station names, platform prefixes, surface-stop suffixes, alert `stopStart`/`stopEnd` names, plus a short manual list (section 6.7) |
+| Station alias | any name a rider or a TTC feed uses (`TMU`, `Dundas`, `Bloor`, `Yonge`, `Sheppard`, `St. Clair`) | `station_aliases` table built at build time from station names, platform prefixes, surface-stop suffixes and a short manual list (section 6.7); alert `stopStart`/`stopEnd` names resolve at answer time through `resolve_station` (station names, aliases, then a `LIKE` fallback on station names), since a static build cannot see live alerts |
 
 ## 4. Tools
 
-Every output includes `meta: {source, feed_timestamp, fetched_at, cache, static_feed, staleness}` where `cache` is `live | ttl | stale_fallback` and `staleness` is per section 6.5. Inputs are JSON.
+Every output includes `meta: {source, feed_timestamp, fetched_at, cache, static_feed, staleness}` where `cache` is `live | ttl | stale_fallback | static` (`static` when the answer fetched nothing; `feed_timestamp` is then absent) and `staleness` is per section 6.5. Answers that carry disruptions add `meta.advisories` with the snapshot's own freshness. `feed_status` source rows describe a cached entry rather than an answer, so their `cache` may also read `expired` (past its TTL, not asked again yet). Inputs are JSON.
 
 ### 4.1 Core
 
@@ -105,23 +108,23 @@ Every output includes `meta: {source, feed_timestamp, fetched_at, cache, static_
 | `find_stops` | `query` text (stop name, station name or alias, stop number), optional `route`, `direction`, `mode` | stops with number, name, coordinates, wheelchair flag, routes/directions/headsigns served, parent station | none (static) |
 | `nearest_stops` | `lat`, `lon` (from the Google Maps MCP or any geocoder), `radius_m` (default 500), `limit` (default 10), `kind` = `any` / `stop` / `station` | stops or stations ordered by distance with walk minutes, routes/directions/headsigns, station membership, and active disruptions | alerts list for the disruption flags |
 | `service_status` | none | one-call network picture: subway closures as station spans with shuttle info, suspended or detoured surface routes, reduced speed zones, elevator outages by station, counts and `as_of` | alerts list + detour feed |
-| `connections` | `from` and `to`, each a stop number, a station id or alias, or `{lat, lon}`; options `max_transfers` (0 or 1, default 1), `walk_m` (default 400), `depart_now` (default true), `limit` (default 4) | ranked options with legs (walk / ride / shuttle), board and alight stops, stop counts, typical minutes, next departures at the first board stop, and every disruption touching a leg | arrivals sources for the first leg; alerts and detour feed for the overlay |
+| `connections` | `origin` and `destination`, each a stop number, a station id or alias, or `{lat, lon}`; options `max_transfers` (0 or 1, default 1), `walk_m` (1 to 2000, default 400), `depart_at` (ISO, Toronto time when it has no offset; default now), `limit` (1 to 10, default 4) | ranked options with legs (walk / ride / transfer / shuttle), board and alight stops, stop counts, typical minutes (`typical_min: null` with `known_min` when a shuttle leg's minutes are unknown), next departures at the first board stop (live within an hour of now, else timetable), and every disruption touching a leg with the legs it `affects` | arrivals sources for the first leg; alerts and detour feed for the overlay |
 | `stop` | stop number | full record incl. station membership and `disruptions[]` (closures on the station named by the stop, detours skipping it, route-level alerts) | alerts list (51 KB / 304) + detour feed |
 | `station` | station id, name or alias | platforms, entrances, units with live status, accessibility summary, `service` per line (`normal` / `suspended` / `reduced` with alert and shuttle info) | alerts list |
-| `routes` | filters `series`, `overnight`, `type` | long name, series, service level, service hours by day type, overnight share | none |
+| `routes` | filters `series`, `overnight`, `mode` | long name, series, service level, service hours by day type, overnight share | none |
 | `route_stops` | route, direction, optional `pattern` | ordered stops per pattern with trip counts and headsigns; each stop carries `status` (`open` / `closed` / `skipped_by_detour`) | alerts list + detour feed |
 | `service_hours` | route, date | runs that date? (calendar + exceptions), first/last trip | none |
-| `scheduled_departures` | stop number or platform id, optional route, `from` time (default now), `limit` | timetable departures for the current service day (handles times past 24:00 and the 00:00 to 04:00 window belonging to the previous service day), with trip, headsign and pattern | none (static) |
+| `scheduled_departures` | stop number (or stop code) or platform id, optional route, `at` time (ISO, default now), `limit` | timetable departures for the current service day (handles times past 24:00 and the 00:00 to 04:00 window belonging to the previous service day), with trip, headsign and pattern | none (static) |
 | `arrivals` | stop number, optional route, `limit` | next vehicles with crowding inline (decision d) and detour flag, plus `disruptions[]` for the stop's routes and for the station named by the stop; each row carries `basis` = `realtime` or `schedule`, and scheduled departures fill in whenever no real-time prediction exists (decision i) | per-stop XML + vehicles (or NTAS for rail platforms); detour feed; trips only if the route is detoured; alerts list; static `stop_times` for the schedule basis |
-| `next_trains` | platform id, station id or alias | per platform: line, direction text, next trains (minutes) with `basis`, and `service` = `normal` / `suspended` (with the closure alert and shuttle info) / `no_prediction` (with `scheduled_next_min` from the timetable) | NTAS per platform (+ subway feed for epochs on request) + alerts list + static `stop_times` |
-| `alerts` | route / station / stop / `type` in {closure, rsz, detour, elevator, other} | normalised alerts with resolved stop/station objects | alerts list + GTFS-RT alerts |
+| `next_trains` | platform id, station id or alias | per platform: line, direction text, next trains (minutes) with `basis`, and `service` = `normal` / `suspended` (with the closure alert and shuttle info; `next_min: []`, no `basis`, what NTAS said in `ntas_min`) / `no_prediction` (with `scheduled_next_min` from the timetable); a served end platform of a closure stays `normal` with its real minutes | NTAS per platform + alerts list + static `stop_times` |
+| `alerts` | route / station / stop / `type` in {closure, suspension, detour, rsz, elevator, escalator, delay, other} | normalised alerts with resolved stop/station objects | alerts list + GTFS-RT alerts |
 | `feed_status` | optional `probe: true` | per-source cache state and freshness; with `probe`, one live request per source | none, or one per source |
 
 ### 4.2 Added items
 
 | Tool | Input | Output | Fetches |
 |---|---|---|---|
-| `route_shape` | route, direction, optional `pattern`, `format` = `polyline` (default, decision a) or `geojson`, optional `simplify_m` | canonical or requested pattern shape; `stops_between {from, to}` via `shape_dist_traveled` | none |
+| `route_shape` | route, direction, optional `pattern`, `format` = `polyline` (default, decision a) or `geojson`, optional `simplify_m`, optional `from_stop` and `to_stop` (both or neither) | canonical or requested pattern shape; the `from_stop`/`to_stop` span sliced by `shape_dist_traveled` | none |
 | `accessibility` | station or stop | platform flags, entrance flags, units with live status and pathway context, station summary (decision b); trip flag ignored (decision c) | alerts list (+ GTFS-RT accessibility for platform ids) |
 | `vehicles` | route or `vehicle_id` | position, bearing, speed, current stop, occupancy label + enum + confidence, trip/headsign; for routes 1, 2, 4, 5, 6 returns `unavailable` with the reason (no positions are published for rail) | vehicles (+ trips for headsigns when the trip is not static) |
 | `detours` | optional route | grouped by `detourId`; reason may be `null` (decision e) | detour feed + service changes |
@@ -133,11 +136,11 @@ Every output includes `meta: {source, feed_timestamp, fetched_at, cache, static_
 |---|---|---|---|
 | `getStopPredictions.jsp` (per stop) | TTC's own map endpoint; predictions refresh with the BusTime tick | 30 s per stop | 10 min |
 | `bustime.ttc.ca/gtfsrt/vehicles`, `/trips` | header timestamp advances 30 s per tick, 5 to 7 s behind wall clock | 30 s | 10 min |
-| `gtfsrt.ttc.ca/trips/subway` | timestamp = request time | 30 s | 10 min |
+| `gtfsrt.ttc.ca/trips/subway` | timestamp = request time; not used (candidate for the parity suite) | n/a | n/a |
 | `ntas.ttc.ca` (per platform) | no cache headers | 10 s | 5 min |
 | `alerts.ttc.ca/api/alerts/list` | `max-age=25`, `ETag`, `Last-Modified` | 25 s, then conditional GET | 1 h |
 | `gtfsrt.ttc.ca/alerts/*` | timestamp = request time | 60 s | 1 h |
-| `gtfsrt.ttc.ca/trips/detour` | no header timestamp; stable across 40 min | 5 min; `as_of` = HTTP `Date` | 1 h |
+| `gtfsrt.ttc.ca/trips/detour` | served as JSON; no header timestamp; stable across 40 min | 5 min; freshness signal = HTTP `Date` | 1 h |
 | `www.ttc.ca/ttcapi/*` service changes | `no-cache` | 10 min | 1 h |
 | ttc.ca route detail | static-ish | refreshed per static rebuild | n/a |
 | CKAN `package_show` + zip `HEAD` | API cached 15 min upstream; zips have ETags | once per day | n/a |
@@ -179,7 +182,10 @@ Request budget compared with v0.2 polling: polling cost about 14,000 requests an
   "units": [ {"code": "9Y1L", "kind": "elevator", "levels": ["Concourse Level", "Platform Level"],
               "status": "out_of_service", "alert_id": "76084", "text": "Queen: Elevator 9Y1L out of service between ...",
               "node_match": true} ],
-  "step_free": {"verdict": "unknown", "basis": "text"}, "meta": {...} }
+  "uncoded_nodes": {"elevator": 0, "escalator": 0, "stair": 0}, "upcoming": [],
+  "step_free": {"verdict": "yes", "basis": "nodes"}, "meta": {...} }
+// step_free (6.2): verdict yes | no | unknown; basis nodes | alerts | platforms | platforms unknown | no elevator nodes | uncoded nodes;
+// no/alerts carries basis_note "a step-free path may remain through another elevator"
 
 // vehicles
 { "vehicles": [ {"vehicle_id": "4502", "route": "504", "trip_id": "108895010", "headsign": "...",
@@ -197,8 +203,10 @@ Request budget compared with v0.2 polling: polling cost about 14,000 requests an
                                    "rejoins_at": {"number": "8641", "name": "Wellesworth Dr at Faversham Cres"},
                                    "skipped": [ {"number": "7773", "name": "Gentian Dr at Sagamore Cres", "lat": 0, "lon": 0} ],
                                    "path_polyline": "...", "path_length_m": 19476,
-                                   "trips_affected": 67, "entity_ids": ["detour_0_695:0_0_1209_112_..."] } ] } ],
-  "meta": {"source": "gtfsrt.ttc.ca/trips/detour", "feed_timestamp": null, "fetched_at": "<HTTP Date>", "cache": "ttl", ...} }
+                                   "trips_affected": 67, "entity_id": "detour_0_695:0_0_1209_112_..." } ] } ],
+  "meta": {"source": "gtfsrt.ttc.ca/trips/detour", "feed_timestamp": null, "fetched_at": "2026-09-13T16:31:00-04:00", "cache": "ttl", ...} }
+// one entity per direction, so entity_id is singular; fetched_at is the local fetch time and the HTTP Date is the feed's
+// http_date freshness signal (feed_status), which drives the staleness verdict
 
 // nearest_stops (input from a geocoder; this server does not geocode)
 { "origin": {"lat": 43.6527, "lon": -79.3581},
@@ -206,43 +214,66 @@ Request budget compared with v0.2 polling: polling cost about 14,000 requests an
                 "kind": "stop", "station": null,
                 "served": [ {"route": "504", "direction_id": "1", "headsign": "West - 504A King towards Dundas West Station"} ],
                 "disruptions": [] },
-               {"id": "15772", "name": "Union", "aliases": ["Union Station"], "distance_m": 1914, "walk_min": 31, "kind": "station",
+               {"id": "15772", "number": "15772", "name": "Union", "aliases": ["union"], "distance_m": 1914, "walk_min": 31, "kind": "station",   // number kept one release for compatibility
                 "lines": ["1"], "disruptions": [ {"type": "closure", "line": "1", "span": ["TMU", "Union"], "alert_id": "..."} ] } ],
   "meta": {...} }
 
-// service_status
-{ "closures": [ {"line": "1", "name": "Yonge-University", "alert_id": "75803", "alert_type": "Planned",
-                 "span": {"from": {"id": "43272", "name": "St Clair"}, "to": {"id": "14589", "name": "College"},
-                          "stations": ["St Clair", "Summerhill", "Rosedale", "Bloor-Yonge", "Wellesley", "College"]},
-                 "direction": "Both ways", "active": [["2026-09-14T23:59-04:00", "2026-09-15T03:30-04:00"], "..."],
-                 "active_now": false, "shuttle": "Will Operate", "text": "Line 1 Yonge-University: There will be no subway service ..."} ],
-  "surface": [ {"route": "52D", "effect": "No Service", "direction": "Westbound", "from": "...", "to": "...", "text": "..."},
-               {"route": "112", "effect": "Detour", "detour_id": "695", "skipped_stops": 7, "reason": "Temporary route change due to sewer repairs"} ],
-  "reduced_speed_zones": 16, "elevators_out": {"Woodbine": ["12D2L"], "Queen": ["9Y1L"]},
+// service_status (closures are the shared disruptions[] element below, active ones first)
+{ "as_of": "2026-09-13T16:31", "rsz_as_of": "2026-09-13T06:00",
+  "closures": [ {"type": "closure", "source": "alerts.ttc.ca", "alert_id": "75803", "alert_type": "Planned", "route": "1", "routes": ["1"],
+                 "stations": ["43272", "14590", "14591", "14572", "14588", "14589"],
+                 "station_names": ["St Clair", "Summerhill", "Rosedale", "Bloor-Yonge", "Wellesley", "College"],
+                 "span": ["St Clair", "College"],                    // the alert's stopStart and stopEnd names
+                 "direction": "Both ways", "windows": [["2026-09-14T23:59-04:00", "2026-09-15T03:30-04:00"], "..."],
+                 "active_now": false, "shuttle": "Will Operate", "text": "Line 1 Yonge-University: There will be no subway service ...", "url": "..."} ],
+  "surface": [ // one shape for alert-derived and detour-feed rows
+               {"route": "52D", "effect": "No Service", "source": "alerts.ttc.ca", "alert_id": "77810", "detour_id": null, "direction": "Westbound",
+                "from": "...", "to": "...", "skipped_stops": 34, "reason": "Collision", "service_dates": null, "active_now": true, "text": "..."},
+               {"route": "112", "effect": "Detour", "source": "detour feed", "alert_id": null, "detour_id": "695",
+                "direction": "South - 112 West Mall towards Kipling Station via Renforth Station",   // "Both ways" when the group has both directions
+                "from": "Renforth Dr at Eglinton Ave West South Side", "to": "Wellesworth Dr at Faversham Cres", "skipped_stops": 7,
+                "reason": "112 West Mall - Temporary route change due to sewer repairs", "service_dates": ["20260913", "20260920"],
+                "active_now": true, "text": "..."} ],
+  "reduced_speed_zones": {"count": 16, "zones": [ {"route": "1", "direction": "Southbound From Finch", "span": ["...", "..."], "stations": ["..."],
+                                                   "text": "...", "reduced_speed_kmh": 25, "length_m": 0, "track_percent": 0, "average_speed_kmh": 0,
+                                                   "distance_m": 0, "target_removal": "..."} ]},
+  "elevators_out": {"Woodbine": ["12D2L"], "Queen": ["9Y1L"]}, "escalators_out": {},
+  "counts": {"closures": 1, "closures_active_now": 0, "surface": 2, "rsz": 16, "elevators_out": 2, "escalators_out": 0},
   "meta": {...} }
 
 // connections (decision h)
-{ "from": {"lat": 43.6527, "lon": -79.3581}, "to": {"station": "15772", "name": "Union"},
+{ "from": {"lat": 43.6527, "lon": -79.3581}, "to": {"station": "15772", "name": "Union"}, "depart_at": "2026-09-13T16:31-04:00",
   "options": [
-    { "rank": 1, "transfers": 0, "typical_min": 20, "walk_m": 160, "disruptions": [],
+    { "rank": 1, "transfers": 0, "typical_min": 20, "walk_m": 160, "stops": 12, "disruptions": [], "basis": "realtime",
+      "first_departure": {"when": "2026-09-13T16:46", "in_min": 15, "trip_id": "108895010"},
       "legs": [ {"mode": "walk", "to": {"number": "15246", "name": "Mill St at Cherry St West Side"}, "distance_m": 160, "min": 3},
                 {"mode": "ride", "route": "121", "direction_id": "1", "headsign": "West - 121 Esplanade-River Towards Union Station",
+                 "transit": "bus", "pattern_id": 812,
                  "board": {"number": "15246", "name": "Mill St at Cherry St West Side"},
                  "alight": {"number": "16754", "name": "1 Front St West - Union Station"},
-                 "stops": 12, "typical_min": 17, "next": [ {"eta_min": 15, "vehicle_id": "8520", "crowding": {"label": "Not busy"}} ]} ] },
-    { "rank": 2, "transfers": 1, "typical_min": 17, "walk_m": 29,
-      "disruptions": [ {"type": "closure", "line": "1", "span": ["TMU", "Union"], "affects": "leg 3", "shuttle": "Will Operate"} ],
+                 "stops": 12, "typical_min": 17, "next": [ {"eta_min": 15, "vehicle_id": "8520", "basis": "realtime", "crowding": {"label": "Not busy"}} ]} ] },
+    { "rank": 2, "transfers": 1, "typical_min": null, "known_min": 12, "typical_min_note": "excludes the shuttle leg", "walk_m": 29, "stops": 9,
+      "disruptions": [ {"type": "closure", "route": "1", "alert_id": "12345", "span": ["TMU", "Union"], "shuttle": "Will Operate", "affects": [3], "...": "..."} ],
       "legs": [ {"mode": "walk", "to": {"number": "15460", "name": "Cherry St at Front St East"}, "distance_m": 29, "min": 0},
-                {"mode": "ride", "route": "504", "direction_id": "1", "headsign": "West - 504A King towards Dundas West Station",
-                 "board": {"number": "15460"}, "alight": {"number": "15637", "name": "King St West at Yonge St West Side - King Station"}, "stops": 9, "typical_min": 12},
+                {"mode": "ride", "route": "504", "direction_id": "1", "headsign": "West - 504A King towards Dundas West Station", "transit": "streetcar",
+                 "pattern_id": 6, "board": {"number": "15460"}, "alight": {"number": "15637", "name": "King St West at Yonge St West Side - King Station"},
+                 "stops": 9, "typical_min": 12},
                 {"mode": "shuttle", "line": "1", "from": {"station": "14586", "name": "King"}, "to": {"station": "15772", "name": "Union"},
-                 "note": "subway suspended TMU to Union; shuttle buses operating per alert 12345"} ] } ],
+                 "typical_min": null, "alert_id": "12345", "note": "subway suspended TMU to Union; shuttle buses operating per alert 12345"} ] } ],
   "meta": {...} }
+// transfers counts every vehicle change (ride and shuttle legs minus one); an option with a shuttle leg has typical_min null,
+// known_min for its other legs, and ranks after complete options with the same transfers (6.7 item 5). A one-transfer option
+// carries {"mode": "transfer", "from": {...}, "to": {...}, "distance_m": 0, "min": 4} between its rides (walk plus the 4-minute penalty).
+// affects lists 1-based leg numbers. disruptions entries are the shared element below plus affects.
 
-// disruptions[] element (shared by stop, station, route_stops, arrivals, next_trains, connections)
-{ "type": "closure | suspension | detour | rsz | elevator | delay | other", "source": "alerts.ttc.ca | gtfsrt alerts | detour feed",
-  "alert_id": "75803", "route": "1", "stations": ["14588", "14587", "14586", "15772"], "stops": [], "direction": "Both ways",
-  "active_now": true, "period": ["...", "..."], "shuttle": "Will Operate", "text": "...", "url": "..." }
+// disruptions[] element (shared by stop, station, nearest_stops, route_stops, arrivals, next_trains, alerts, connections, service_status)
+{ "type": "closure | suspension | detour | rsz | elevator | escalator | delay | other", "source": "alerts.ttc.ca | gtfsrt alerts | detour feed",
+  "alert_id": "75803", "route": "1", "routes": ["1"], "stations": ["14588", "14587", "14586", "15772"], "station_names": ["TMU", "Dundas", "King", "Union"],
+  "stops": [], "span": ["TMU", "Union"], "direction": "Both ways",
+  "active_now": true, "period": ["...", "..."], "windows": [["...", "..."]], "shuttle": "Will Operate", "text": "...", "url": "..." }
+// Detour-feed elements carry detour_id and entity_id instead of alert_id; RSZ elements add rsz; unit outages add unit_code.
+// The copy attached to a served end station of an active closure (station, next_trains, stop, nearest_stops, alerts stop=) adds
+// "role": "shuttle_terminus" (6.7 item 4); the snapshot's own element never carries it.
 
 // next_trains: schedule fallback on an LRT platform (decision i)
 { "station": {"id": "16815", "name": "Driftwood"},
@@ -251,11 +282,15 @@ Request budget compared with v0.2 polling: polling cost about 14,000 requests an
                   "note": "NTAS returned no prediction for this platform; times are from the timetable"} ],
   "meta": {"source": "ntas + static stop_times", ...} }
 
-// next_trains with propagation
+// next_trains with propagation (a suspended platform carries no basis and no scheduled_next_min; what NTAS said stays visible as ntas_min)
 { "station": {"id": "14586", "name": "King"},
   "platforms": [ {"platform": "13814", "name": "King Station - Southbound Platform", "line": "1", "direction_text": "Southbound to Vaughan Metropolitan Centre via Union",
-                  "next_min": [], "service": "suspended", "disruption": {"type": "closure", "alert_id": "...", "span": ["TMU", "Union"], "shuttle": "Will Operate"}} ],
-  "meta": {...} }
+                  "next_min": [], "ntas_min": [1, 4, 8], "service": "suspended", "source": "ntas",
+                  "note": "NTAS keeps publishing predictions inside a closure; this platform is suspended",
+                  "disruption": {"type": "closure", "alert_id": "...", "span": ["TMU", "Union"], "shuttle": "Will Operate", "...": "..."}} ],
+  "disruptions": [ {"type": "closure", "...": "..."} ], "meta": {"source": "ntas", ...} }
+// At a span end station (Union here, if the closure ran TMU to Union with Line 1 open beyond) the platform facing the open line keeps
+// service "normal" with its real next_min, and the station's disruption copy carries "role": "shuttle_terminus".
 
 // service_changes
 { "changes": [ {"id": "f4d1a81b-...", "routes": ["101"], "route_type": "Bus", "title": "101 Downsview Park - Temporary route change ...",
@@ -266,7 +301,8 @@ Request budget compared with v0.2 polling: polling cost about 14,000 requests an
              "etag": "\"1788553243.713-...\"", "last_check": "2026-09-13T04:00:00Z", "days_remaining": 48,
              "newer_package_seen": false, "verdict": "fresh"},
   "sources": [ {"name": "bustime vehicles", "url": "...", "last_fetch": "2026-09-13T20:24:00Z", "cache": "ttl", "age_s": 12,
-                "feed_timestamp": 1789331032, "signal": "feed_header", "lag_s": 5, "entities": 1275, "last_error": null, "verdict": "fresh"},
+                "feed_timestamp": 1789331032, "signal": "feed_header", "lag_s": 5, "entities": 1275, "last_error": null, "verdict": "fresh",
+                "hits": 3, "failures": 0, "retry_after": null, "status_counts": {}},   // cache: ttl | expired; retry_after set while a backoff hold lasts
                {"name": "detour feed", "last_fetch": null, "cache": null, "verdict": "unused"} ],   // never fetched this session
   "meta": {...} }
 ```
@@ -291,7 +327,7 @@ Request budget compared with v0.2 polling: polling cost about 14,000 requests an
 - **Stop flags (decided):** raw `wheelchair_boarding` with GTFS meaning; 0 means unknown, never accessible (1,340 surface stops are 2, 194 are 0).
 - **Trip flag (decision c):** `trips.wheelchair_accessible` is ignored. Basis: it is 2 on all 17,255 trips of the twelve streetcar routes despite a fully low-floor fleet.
 - **Units (decided):** join alert unit codes to pathway nodes named `Elevator_{code}_{level}` / `Escalator_{code}_{level}` when present (95 elevator and 462 escalator coded nodes; 58 of 67 stations have coded nodes; 10 of 15 real alert codes matched today), else fall back to the alert `headerText`; output carries `node_match`.
-- **Step-free verdict (decided):** `exact` only when every unit on the path is a coded node with known status; otherwise `unknown` with `basis: "text"`. Line 5/6 alerts use `ELV02-B` style codes that do not appear in node names.
+- **Step-free verdict (decided; reworded v0.7):** `verdict` is `yes | no | unknown` with a `basis`. `yes` (`basis: "nodes"`) means every platform is flagged 1, every elevator node at the station is coded and none is out of service. `no` means at least one elevator is out of service (`basis: "alerts"`, with `basis_note` that a step-free path may remain through another elevator; the pathways-graph walk an exact path verdict needs is deferred) or a platform is flagged 2 (`basis: "platforms"`). `unknown` means a platform flag is 0 or no platform is recorded (`platforms unknown`), the station has no elevator nodes (`no elevator nodes`) or some are uncoded (`uncoded nodes`). An outage is checked first, then the platform flags, then the nodes; the verdict reads the platform flags themselves, not the summary, so a 0 flag never counts as accessible. Line 5/6 alerts use `ELV02-B` style codes that do not appear in node names.
 - **Sources (decided):** `alerts.ttc.ca` accessibility list is primary; GTFS-RT `alerts/accessibility` supplies platform ids; ttc.ca duplicates are not fetched. Station ids join on `stop_id OR stop_code`.
 
 ### 6.3 Crowding (item 4)
@@ -303,19 +339,19 @@ Request budget compared with v0.2 polling: polling cost about 14,000 requests an
 
 ### 6.4 Detours (item 5)
 
-- **Parsing (decided):** `gtfs-realtime-bindings >= 2.2.0` pinned, one adapter, JSON fallback.
-- **Freshness (decided):** HTTP `Date` recorded as `fetched_at`; TTL 5 minutes.
+- **Parsing (decided; corrected v0.7):** the host serves the detour feed as JSON and the adapter parses JSON only; no protobuf branch exists (add one only if the host switches). `gtfs-realtime-bindings` serves the protobuf feeds (vehicles, trips, GTFS-RT alerts).
+- **Freshness (decided; corrected v0.7):** the HTTP `Date` is the feed's freshness signal (`http_date`, driving the staleness verdict); `meta.fetched_at` is the local fetch time. TTL 5 minutes.
 - **Grouping (decided):** by `detourId`; directions listed inside; entity ids kept.
 - **Reason (decision e):** joined from `serviceChanges` by route and date overlap (12 of 14 today); `reason: null` when nothing matches; never suppressed.
 - **Membership on arrivals (decided, v0.3):** `selectedTrips.tripIds` from the detour feed, tested against the vehicle's trip id from `bustime.ttc.ca/gtfsrt/trips`, fetched only when the stop's route is in the detoured-route set. `modified_update`'s `modifiedTrip` link is no longer used.
 - **Replacement buses (decided):** `306 Bus`/`506 Bus` entities are reported under route 306/506 with their "Replacement Bus" headsigns.
 - **NEW trips (decided):** labelled by route plus first/last stop names.
-- **Period boundary (decided):** dual-feed loading per 2.1; unresolved trips reported as `pattern: "unknown"`.
+- **Period boundary (decided; implemented 2026-10-11):** dual-feed loading per 2.1, trip ids resolved against every loaded feed through `StaticStore.lookup_trip`; unresolved trips reported as `pattern: "unknown"`.
 
 ### 6.5 Service changes and feed status (item 6)
 
 - **Service changes parsing (decided):** split `route` on `|`; when blank (6 of 46), extract the leading route number from `title`; use `routeType` (Subway appears there, never in `categoryName`); ignore `isDetour` (always false); dates from `effectiveStartDate`/`effectiveEndDate`.
-- **GTFS-RT `MODIFIED_SERVICE` alerts (decided):** used only to attach `informed_entity` route ids when titles match (34 of 40 today); service changes remain the canonical list.
+- **GTFS-RT `MODIFIED_SERVICE` alerts (decided; corrected v0.7):** they are the canonical service-changes list today (ttc.ca's `serviceChanges` key has been absent since October 2026); ttc.ca rows are merged in when the key reappears, matched by normalised title. Detour reasons likewise read GTFS-RT first, then ttc.ca, joined by route and date overlap.
 - **Freshness signals (decided):** `feed_status` reports, per source, the best signal and its type: `feed_header` (surface feeds share one timestamp ticking every 30 s with 5 to 7 s lag; subway and alert feeds stamp on request), `http_last_modified` (`alerts.ttc.ca`), `http_date` (detour feed, NTAS), `poll_time` otherwise. In on-demand mode a source that has never been fetched this session reports `unused`; `probe: true` performs one live request per source (about 1.2 MB total, or less with 304s) to fill the table.
 - **Staleness thresholds (decision f):** evaluated at answer time against the feed timestamp: `stale` past 90 s (surface real-time), 60 s (subway TripUpdates and NTAS), 10 min (alerts), 30 min (detours); static is `expiring` within 3 days of `feed_end_date` with no newer package seen and `expired` after it. A `stale_fallback` answer is always at least `stale`.
 
@@ -358,19 +394,19 @@ Request budget compared with v0.2 polling: polling cost about 14,000 requests an
 1. **Geocoding stays outside the server.** Coordinates come from the Google Maps MCP (or any geocoder); `nearest_stops` is the bridge.
 2. **`nearest_stops`** returns boarding stops and stations by straight-line distance (haversine) with `walk_min` = distance x 1.3 / 80 m per minute, default radius 500 m and 10 results, `kind` filter, and `disruptions[]` per result. Stations are returned as their station record with lines served; stops carry their served routes/directions/headsigns.
 3. **`service_status`** is the first call for any trip or "what's going on" question. It is built from one alerts fetch plus the cached detour feed: closures as station spans (station ids resolved through the alias table, `active_now` computed from the GTFS-RT per-window entities when present, else the alerts.ttc.ca period), surface suspensions and detours, RSZ count, elevators out by station.
-4. **Disruption propagation.** A shared `disruptions[]` element is attached to `stop`, `station`, `route_stops` (as per-stop `status`), `arrivals`, `next_trains` and `connections`. Rules: a station is `closed` when an active closure's station list contains it; a stop is `skipped_by_detour` when an active detour's skipped span contains it; a surface stop whose name ends in "- X Station" inherits X's closure as a disruption (so arrivals at "King St West at Yonge St - King Station" mention that King is closed); `next_trains` reports `service: "suspended"` when the platform's station is closed now, `no_prediction` when NTAS returns nothing and no closure is known, `normal` otherwise. An empty NTAS list is never presented as "no trains".
+4. **Disruption propagation.** A shared `disruptions[]` element is attached to `stop`, `station`, `route_stops` (as per-stop `status`), `arrivals`, `next_trains` and `connections`. Rules (span model, corrected v0.7): a station strictly inside an active closure's span is `closed` (`service: "suspended"`, both platforms closed); a span end station is served by trains on the platform facing the open side and is the shuttle terminus (`service: "reduced"` per line, its disruption copy carrying `role: "shuttle_terminus"`, the platform facing the closed section closed); a terminal end with nothing beyond it, and a one-station closure, are closed on both platforms. The TTC's station list is the shuttle span inclusive of its ends and GTFS-RT lists every platform of every listed station, so the span rule (does a pattern of the line continue from the platform to a station outside the span?) decides, not the listing. A stop is `skipped_by_detour` when an active detour's skipped span contains it; a surface stop whose name ends in "- X Station" inherits X's closure as a disruption (so arrivals at "King St West at Yonge St - King Station" mention that King is closed); `next_trains` reports `service: "suspended"` with `next_min: []` on a suspended platform whatever NTAS says (its numbers move to `ntas_min`, no `basis`, no timetable), `no_prediction` when NTAS returns nothing and no closure is known, `normal` otherwise; `arrivals` on a suspended platform answers no rows with the same note. An empty NTAS list is never presented as "no trains".
 5. **`connections`** (the centrepiece). Static search over patterns, then a live and disruption overlay:
    - Origin and destination sets: the stops within `walk_m` (default 400) of each end, or the given stop, or every platform and surface stop belonging to the given station (via `parent_station` and the alias/suffix membership), including bus stops within 150 m of the station record.
    - Direct options: every (route, direction, pattern) serving an origin stop where a destination stop appears later in the same pattern.
    - One-transfer options: for each origin pattern, each downstream stop that is a transfer point (same stop, same station, or within 150 m) to a pattern that reaches a destination stop later. Limited to patterns running on today's service id and within the route's service span at the departure time (Blue Night routes only overnight).
    - Typical minutes per leg from `pattern_run_times` (median scheduled minutes between the two stops), walking legs as above, a fixed 4-minute transfer penalty.
-   - Ranking: transfers, then total typical minutes including walking, then stop count. Return `limit` options (default 4).
+   - Ranking: transfers (every vehicle change, a shuttle included), then complete options before those with an unknown leg, then total typical minutes including walking (`known_min` for the latter), then stop count. Return `limit` options (default 4).
    - Live overlay: `arrivals` for the first ride leg's board stop (cheap per-stop XML; NTAS for platforms); crowding inline.
-   - Disruption overlay: drop ride legs that traverse a closed station on a subway line and, when the closure has `shuttleType` "Will Operate", replace them with a `shuttle` leg between the closure's end stations (typical minutes unknown, stated as such); drop legs whose board or alight stop is skipped by a detour and re-run with the nearest served stop; annotate RSZ and delays without dropping. Every retained option lists the disruptions it touches.
+   - Disruption overlay: drop ride legs that traverse a closed station on a subway line and, when the closure has `shuttleType` "Will Operate", replace them with a `shuttle` leg between the closure's end stations; the shuttle's minutes stay unknown, so the option reports `typical_min: null` with `known_min` for its other legs and a `typical_min_note`, counts the shuttle as a transfer, and ranks after complete options at equal transfers; closed spans are pruned inside the search (the `rideable` predicate), so a transfer route around a closure is found; drop legs whose board or alight stop is skipped by a detour and re-run with the nearest served stop; annotate RSZ (in the ride's direction only, matched on the zone's terminal, then the platform name) and delays without dropping. Every retained option lists the disruptions it touches, each naming the legs it `affects` (1-based).
    - Out of scope: timetable-exact itineraries (a RAPTOR planner over `stop_times` with real-time is a possible v1.x addition); walking routes (straight-line only).
-6. **Station aliases.** `station_aliases` maps every station id to: its name; its platform name prefixes; the X of every "- X Station" surface-stop suffix within 300 m of the station; the `stopStart`/`stopEnd` names seen in alerts; and a manual list: Dundas -> TMU, Bloor and Yonge -> Bloor-Yonge, Sheppard -> Sheppard-Yonge, "St. Clair" -> St Clair, "St. Andrew" -> St Andrew, VMC -> Vaughan Metropolitan Centre, Kennedy RT -> Kennedy. GO-station suffixes are recorded as `external: "GO"` and never resolve to a TTC station. `find_stops`, `station`, `next_trains` and `connections` accept any alias.
+6. **Station aliases.** `station_aliases` maps every station id to: its name; its platform name prefixes; the X of every "- X Station" surface-stop suffix within 300 m of the station; and a manual list: Dundas -> TMU, Bloor and Yonge -> Bloor-Yonge, Sheppard -> Sheppard-Yonge, "St. Clair" -> St Clair, "St. Andrew" -> St Andrew, VMC -> Vaughan Metropolitan Centre, Kennedy RT -> Kennedy. GO-station suffixes are recorded as `external: "GO"` and never resolve to a TTC station. Alert `stopStart`/`stopEnd` names are not in the table: a static build cannot see live alerts, so they resolve at answer time through `resolve_station` (station names, aliases, then a `LIKE` fallback on station names), and validation item 9 checks that none fall through. `find_stops`, `station`, `next_trains` and `connections` accept any alias.
 
-### 6.8 Lines 5 and 6 (Eglinton and Finch West LRT) — coverage audit, 2026-09-13 21:00
+### 6.8 Lines 5 and 6 (Eglinton and Finch West LRT): coverage audit, 2026-09-13 21:00
 
 **Static (merged GTFS):** covered. Line 5 has 50 platforms under 25 station records, Line 6 has 36 under 18; all platforms are `wheelchair_boarding 1`; the stations carry entrances (19 and 7) and pathway nodes (121 and 71, including 28 and 12 elevator nodes). Interchanges share one station record with the subway, so the transfer graph needs nothing special: Eglinton (43274) holds Line 1 and Line 5 platforms plus nine bus routes, Cedarvale (43298) Lines 1 and 5, Kennedy (43295) Lines 2 and 5, Finch West (15205) Lines 1 and 6. Service spans are normal all-day service (Line 5 05:40 to 02:09, Line 6 04:55 to 02:06 on weekdays). Two quirks: `route_type` is 0 (tram), so mode must come from the explicit rail-line list {1, 2, 4, 5, 6} rather than from GTFS; and one Line 5 platform, `16081` "Kennedy Station - Subway Platform", has no `parent_station` (the four terminal platforms are named "- Subway Platform"; the other three do have parents). The elevator and escalator nodes at these stations use a different code scheme (`Elevator_ELVF_Street`, `Elevator_E3_Concourse`, `Escalator_ESC09_Upper`) from the subway (`12D2L`), and the one live Line 5 elevator alert today (Laird, `ELV02-B`) matches none of them, so unit joins fall back to alert text on both lines.
 
@@ -379,6 +415,7 @@ Request budget compared with v0.2 polling: polling cost about 14,000 requests an
 - The subway TripUpdates feed carries only routes 1, 2 and 4 (37, 22 and 4 entities today); there are no trip updates for Lines 5 or 6.
 - The surface GTFS-RT feeds carry no route 5 or 6 vehicles or trips, so there are no positions and no crowding for the LRTs; `arrivals` on an LRT platform reports crowding as `No info` and `vehicles` returns nothing for routes 5 and 6.
 - The BusTime per-stop XML rejects LRT platforms ("Stop not found"), so `arrivals` for a Line 5/6 platform is NTAS-only.
+- **NTAS during a closure (validated 2026-10-11, item 7; subway, but the rule is shared):** NTAS keeps publishing minutes at closed platforms. Inside the Line 2 Kipling to Jane closure it answered Old Mill eastbound (13780) `"1"` and Jane westbound `"1, 4, 8"` towards the closed section, neither an empty list nor an error. Suspended platforms are therefore reported from the closure, never from NTAS: `next_min: []`, what NTAS said in `ntas_min`, a note, no `basis`.
 
 **Alerts:** no Line 5 or 6 route alert existed today to observe. The `gtfsrt.ttc.ca` host has no LRT alert feed (only subway, bus, streetcar, stops, accessibility), the ttc.ca route API types both lines as 400 (urban rail, same as Line 1), and alerts.ttc.ca `routeType` values seen so far are Subway, Bus, Streetcar and Elevator. Which feed and label a Line 5 closure will use is unknown until one occurs.
 
@@ -416,7 +453,7 @@ Request budget compared with v0.2 polling: polling cost about 14,000 requests an
 
 **Threat model:** the server holds no third-party credential; the only secrets are its own gate's. Read-only public data behind the email gate is the safe class of connector. Nothing in the tools can act on the TTC or on the user's accounts.
 
-**Local mode:** `ttc-mcp --transport stdio` uses the same code with the static check in-process (startup plus every 24 h while running) and the cache directory from `TTC_MCP_CACHE`; the Google gate is off in stdio mode.
+**Local mode:** `ttc-mcp --transport stdio` uses the same code with the static check in-process (once before the server starts, when a needed rebuild blocks server start rather than tool calls, then every 24 h in a worker thread while running; `--no-refresh` turns both off) and the cache directory from `TTC_MCP_CACHE`; the Google gate is off in stdio mode. An external `ttc-mcp-build` is picked up on the next tool call because the store reopens when `manifest.json` changes.
 
 **Validation (adds to section 8):** (14) confirm every TTC host answers from Cloud Run's us-east1 egress IPs with the server's User-Agent, since none publish access rules; (15) measure cold start with the real database size and pick download versus volume mount; (16) verify the connector from claude.ai, Claude Code and iOS after the first deploy.
 
@@ -438,31 +475,33 @@ Request budget compared with v0.2 polling: polling cost about 14,000 requests an
 ## 8. To validate during implementation
 
 1. **`EMPTY` as default.** Sample the vehicle feed at a weekday peak (08:00 to 09:00): if buses spread across the three values while streetcars stay `EMPTY`, downgrade streetcar `EMPTY` to `No info`.
-2. **Board-period transition.** Watch the first period change (late October 2026): confirm the dual-feed window resolves every live trip id and every detour trip id.
+2. **Board-period transition.** Implementable now (dual-feed lookup, 2.1); first change due about 2026-10-31. Watch it: confirm the dual-feed window resolves every live trip id and every detour trip id.
 3. **Elevator node coverage.** After each static rebuild, log the share of active alert codes that match a node; if it drops below the current 10 of 15, widen the fallback text parsing.
 4. **Detour feed behaviour on change.** Capture the feed before and after a detour ends to confirm entities disappear rather than linger with past `serviceDates`.
 5. **`modified_update` generation time.** Re-measure monthly; if it drops under 0.5 s it becomes a candidate arrivals source again (public numbers, no crosswalk).
 6. **TTL tuning.** Log cache hit rates per source for the first weeks; if bursts routinely exceed a TTL (many `live` fetches within one tick), lengthen that TTL toward the feed's true interval, never shorter.
-7. **NTAS during a closure.** The College to St Clair closure runs 23:59 to 03:30 on the nights of Sept 14 to 18; capture NTAS for College (13807/13808) and Bloor-Yonge (13863/13864) during that window to learn whether it returns an empty list, stale minutes, or an error, and set the `suspended` logic accordingly.
-8. **Connections quality.** Run 20 origin/destination pairs across the city (downtown, Scarborough, Etobicoke, North York, an overnight case) and compare the top option with the TTC trip planner; tune `walk_m`, the 150 m transfer radius (the four stations without nearby surface stops need the membership rule), and the transfer penalty.
+7. **NTAS during a closure.** Validated 2026-10-11, result in 6.8: NTAS keeps publishing minutes at closed platforms during a closure (Old Mill eastbound "1", Jane westbound "1, 4, 8" inside the Kipling to Jane closure), so suspended platforms are reported from the closure, never from NTAS. (The original plan was to capture College and Bloor-Yonge during the September College to St Clair closure.)
+8. **Connections quality.** 19 of 20 pairs under 150 min on 2026-10-11 (`scripts/validate_connections.py`; the one miss had no stop within 400 m of its origin); the TTC planner comparison of each top option is pending. Then tune `walk_m`, the 150 m transfer radius (the four stations without nearby surface stops need the membership rule), and the transfer penalty.
 9. **Alias completeness.** After each static rebuild, list surface-stop suffixes and alert station names that resolve to no station; add manual aliases as needed and keep GO stations external.
-10. **Rate behaviour.** None of the undocumented hosts publish limits; log 403/429 per host and back off exponentially; single-flight already prevents self-inflicted bursts.
+10. **Rate behaviour.** None of the undocumented hosts publish limits. Backoff implemented 2026-10-11 (2.2): an exponential hold per failing source, 403 and 429 counted per source in `feed_status`; single-flight already prevents self-inflicted bursts. Still to watch: whether any host ever answers 403 or 429 to the project User-Agent.
 
 ## 9. Implementation notes
 
 - **Adapters:** one module per source (`ckan`, `gtfs_static`, `bustime_rt`, `bustime_web`, `gtfsrt_ttc`, `ntas`, `ttc_alerts`, `ttcapi`), each returning typed records plus a `SourceStatus`. Tools compose adapters through the cache and never touch HTTP directly.
-- **Cache module:** `CacheEntry {key, body, parsed, fetched_at, feed_timestamp, etag, last_modified, error}`; `get(key, ttl, fetch, max_stale)` implements TTL, single-flight (one in-flight future per key), conditional GET when a validator exists, and stale-if-error with the age reported back to the tool. Memory footprint is small: the largest cached body is the 568 KB trip feed.
+- **Cache module:** `Entry {key, parsed, fetched_at, signal, signal_ts, etag, last_modified, last_attempt, last_error, hits, failures, retry_after, status_counts}`; `get(source, key, fetch, parse)` implements TTL, single-flight (one in-flight future per key), conditional GET when a validator exists, stale-if-error with the age reported back to the tool, and the backoff hold of 2.2. Memory footprint is small: the largest cached body is the 568 KB trip feed.
 - **Connections planner:** precompute per pattern the ordered stop list with cumulative median minutes; index stop -> [(pattern, position)]; index station -> member stops (parent, suffix, 150 m rule) and stop -> nearby stops (150 m grid). Query: origin set x destination set through the stop index gives direct hits in O(patterns at origin); one-transfer hits enumerate downstream stops of each origin pattern (average 33) and probe the destination index. Apply the running-now filter, score, overlay, and return. Expected cost: tens of milliseconds static plus one arrivals fetch.
 - **Static build:** streaming, single pass, ~2 minutes, in the Cloud Run Job; write to a temporary database, upload, then rewrite the manifest; the manifest keeps the previous database listed for the overlap window; a service that starts with no manifest yet answers static tools with an explicit "static store not built yet" error rather than blocking.
-- **Entry points:** `ttc-mcp` (server; `--transport http|stdio`, default http on `$PORT`) and `ttc-mcp-build` (the Job). One Dockerfile (`python:3.12-slim`, `uv sync --frozen`), one image, two commands.
+- **Entry points:** `ttc-mcp` (server; `--transport http|stdio`; the default comes from `TTC_MCP_TRANSPORT` and is stdio locally, http on `$PORT` in the container, whose image sets `TTC_MCP_TRANSPORT=http`) and `ttc-mcp-build` (the Job). One Dockerfile (`python:3.14-slim`, `uv sync --frozen`; `pyproject` requires 3.13+, `.python-version` is 3.14), one image, two commands. The Dockerfile is phase 5 work and does not exist yet.
 - **Parity tests (nightly, live):** arrivals at 15461 from the per-stop XML vs crosswalked `bustime` protobuf vs `modified_update` (same vehicles and minutes within 1 min); NTAS vs `trips/subway` for 13863; detour skipped stops vs live omitted stops on a linked trip; Blue Night classifier still flags 35 of 35.
-- **Licensing:** CKAN data under the Open Government Licence - Toronto (attribution string in the server's `about` text); everything else undocumented, so tool descriptions say "best effort, from the TTC's own site endpoints".
+- **Licensing (implemented 2026-10-11):** CKAN data under the Open Government Licence - Toronto; the attribution string ends the server instructions (`INSTRUCTIONS`, the MCP `instructions` text), followed by "Real-time and advisory answers are best effort, read from the TTC's own site endpoints, none of which publish terms." The descriptions of `arrivals`, `next_trains`, `vehicles`, `alerts`, `service_status`, `detours`, `service_changes` and `connections` carry a best-effort clause; `arrivals` and `vehicles` say historical occupancy is out of scope.
 
 ## 10. Effort
 
 Core server: ~3 days solo / ~1.5 days with Claude; the on-demand model removes the poller supervision but adds the cache module, so the total is unchanged. Cloud deployment following the existing gateway recipe (OAuth client, secrets, service account, bucket, Job, Scheduler, first deploy, connector re-adds): ~4 h solo / ~2 h with Claude, most of it console clicks the recipe already documents. Additions: item 1 ~2 h / ~1 h; item 3 ~1 h / ~30 min (plus ~1.5 days / ~half a day for an exact step-free verdict beyond coded-node cases); item 4 ~1 h / ~30 min; item 5 ~3 to 4 h / ~1.5 h; item 6 ~2 h / ~1 h. Five additions without step-free routing: about **1.5 days solo, ~5 hours with Claude**. v0.4 additions: `connections` ~1 day / ~3 to 4 h; `nearest_stops` ~1 h / ~30 min; `service_status` plus propagation ~3 h / ~1.5 h; alias table ~1.5 h / ~45 min. v0.5: `scheduled_departures` and the schedule basis ~2 h / ~1 h (the `stop_times` table already exists in the static build). About **2 days solo, ~7 to 8 hours with Claude** on top of the earlier items.
 
-## 11. Verification log (2026-09-13)
+## 11. Verification log
+
+### 2026-09-13 (source survey)
 
 - Geometry: 137,912/137,912 trips with shapes; 1,592 shapes; 1,418 patterns; 42 multi-shape patterns; BusTime 504 patterns 4 with 36 to 39 embedded stops.
 - Accessibility: station flag 1 on 114/114; platforms flagged 2 include Old Mill, Islington, College, King, Museum; 95/462/755 coded elevator/escalator/stair nodes; 10 of 15 alert codes matched; 63/63 alert station ids resolved via `stop_id OR stop_code`; streetcar trips 17,255 flagged 2.
@@ -473,3 +512,23 @@ Core server: ~3 days solo / ~1.5 days with Claude; the on-demand model removes t
 - Fetch costs: table in 6.6; `alerts.ttc.ca` conditional GET returned 304 in 0.05 s.
 - User-Agent: 403 from `alerts`, `ntas`, `www`, `gtfsrt` hosts for `Python-urllib`; 200 for every custom string.
 - Trip dry run: nearest stops to Cherry St and Front St East as listed in 6.7; 121 westbound ends at stop 16754 "1 Front St West - Union Station"; live arrivals 121 in 15/24 min, 504A in 15 min; closure alert shape and per-night GTFS-RT entities as described; 106 suffix stops over 51 names; 418 surface stops within 150 m of a station, 4 stations with none; 1,418 patterns averaging 33 stops.
+
+### 2026-10-05 (phase 1 to 3 gates)
+
+- Static build, live: 13 s per feed, 104 MB SQLite per feed before shapes (schema 1), both zips downloaded in about 3 s; two-feed manifest (S1000538 and S1000542, the Sept 30 revision winning for 2026-10-05).
+- Phase gates: unit suite green; `smoke_static.py` (nine checks), `smoke_realtime.py` (eight) and `smoke_advisories.py` (ten) PASS against the live store and the TTC; the live integration suite over streamable HTTP green, including the cross-phase closure invariant; Driftwood (Line 6) answering `no_prediction` with timetable minutes, as decision i expects.
+- Station closures made line-aware: a Line 1 closure at Eglinton leaves the Line 5 platform open.
+
+### 2026-10-06 (phase 4 gate)
+
+- Both live stores rebuilt to schema 2: 116 MB each (S1000538 116,088,832 bytes, S1000542 116,252,672), under the 200 MB target; 235 of 235 route service levels fetched from ttc.ca at build time.
+- `smoke_derived.py` (eleven checks) PASS: 504B polyline with 36 stops and distances, simplified Line 1 GeoJSON with fewer points, Queen's coded units (`9Y1L`) with a verdict, St George's live elevator alert with `node_match: false`, service levels on 504 and 300, the Cherry and Front to Union options with live `next` rows (the seasonal 202 legitimately outranks the direct 121 in the evening); the integration suite gained the derived checks and stayed green; `validate_connections.py` added for item 8.
+
+### 2026-10-11 (spec-correctness review, live, with the Line 2 Kipling to Jane closure active)
+
+- Suites: 296 unit tests at `cf6ac69`, 334 after the review's fixes; 20 live integration tests, no skips; all four smoke scripts PASS; `validate_connections.py` 19 of 20 pairs under 150 min (one origin had no stop within 400 m), TTC planner comparison pending.
+- Store probe (S1000542, schema 2): 12,001 stops (9,511 boarding, 114 stations, 250 entrances, 2,126 nodes), 235 routes, 137,910 trips, 1,416 patterns, 1,590 shapes with 1,033,606 points, 4,083 pathways, 324 levels, 95 coded elevator nodes; zero orphan platforms (16081 attached to Kennedy 43295); 42 rows with `stop_id != stop_code` (34 stations, 8 boarding stops).
+- Closure end stations: alert 77814 lists Kipling, Islington, Royal York, Old Mill and Jane; GTFS-RT 77814 lists both Jane platforms; raw NTAS predicted an eastbound train at Jane (13777) and Runnymede was `normal`, so the TTC's list is the shuttle span inclusive of its ends. After the fix: Kipling (terminal end) `suspended` on both platforms; Royal York and Old Mill `suspended`; Jane `reduced` with `role: shuttle_terminus`, eastbound 13777 `normal` (`next_min [2]`), westbound 13778 `suspended` (`ntas_min [0, 4, 5]`).
+- NTAS ghost predictions inside the closure (item 7): Old Mill eastbound 13780 `"1"`, Jane westbound `"1, 4, 8"` towards the closed Kipling.
+- `connections Kipling -> Jane` after the fix: the 19-minute bus first (0 transfers, complete), the shuttle-only option second with `typical_min: null`, `known_min 0`, `affects [1]`; `Finch -> Union` lists only the southbound reduced speed zones.
+- Live fetch layer: arrivals 246 ms first call, 2 ms from TTL; surface feeds `feed_header` lag 7 s; `alerts.ttc.ca` answers with `http_last_modified`; `connections` 6 to 212 ms per call; ttc.ca `serviceChanges` empty while GTFS-RT carries 23 `MODIFIED_SERVICE` entities; `detours` resolves 60 of 60 entities.

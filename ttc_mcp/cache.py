@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
 from typing import Any
 
@@ -39,6 +39,9 @@ class Entry:
     last_attempt: float | None = None
     last_error: str | None = None
     hits: int = 0
+    failures: int = 0
+    retry_after: float | None = None
+    status_counts: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -87,6 +90,9 @@ class Cache:
             e.hits += 1
             return self._hit(e, "ttl", now)
         task = self._inflight.get(key)
+        if task is None and not force and e.retry_after is not None and now < e.retry_after:
+            # Backoff: a failing source is not asked again until its hold ends (principle 7); force is the probe's bypass.
+            return self._fallback(e, now, f"{e.last_error}; retry in {round(e.retry_after - now)} s")
         if task is None:
             task = asyncio.ensure_future(self._refresh(e, fetch, parse))
             self._inflight[key] = task
@@ -94,10 +100,14 @@ class Cache:
         try:
             await task
         except Exception as err:
-            if e.parsed is not None and now - e.fetched_at <= source.max_stale:
-                return self._hit(e, "stale_fallback", now, error=str(err))
-            raise SourceUnavailable(key, str(err)) from err
+            return self._fallback(e, now, str(err))
         return self._hit(e, "live", now)
+
+    def _fallback(self, e: Entry, now: float, error: str) -> Hit:
+        """Last-known-good within max_stale, else unavailable (spec 2.2)."""
+        if e.parsed is not None and now - e.fetched_at <= e.source.max_stale:
+            return self._hit(e, "stale_fallback", now, error=error)
+        raise SourceUnavailable(e.key, error)
 
     async def _refresh(self, e: Entry, fetch: Fetch, parse: Parse) -> None:
         e.last_attempt = self.clock()
@@ -107,10 +117,18 @@ class Cache:
                 e.parsed = parse(got.body, got.headers)
                 e.etag, e.last_modified = got.headers.get("etag"), got.headers.get("last-modified")
         except Exception as err:
-            e.last_error = str(err) or type(err).__name__
+            self._failed(e, err)
             raise
-        e.fetched_at, e.last_error = self.clock(), None
+        e.fetched_at, e.last_error, e.failures, e.retry_after = self.clock(), None, 0, None
         e.signal, e.signal_ts = self._signal(e, got.headers)
+
+    def _failed(self, e: Entry, err: Exception) -> None:
+        """Exponential hold capped at a quarter of the stale window; 403 and 429 answers are counted (validation item 10)."""
+        e.last_error = str(err) or type(err).__name__
+        e.failures += 1
+        if (status := getattr(err, "status", None)) in (403, 429):
+            e.status_counts[str(status)] = e.status_counts.get(str(status), 0) + 1
+        e.retry_after = self.clock() + min(e.source.ttl * 2 ** e.failures, e.source.max_stale / 4)
 
     @staticmethod
     def _signal(e: Entry, headers: dict[str, str]) -> tuple[str, float]:
@@ -141,5 +159,7 @@ class Cache:
                          "age_s": age, "cache": (("ttl" if age < e.source.ttl else "expired") if ok else None),
                          "feed_timestamp": e.parsed.feed_timestamp if ok else None, "signal": e.signal if ok else None,
                          "signal_ts": e.signal_ts if ok else None, "lag_s": round(e.fetched_at - e.signal_ts, 1) if ok else None,
-                         "entities": e.parsed.entities if ok else None, "last_error": e.last_error, "verdict": verdict, "hits": e.hits})
+                         "entities": e.parsed.entities if ok else None, "last_error": e.last_error, "verdict": verdict, "hits": e.hits,
+                         "failures": e.failures, "retry_after": e.retry_after if e.retry_after and e.retry_after > now else None,
+                         "status_counts": dict(e.status_counts)})
         return rows

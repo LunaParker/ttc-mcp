@@ -61,7 +61,20 @@ def test_status_is_fresh_near_the_end_when_a_newer_feed_is_loaded(tmp_path, fixt
                    entry("S1000550", "20261101", "20261219", "s50.sqlite"))
     store = StaticStore.from_manifest(cache)
     st = store.status(dt.date(2026, 10, 30))
-    assert st["verdict"] == "fresh" and st["newer_seen"] is True and st["active"] == "S1000542"
+    assert st["verdict"] == "fresh" and st["newer_package_seen"] is True and st["active"] == "S1000542"
+    store.close()
+
+
+def test_status_carries_the_manifests_check_time_and_ckan_refresh(tmp_path, fixture_db):
+    cache = _cache(tmp_path, fixture_db, entry("S1000542", "20260930", "20261031", "s42.sqlite"))
+    m = Manifest.load(cache)
+    assert (m.checked_at, m.ckan_last_modified) == (None, None)
+    m.checked_at, m.ckan_last_modified = "2026-10-06T03:00:00-04:00", "2026-09-30T14:17:52"
+    m.save(cache)
+    store = StaticStore.from_manifest(cache)
+    st = store.status(dt.date(2026, 10, 5))
+    assert (st["last_check"], st["ckan_last_refreshed"], st["newer_package_seen"]) == ("2026-10-06T03:00:00-04:00", "2026-09-30T14:17:52", False)
+    assert "newer_seen" not in st
     store.close()
 
 
@@ -115,3 +128,33 @@ def test_an_old_or_unreadable_schema_is_skipped_with_a_rebuild_hint(tmp_path, fi
     with pytest.raises(runtime.StoreUnavailable, match="a store with an old schema is skipped"):
         runtime.feed_for(dt.date(2026, 10, 6))
     runtime.reset()
+
+
+def test_lookup_trip_tries_todays_feed_first_then_every_other_loaded_feed(two_feeds):
+    store = StaticStore.from_manifest(two_feeds)
+    today = dt.date(2026, 10, 6)
+    assert [f.version for f in store.ordered(today)] == ["S1000542", "S1000538"]
+    f, row = store.lookup_trip("100677020", today)
+    assert (f.version, row["route_id"], row["pattern_id"]) == ("S1000538", "504", 6)
+    f, row = store.lookup_trip("100125020", today)
+    assert (f.version, row["headsign"]) == ("S1000542", "West - 504A King towards Dundas West Station")
+    assert store.lookup_trip("nope", today) is None
+    store.close()
+
+
+def test_get_store_keeps_its_connections_over_a_check_only_manifest_save_and_reopens_on_a_feed_change(app_env, fixture_db):
+    cache = app_env.settings().cache_dir
+    store = app_env.get_store()
+    feed = store.for_date(dt.date(2026, 10, 6))
+    m = Manifest.load(cache)
+    m.checked_at, m.ckan_last_modified = "2026-10-06T03:00:00-04:00", "2026-09-30T14:17:52"
+    m.save(cache)
+    assert app_env.get_store() is store and feed.conn.execute("SELECT 1").fetchone()[0] == 1
+    st = app_env.get_store().status(dt.date(2026, 10, 6))
+    assert (st["last_check"], st["ckan_last_refreshed"]) == ("2026-10-06T03:00:00-04:00", "2026-09-30T14:17:52")
+    shutil.copy(fixture_db, cache / "s42.sqlite")
+    m.upsert(entry("S1000542", "20260930", "20261031", "s42.sqlite"))
+    m.save(cache)
+    reopened = app_env.get_store()
+    assert reopened is not store and [f.version for f in reopened.feeds] == ["S1000538", "S1000542"]
+    assert reopened.status(dt.date(2026, 10, 6))["last_check"] == "2026-10-06T03:00:00-04:00"
