@@ -19,6 +19,11 @@ def first_ride(o: dict) -> dict:
     return next(l for l in o["legs"] if l["mode"] == "ride")
 
 
+def minutes(o: dict) -> int:
+    """typical_min, or known_min when a shuttle leg leaves it unknown."""
+    return o["typical_min"] if o["typical_min"] is not None else o["known_min"]
+
+
 CHECKS = [
     ("route_shape", {"route": "504", "direction": "0"}, lambda r: r["polyline"] and r["length_m"] > 9000 and len(r["stops"]) == 36 and r["stops"][-1]["dist_m"] > 9000),
     ("route_shape", {"route": "1", "direction": "0", "format": "geojson"}, lambda r: SEEN.setdefault("line1", r["points"]) > 20),
@@ -30,7 +35,7 @@ CHECKS = [
     ("connections", {"origin": CHERRY_FRONT, "destination": "Union"}, lambda r: r["options"] and any(o["transfers"] == 0 and [l["route"] for l in o["legs"] if l["mode"] == "ride"] == ["121"] and "next" in first_ride(o) for o in r["options"])),
     ("connections", {"origin": CHERRY_FRONT, "destination": "Union"}, lambda r: any([l["route"] for l in o["legs"] if l["mode"] == "ride"] == ["504", "1"] and "next" in first_ride(o) for o in r["options"])),
     ("connections", {"origin": "Finch", "destination": "Union", "max_transfers": 0}, lambda r: r["options"] and all(l["mode"] in ("ride", "shuttle") for l in r["options"][0]["legs"] if l["mode"] != "walk")),
-    ("connections", {"origin": "Kipling", "destination": "Kennedy"}, lambda r: r["options"] and r["options"][0]["typical_min"] < 120),
+    ("connections", {"origin": "Kipling", "destination": "Kennedy"}, lambda r: r["options"] and minutes(r["options"][0]) < 120),
 ]
 
 
@@ -48,7 +53,8 @@ async def main() -> int:
             if name == "connections" and "options" in r:
                 for o in r["options"]:
                     legs = " > ".join(l["route"] if l["mode"] == "ride" else l["mode"] for l in o["legs"])
-                    print(f"     #{o['rank']} {o['transfers']} transfer(s) {o['typical_min']} min [{legs}] basis={o.get('basis')} disruptions={len(o['disruptions'])}")
+                    mins = f"{o['typical_min']} min" if o["typical_min"] is not None else f"{o['known_min']} min known + shuttle"
+                    print(f"     #{o['rank']} {o['transfers']} transfer(s) {mins} [{legs}] basis={o.get('basis')} disruptions={len(o['disruptions'])}")
     return 1 if failures else 0
 
 

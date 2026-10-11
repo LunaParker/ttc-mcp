@@ -66,7 +66,9 @@ async def test_connections_apply_the_closure_overlay_at_night(app_env, monkeypat
         r = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union", "max_transfers": 0})).data
         legs = [l["mode"] for l in r["options"][0]["legs"] if l["mode"] != "walk"]
         assert legs == ["ride", "shuttle", "ride"] and {d["alert_id"] for d in r["options"][0]["disruptions"]} >= {"77519"}
-        assert r["options"][0]["typical_min_note"] == "excludes the shuttle leg"
+        assert r["options"][0]["typical_min_note"] == "excludes the shuttle leg" and r["options"][0]["typical_min"] is None
+        assert r["options"][0]["transfers"] == 2 and r["options"][0]["known_min"] > 0
+        assert next(d for d in r["options"][0]["disruptions"] if d["alert_id"] == "77519")["affects"] == [1, 2, 3]
         day = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union", "max_transfers": 0, "depart_at": "2026-10-06T08:00"})).data
         assert [l["mode"] for l in day["options"][0]["legs"] if l["mode"] != "walk"] == ["ride"]
         ride = next(l for l in day["options"][0]["legs"] if l["mode"] == "ride")
