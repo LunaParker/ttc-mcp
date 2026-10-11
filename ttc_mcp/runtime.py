@@ -10,7 +10,7 @@ from ttc_mcp.domain import freshness
 from ttc_mcp.realtime import Realtime
 from ttc_mcp.static.manifest import NAME as MANIFEST
 from ttc_mcp.static.schedule import TZ
-from ttc_mcp.static.store import FeedDb, StaticStore
+from ttc_mcp.static.store import FeedDb, StaticStore, TripLookup
 
 _store: StaticStore | None = None
 _store_key: tuple[Path, float] | None = None
@@ -50,6 +50,16 @@ def feed_for(day: dt.date | None = None) -> FeedDb:
     if feed is None:
         raise StoreUnavailable("static store not built yet, no feed covers today, or a store with an old schema is skipped; run ttc-mcp-build")
     return feed
+
+
+def trip_lookup(today: dt.date | None = None) -> TripLookup:
+    """The domain's trip resolver: (connection, row) from whichever loaded feed holds the trip, today's first (spec 2.1)."""
+    store, day = get_store(), today or now().date()
+
+    def look(trip_id: str):
+        hit = store.lookup_trip(trip_id, day)
+        return (hit[0].conn, hit[1]) if hit else None
+    return look
 
 
 def meta(feed: FeedDb | None, *, source: str = "static") -> dict:

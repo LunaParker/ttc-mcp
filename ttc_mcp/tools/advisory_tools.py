@@ -86,7 +86,7 @@ def register(mcp: FastMCP) -> None:
                 return {"detours": [], "count": 0, "note": f"detour feed unavailable ({snap.errors.get('detours')})"}, [], "gtfsrt.ttc.ca/trips/detour"
             chit, _ = await attempt(runtime.get_realtime().service_changes())
             groups = det.resolve_detours(feed.conn, snap.detour_feed, runtime.now().date(), rt=snap.rt,
-                                         changes=chit.parsed if chit else None, route=route)
+                                         changes=chit.parsed if chit else None, route=route, lookup=runtime.trip_lookup())
             return {"detours": groups, "count": len(groups), "entities": sum(len(g["directions"]) for g in groups),
                     "resolved": sum(d["pattern"] != "unknown" for g in groups for d in g["directions"])}, \
                 ([chit] if chit else []), "gtfsrt.ttc.ca/trips/detour + gtfsrt alerts + ttcapi"

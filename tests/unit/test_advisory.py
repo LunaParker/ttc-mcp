@@ -1,7 +1,7 @@
 import pytest
 
 from tests.mockttc import make_app
-from ttc_mcp import advisory
+from ttc_mcp import advisory, runtime
 
 
 @pytest.mark.anyio
@@ -30,3 +30,19 @@ async def test_snapshot_degrades_when_sources_fail(app_env):
     make_app([], fail=("alerts.ttc.ca", "gtfsrt.ttc.ca"))
     s = await advisory.snapshot(app_env.feed_for())
     assert s.hits == [] and s.meta()["staleness"] == "unavailable" and s.meta()["fetched_at"] is None and s.disruptions.elements == []
+
+
+@pytest.mark.anyio
+async def test_snapshot_resolves_detours_across_the_loaded_feeds_and_rebuilds_when_they_change(two_feeds):
+    from ttc_mcp.static.manifest import FeedEntry, Manifest
+
+    make_app([])
+    feed = runtime.feed_for()
+    s1 = await advisory.snapshot(feed)
+    g = next(g for g in s1.detours if g["detour_id"] == "9001")
+    assert feed.version == "S1000542" and g["skipped_stops"] == ["14993", "14994", "15039"] and g["directions"][0]["pattern"] == 6
+    assert s1.disruptions.stop_skipped("14994")["detour_id"] == "9001"
+    # Unloading the other feed changes the loaded set: the snapshot is rebuilt and the trip no longer resolves.
+    Manifest([FeedEntry("S1000542", "20260930", "20261031", "s42.sqlite", '"e"', "u", "t")]).save(two_feeds)
+    s2 = await advisory.snapshot(runtime.feed_for())
+    assert s2.disruptions is not s1.disruptions and next(g for g in s2.detours if g["detour_id"] == "9001")["directions"][0]["pattern"] == "unknown"

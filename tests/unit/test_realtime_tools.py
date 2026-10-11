@@ -113,3 +113,13 @@ def test_feed_status_without_a_store(tmp_path, monkeypatch):
     r = asyncio.run(go())
     assert r["static"]["verdict"] == "unavailable" and r["static"]["feed_version"] is None and r["meta"]["static_feed"] is None
     runtime.reset()
+
+
+@pytest.mark.anyio
+async def test_vehicles_and_arrivals_resolve_trips_held_by_the_other_loaded_feed(two_feeds):
+    async with Client(make_app([])) as c:
+        v = (await c.call_tool("vehicles", {"route": "504"})).data
+        assert v["meta"]["static_feed"] == "S1000542" and v["vehicles"][0]["headsign"] == "East - 504A King towards Distillery"
+        a = (await c.call_tool("arrivals", {"stop": "15461"})).data
+        assert a["arrivals"][0]["vehicle_id"] == "4617" and a["arrivals"][0]["detour_id"] == "9001"
+        assert [e["detour_id"] for e in a["disruptions"]] == ["9001"]

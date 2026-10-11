@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import sqlite3
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,10 +11,23 @@ from ttc_mcp.static.manifest import Manifest
 from ttc_mcp.static.schema import SCHEMA_VERSION
 
 EXPIRING_DAYS = 3
+TripLookup = Callable[[str], "tuple[sqlite3.Connection, sqlite3.Row] | None"]
 
 
 def _d(s: str) -> dt.date:
     return dt.datetime.strptime(s, "%Y%m%d").date()
+
+
+def trip_row(conn: sqlite3.Connection, trip_id: str) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM trips WHERE trip_id=?", (trip_id,)).fetchone()
+
+
+def single_feed(conn: sqlite3.Connection) -> TripLookup:
+    """Trip resolution against one connection, for callers without a store."""
+    def look(trip_id: str):
+        row = trip_row(conn, trip_id)
+        return (conn, row) if row else None
+    return look
 
 
 def schema_version(path: Path) -> int:
@@ -72,6 +86,18 @@ class StaticStore:
 
     def newest(self) -> FeedDb | None:
         return self.feeds[-1] if self.feeds else None
+
+    def ordered(self, today: dt.date) -> list[FeedDb]:
+        """Every loaded feed, today's first: in a board-period overlap the live feeds carry the incoming feed's trip ids (spec 2.1)."""
+        active = self.for_date(today)
+        return [f for f in self.feeds if f is active] + [f for f in self.feeds if f is not active]
+
+    def lookup_trip(self, trip_id: str, today: dt.date | None = None) -> tuple[FeedDb, sqlite3.Row] | None:
+        for f in self.ordered(today or dt.date.today()):
+            row = trip_row(f.conn, trip_id)
+            if row is not None:
+                return f, row
+        return None
 
     def status(self, today: dt.date) -> dict:
         active = self.for_date(today)

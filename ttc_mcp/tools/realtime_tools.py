@@ -97,7 +97,7 @@ def register(mcp: FastMCP) -> None:
             if hit is None:
                 return {"route": route, "vehicle_id": vehicle_id, "vehicles": [], "note": f"vehicle feed unavailable ({err})"}, [], "bustime vehicles"
             return {"route": route, "vehicle_id": vehicle_id,
-                    "vehicles": veh.vehicles_on(feed.conn, hit.parsed, route=route, vehicle_id=vehicle_id)}, [hit], "bustime vehicles"
+                    "vehicles": veh.vehicles_on(feed.conn, hit.parsed, route=route, vehicle_id=vehicle_id, lookup=runtime.trip_lookup())}, [hit], "bustime vehicles"
         return await _aguard(run)
 
     @mcp.tool

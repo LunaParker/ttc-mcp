@@ -115,3 +115,15 @@ def test_an_old_or_unreadable_schema_is_skipped_with_a_rebuild_hint(tmp_path, fi
     with pytest.raises(runtime.StoreUnavailable, match="a store with an old schema is skipped"):
         runtime.feed_for(dt.date(2026, 10, 6))
     runtime.reset()
+
+
+def test_lookup_trip_tries_todays_feed_first_then_every_other_loaded_feed(two_feeds):
+    store = StaticStore.from_manifest(two_feeds)
+    today = dt.date(2026, 10, 6)
+    assert [f.version for f in store.ordered(today)] == ["S1000542", "S1000538"]
+    f, row = store.lookup_trip("100677020", today)
+    assert (f.version, row["route_id"], row["pattern_id"]) == ("S1000538", "504", 6)
+    f, row = store.lookup_trip("100125020", today)
+    assert (f.version, row["headsign"]) == ("S1000542", "West - 504A King towards Dundas West Station")
+    assert store.lookup_trip("nope", today) is None
+    store.close()

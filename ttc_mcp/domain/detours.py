@@ -9,6 +9,7 @@ from ttc_mcp.adapters.ttcapi import ServiceChange
 from ttc_mcp.domain.freshness import iso
 from ttc_mcp.domain.geo import decode_polyline, path_length_m
 from ttc_mcp.static.schedule import TZ
+from ttc_mcp.static.store import TripLookup, single_feed
 
 
 def day_bounds(day: dt.date) -> tuple[float, float]:
@@ -29,16 +30,18 @@ def _stop(conn, sid: str) -> dict:
     return {"number": sid, "name": r["name"] if r else None, "lat": r["lat"] if r else None, "lon": r["lon"] if r else None}
 
 
-def resolve_entity(conn, e: DetourEntity, shapes: dict[str, str]) -> dict:
-    """Map the entity's first trip onto its static pattern; stop_sequence selectors become skipped stops with neighbours."""
-    trip = conn.execute("SELECT route_id, direction_id, headsign, pattern_id FROM trips WHERE trip_id=?", (e.trip_ids[0],)).fetchone() if e.trip_ids else None
+def resolve_entity(conn, e: DetourEntity, shapes: dict[str, str], lookup: TripLookup | None = None) -> dict:
+    """Map the entity's first trip onto its static pattern in whichever loaded feed holds the trip (lookup, else conn alone);
+    stop_sequence selectors become skipped stops with neighbours."""
+    found = (lookup or single_feed(conn))(e.trip_ids[0]) if e.trip_ids else None
     poly = shapes.get(e.shape_id or "", "")
     pts = decode_polyline(poly) if poly else []
     base = {"entity_id": e.id, "detour_id": e.detour_id, "route": e.route, "route_label": e.route_label, "direction_id": e.direction_id,
             "destination": e.destination, "trips_affected": len(e.trip_ids), "service_dates": list(e.service_dates),
             "spans": [list(s) for s in e.spans], "path_polyline": poly or None, "path_length_m": round(path_length_m(pts)) if pts else None}
-    if trip is None:
+    if found is None:
         return {**base, "pattern": "unknown", "headsign": None, "skipped": [], "leaves_after": None, "rejoins_at": None}
+    conn, trip = found  # the holding feed answers the pattern and stop queries
     pat = conn.execute("SELECT stops FROM patterns WHERE pattern_id=?", (trip["pattern_id"],)).fetchone()
     seq_to_stop = {seq: sid for seq, sid in json.loads(pat["stops"])} if pat else {}
     skipped, leaves, rejoins = [], None, None
@@ -66,11 +69,11 @@ def reasons_for(route: str, day: dt.date, rt: RtAlertFeed | None, changes: list[
 
 
 def resolve_detours(conn, feed: DetourFeed, today: dt.date, *, rt: RtAlertFeed | None = None,
-                    changes: list[ServiceChange] | None = None, route: str | None = None) -> list[dict]:
+                    changes: list[ServiceChange] | None = None, route: str | None = None, lookup: TripLookup | None = None) -> list[dict]:
     groups: dict[str, dict] = {}
     key = today.strftime("%Y%m%d")
     for e in feed.entities:
-        r = resolve_entity(conn, e, feed.shapes)
+        r = resolve_entity(conn, e, feed.shapes, lookup)
         if route and r["route"] != route:
             continue
         g = groups.setdefault(e.detour_id, {"detour_id": e.detour_id, "route": r["route"], "route_label": r["route_label"],

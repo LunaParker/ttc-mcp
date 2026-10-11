@@ -86,3 +86,11 @@ async def test_alerts_by_stop_keep_the_closure_at_a_served_end_platform(app_env,
         assert [(a["alert_id"], a.get("role")) for a in ym] == [("77519", "shuttle_terminus")]
         assert [(a["alert_id"], a.get("role")) for a in (await c.call_tool("alerts", {"stop": "13793", "type": "closure"})).data["alerts"]] == [("77519", None)]
         assert (await c.call_tool("alerts", {"stop": "13791", "type": "rsz"})).data["alerts"] == []
+
+
+@pytest.mark.anyio
+async def test_detours_resolve_trips_held_by_the_other_loaded_feed(two_feeds):
+    async with Client(make_app([])) as c:
+        d = (await c.call_tool("detours", {"route": "504"})).data
+        assert d["meta"]["static_feed"] == "S1000542" and d["resolved"] == 1 and d["detours"][0]["directions"][0]["pattern"] == 6
+        assert d["detours"][0]["skipped_stops"] == ["14993", "14994", "15039"]
