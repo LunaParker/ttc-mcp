@@ -402,9 +402,9 @@ def overlay(conn, disr: Disruptions, options: list[dict]) -> list[dict]:
                 if part["mode"] == "ride":
                     for el in _annotations(conn, disr, part, rows):
                         touch(el, [n])
-            # Route-level alerts (delays, stopless detours and suspensions) touch every ride on the route.
+            # Route-level alerts (delays, stopless detours and suspensions) touch every ride on the route, none once a shuttle replaced it.
             rides = [n for n, part in zip(numbers, parts) if part["mode"] == "ride"]
-            for el in disr.by_route.get(leg["route"], []):
+            for el in disr.by_route.get(leg["route"], []) if rides else ():
                 if el["active_now"] and not el["stations"] and not el["stops"] and el["type"] not in (*UNIT_KINDS, "rsz"):
                     touch(el, rides)
         if not dropped:
