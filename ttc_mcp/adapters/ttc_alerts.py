@@ -8,6 +8,8 @@ from ttc_mcp.cache import Parsed
 from ttc_mcp.static.schedule import TZ
 
 KINDS = ("closure", "suspension", "detour", "rsz", "elevator", "escalator", "other")
+RAIL_LINES = ("1", "2", "4", "5", "6")
+RAIL_TYPES = ("Subway", "LRT", "Light Rail")
 RSZ_FIELDS = {"reducedSpeed": "reduced_speed_kmh", "rszLength": "length_m", "trackPercent": "track_percent",
               "averageSpeed": "average_speed_kmh", "distance": "distance_m", "targetRemoval": "target_removal"}
 
@@ -59,16 +61,18 @@ def local_time(s: str | None) -> dt.datetime | None:
     return None if t.year <= 1 else t.replace(tzinfo=TZ)
 
 
-def classify(route_type: str, effect: str, effect_desc: str, header: str) -> str:
-    """Closures come from effectDesc, header text and routeType, never from effect alone (spec 6.7)."""
+def classify(route_type: str, effect: str, effect_desc: str, header: str, routes: tuple[str, ...] = ()) -> str:
+    """Closures come from effectDesc, header text and the line (a rail route number or routeType, so Lines 5 and 6 count
+    whatever label alerts.ttc.ca picks), never from effect alone (spec 6.7, 6.8)."""
     if route_type == "Elevator":
         return "elevator"
     if route_type == "Escalator":
         return "escalator"
     if effect_desc == "Reduced Speed Zone":
         return "rsz"
-    if route_type == "Subway" and (effect_desc.startswith("Subway Closure") or "no subway service" in header.lower()
-                                   or effect_desc == "No Service" or effect == "NO_SERVICE"):
+    rail = route_type in RAIL_TYPES or any(r in RAIL_LINES for r in routes)
+    if rail and (effect_desc.startswith("Subway Closure") or "no subway service" in header.lower()
+                 or effect_desc == "No Service" or effect == "NO_SERVICE"):
         return "closure"
     if effect == "DETOUR" or effect_desc == "Detour":
         return "detour"
@@ -78,7 +82,8 @@ def classify(route_type: str, effect: str, effect_desc: str, header: str) -> str
 
 
 def _alert(x: dict) -> Alert:
-    kind = classify(x.get("routeType") or "", x.get("effect") or "", x.get("effectDesc") or "", x.get("headerText") or "")
+    routes = tuple(r.strip() for r in (x.get("route") or "").split(",") if r.strip())
+    kind = classify(x.get("routeType") or "", x.get("effect") or "", x.get("effectDesc") or "", x.get("headerText") or "", routes)
     period = x.get("activePeriod") or {}
     windows = []
     for c in x.get("childAlerts") or []:
@@ -86,8 +91,7 @@ def _alert(x: dict) -> Alert:
         if s and e:
             windows.append((s, e))
     rsz = {v: x.get(k) for k, v in RSZ_FIELDS.items()} if kind == "rsz" else None
-    return Alert(str(x.get("id")), kind, x.get("alertType") or "",
-                 tuple(r.strip() for r in (x.get("route") or "").split(",") if r.strip()), x.get("routeType") or "",
+    return Alert(str(x.get("id")), kind, x.get("alertType") or "", routes, x.get("routeType") or "",
                  x.get("effect") or "", x.get("effectDesc") or "", x.get("direction") or None,
                  x.get("stopStart") or None, x.get("stopEnd") or None, tuple(str(s) for s in x.get("stops") or []),
                  tuple(str(s) for s in x.get("stopIDList") or []), x.get("shuttleType") or None,
