@@ -33,6 +33,7 @@ def register(mcp: FastMCP) -> None:
     async def arrivals(stop: str, route: str | None = None, limit: int = 10) -> dict:
         """Next vehicles at a bus or streetcar stop (BusTime predictions, crowding from the vehicle feed) or next trains at a rail
         platform (NTAS). Rows carry basis realtime or schedule: when no real-time prediction exists the timetable fills in and a note says so.
+        A rail platform inside an active closure answers no arrivals at all (NTAS keeps predicting there) with a note and the closure.
         Every row carries detour_id (the vehicle's trip is on a detour) and the answer lists the stop's disruptions."""
         async def run(feed):
             conn, rt, now = feed.conn, runtime.get_realtime(), runtime.now()
@@ -45,6 +46,8 @@ def register(mcp: FastMCP) -> None:
             head = {"stop": {"number": sid, "name": row["name"], "lat": row["lat"], "lon": row["lon"], "station": row["parent_station"] or None}}
             rows, hits, source, note = await live.arrivals_at(feed, rt, row, route=route, limit=limit, now=now)
             snap = await advisory.snapshot(feed)
+            if snap.disruptions.platform_closed_now(row):
+                rows, source, note = [], "ntas", trains.SUSPENDED_NOTE
             active = {g["route"] for g in snap.detours if g["active_today"]}
             vehicle_trip = {}
             if active & set(arr.served_at(conn, sid)) and any(r["basis"] == "realtime" for r in rows):
@@ -63,7 +66,8 @@ def register(mcp: FastMCP) -> None:
     async def next_trains(query: str) -> dict:
         """Next trains at every rail platform of a station (id, name or alias such as "Dundas" or "Bloor") or at one platform id,
         from the TTC's NTAS. A platform with no prediction falls back to the timetable (service no_prediction); an empty NTAS answer never means no trains.
-        A platform inside an active closure is reported as service suspended with the closure, whatever NTAS says."""
+        A platform inside an active closure is service suspended with the closure and no minutes (next_min [], NTAS's own numbers in
+        ntas_min, no timetable); a closure's end station keeps real minutes on the platform facing the open line."""
         async def run(feed):
             conn, rt, now = feed.conn, runtime.get_realtime(), runtime.now()
             res = trains.resolve(conn, query)
@@ -73,10 +77,7 @@ def register(mcp: FastMCP) -> None:
             results = await asyncio.gather(*(_try(rt.next_trains(p["stop_id"])) for p in platforms))
             entries = [trains.platform_entry(conn, p, h.parsed if h else None, err, now) for p, (h, err) in zip(platforms, results)]
             snap = await advisory.snapshot(feed)
-            for p, e in zip(platforms, entries):
-                closed = snap.disruptions.platform_closed_now(p)
-                if closed:
-                    e["service"], e["disruption"] = "suspended", closed
+            entries = [trains.suspended(e, closed) if (closed := snap.disruptions.platform_closed_now(p)) else e for p, e in zip(platforms, entries)]
             source = "ntas" + (" + static stop_times" if any(e["basis"] == "schedule" for e in entries) else "")
             return {"station": {"id": station["stop_id"], "name": station["name"]}, "platforms": entries,
                     "disruptions": snap.disruptions.for_station(station["stop_id"])}, [h for h, _ in results if h], source, snap

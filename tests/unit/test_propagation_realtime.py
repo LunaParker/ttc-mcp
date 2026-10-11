@@ -44,3 +44,21 @@ async def test_next_trains_report_suspended_platforms_inside_a_closure(app_env, 
         assert bloor["platforms"][0]["service"] == "normal" and bloor["disruptions"] == []
         lawrence = (await c.call_tool("next_trains", {"query": "Lawrence"})).data
         assert all(p["service"] == "suspended" and p["disruption"]["alert_id"] == "77519" and "role" not in p["disruption"] for p in lawrence["platforms"])
+
+
+@pytest.mark.anyio
+async def test_suspended_platforms_report_no_minutes_live_or_timetable(app_env, monkeypatch):
+    """NTAS keeps publishing predictions inside a closure (spec 8 item 7): they stay visible as ntas_min, never as next_min."""
+    monkeypatch.setattr("ttc_mcp.runtime.now", lambda: NIGHT)
+    async with Client(make_app([])) as c:
+        by = {p["platform"]: p for p in (await c.call_tool("next_trains", {"query": "Lawrence"})).data["platforms"]}
+        sb, nb = by["13793"], by["13794"]
+        assert (sb["service"], sb["next_min"], sb["ntas_min"], sb["basis"]) == ("suspended", [], [1, 4, 8], "realtime")
+        assert sb["note"] == "NTAS keeps publishing predictions inside a closure; this platform is suspended" and "scheduled_next_min" not in sb
+        assert (nb["service"], nb["next_min"], nb["ntas_min"], nb["basis"]) == ("suspended", [], [], "schedule")
+        assert nb["note"] == sb["note"] and "scheduled_next_min" not in nb and nb["disruption"]["alert_id"] == "77519"
+        arr = (await c.call_tool("arrivals", {"stop": "13793"})).data
+        assert arr["arrivals"] == [] and arr["note"] == sb["note"] and "77519" in {d["alert_id"] for d in arr["disruptions"]}
+        assert arr["meta"]["source"] == "ntas" and arr["meta"]["cache"] == "ttl"
+        served = (await c.call_tool("arrivals", {"stop": "13791"})).data
+        assert [a["eta_min"] for a in served["arrivals"]] == [3, 9] and "note" not in served

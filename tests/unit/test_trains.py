@@ -36,3 +36,14 @@ def test_platform_entry_no_prediction_falls_back_to_the_timetable(conn):
     assert e["note"].startswith("NTAS returned no prediction")
     err = trains.platform_entry(conn, row, None, "HTTP 503", NOW)
     assert err["service"] == "no_prediction" and "unavailable (HTTP 503)" in err["note"] and err["direction_text"] is None
+
+
+def test_suspended_entry_keeps_basis_and_what_ntas_said_but_no_minutes():
+    live = {"platform": "13793", "next_min": [1, 4, 8], "basis": "realtime", "service": "normal", "source": "ntas"}
+    fallback = {"platform": "13794", "next_min": [], "basis": "schedule", "service": "no_prediction", "scheduled_next_min": [2, 9], "note": "x"}
+    closure = {"alert_id": "77519"}
+    assert trains.suspended(live, closure) == {"platform": "13793", "next_min": [], "ntas_min": [1, 4, 8], "basis": "realtime", "service": "suspended",
+                                                "source": "ntas", "disruption": closure, "note": trains.SUSPENDED_NOTE}
+    out = trains.suspended(fallback, closure)
+    assert (out["next_min"], out["ntas_min"], out["basis"], out["service"]) == ([], [], "schedule", "suspended") and "scheduled_next_min" not in out
+    assert live["next_min"] == [1, 4, 8] and fallback["scheduled_next_min"] == [2, 9]

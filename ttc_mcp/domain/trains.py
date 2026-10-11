@@ -10,6 +10,7 @@ from ttc_mcp.static.aliases import resolve_station
 RAIL_PLATFORMS = ("SELECT s.* FROM stops s WHERE s.parent_station=? AND s.location_type=0 AND EXISTS ("
                   "SELECT 1 FROM stop_routes sr JOIN routes r ON r.route_id=sr.route_id "
                   "WHERE sr.stop_id=s.stop_id AND r.mode IN ('subway','lrt')) ORDER BY s.stop_id")
+SUSPENDED_NOTE = "NTAS keeps publishing predictions inside a closure; this platform is suspended"
 
 
 def rail_platforms(conn, station_id: str) -> list:
@@ -44,3 +45,10 @@ def platform_entry(conn, platform, trains: list[NextTrains] | None, error: str |
             else "NTAS returned no prediction for this platform; times are from the timetable")
     return {**base, "direction_text": t.direction_text if t else None, "next_min": [], "basis": "schedule", "service": "no_prediction",
             "scheduled_next_min": sched, "note": note, "source": "ntas + static stop_times"}
+
+
+def suspended(entry: dict, closure: dict) -> dict:
+    """A suspended platform's entry: no minutes, live or timetable (NTAS predicts at closed platforms, spec 8 item 7); what
+    NTAS said stays visible as ntas_min and basis stays as it was."""
+    rest = {k: v for k, v in entry.items() if k != "scheduled_next_min"}
+    return {**rest, "next_min": [], "ntas_min": entry["next_min"], "service": "suspended", "disruption": closure, "note": SUSPENDED_NOTE}
