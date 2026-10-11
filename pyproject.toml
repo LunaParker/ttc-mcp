@@ -11,6 +11,9 @@ dependencies = [
   "pydantic>=2",
 ]
 
+[project.optional-dependencies]
+cloud = ["py-key-value-aio[firestore]>=0.4.6", "google-cloud-storage>=3"]
+
 [project.scripts]
 ttc-mcp = "ttc_mcp.server:main"
 ttc-mcp-build = "ttc_mcp.build:main"

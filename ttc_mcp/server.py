@@ -10,7 +10,8 @@ from fastmcp import FastMCP
 
 from ttc_mcp import __version__
 from ttc_mcp.adapters.ckan import make_client
-from ttc_mcp.config import settings
+from ttc_mcp.config import Gate, gate_settings, settings
+from ttc_mcp.gate import EmailAllowlist, build_auth
 from ttc_mcp.static.refresh import ensure_static
 from ttc_mcp.tools import advisory_tools, derived_tools, realtime_tools, static_tools
 
@@ -57,9 +58,13 @@ async def _recheck_lifespan(server: FastMCP):
             await task
 
 
-def create_app(*, recheck: bool = False) -> FastMCP:
-    """recheck (stdio with refresh on) keeps checking CKAN while the server runs; HTTP leaves that to the Job (spec 6.9)."""
-    mcp = FastMCP("ttc-mcp", instructions=INSTRUCTIONS, version=__version__, lifespan=_recheck_lifespan if recheck else None)
+def create_app(*, recheck: bool = False, gate: Gate | None = None) -> FastMCP:
+    """recheck (stdio with refresh on) keeps checking CKAN while the server runs; HTTP leaves that to the Job (spec 6.9).
+    gate turns on the Google OAuth gate with its email allowlist; stdio never passes one."""
+    mcp = FastMCP("ttc-mcp", instructions=INSTRUCTIONS, version=__version__, lifespan=_recheck_lifespan if recheck else None,
+                  auth=build_auth(gate) if gate else None)
+    if gate:
+        mcp.add_middleware(EmailAllowlist(gate.allowed_emails))
     static_tools.register(mcp)
     realtime_tools.register(mcp)
     advisory_tools.register(mcp)
@@ -80,7 +85,8 @@ def main(argv=None) -> int:
         with make_client(s.user_agent) as client:
             rep = ensure_static(s.cache_dir, client)
             print(f"[ttc-mcp] static store: {rep['reason']} ({rep.get('feed_version')})", file=sys.stderr)
-    app = create_app(recheck=refresh and a.transport == "stdio")
+    gate = gate_settings() if a.transport == "http" else None
+    app = create_app(recheck=refresh and a.transport == "stdio", gate=gate)
     if a.transport == "stdio":
         app.run(transport="stdio", show_banner=False)
     else:
