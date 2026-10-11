@@ -113,10 +113,15 @@ def test_step_free_yes_needs_an_accessible_summary_and_no_from_an_alert_notes_a_
     flagged.execute("UPDATE stops SET wheelchair=0 WHERE parent_station='14587' AND location_type=0")
     r = acc.for_station(flagged, acc.resolve(flagged, "Queen"), disruptions(flagged, quiet))
     assert (r["summary"], r["step_free"]) == ("unknown", {"verdict": "unknown", "basis": "platforms unknown"})
-    # A 0 flag beside a 1 reads partially accessible, but 0 means unknown: no platform is flagged 2, so no confident no.
+    # A 0 flag beside a 1 proves nothing either way: the summary stays unknown, and so does the verdict.
     flagged.execute("UPDATE stops SET wheelchair=1 WHERE stop_id='13811'")
     r = acc.for_station(flagged, acc.resolve(flagged, "Queen"), disruptions(flagged, quiet))
-    assert (r["summary"], r["step_free"]) == ("partially accessible", {"verdict": "unknown", "basis": "platforms unknown"})
+    assert (r["summary"], r["step_free"]) == ("unknown", {"verdict": "unknown", "basis": "platforms unknown"})
+    # A 0 beside a 2 is unknown too: one platform is known inaccessible, the other unknown, so the verdict says no.
+    flagged.execute("UPDATE stops SET wheelchair=2 WHERE stop_id='13811'")
+    r = acc.for_station(flagged, acc.resolve(flagged, "Queen"), disruptions(flagged, quiet))
+    assert (r["summary"], r["step_free"]) == ("unknown", {"verdict": "no", "basis": "platforms"})
+    flagged.execute("UPDATE stops SET wheelchair=1 WHERE stop_id='13811'")
     flagged.execute("UPDATE stops SET wheelchair=2 WHERE stop_id='13812'")
     r = acc.for_station(flagged, acc.resolve(flagged, "Queen"), disruptions(flagged, quiet))
     assert (r["summary"], r["step_free"]) == ("partially accessible", {"verdict": "no", "basis": "platforms"})

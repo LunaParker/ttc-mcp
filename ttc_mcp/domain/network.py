@@ -134,15 +134,16 @@ def station_detail(conn, query: str) -> dict | None:
     platforms = [p for p in boarding if p["kind"] == "platform"]
     entrances = [{"number": k["stop_id"], "name": k["name"], "lat": k["lat"], "lon": k["lon"], "wheelchair": k["wheelchair"]}
                  for k in kids if k["location_type"] == 2]
+    # Decision b from the rail platforms: a 0 flag is unknown, so it only yields a summary beside both a 1 and a 2.
     flags = {p["wheelchair"] for p in platforms}
-    if not flags or flags <= {0}:
-        summary = "unknown"
-    elif flags == {1}:
+    if flags == {1}:
         summary = "accessible"
     elif flags == {2}:
         summary = "not accessible"
-    else:
+    elif {1, 2} <= flags:
         summary = "partially accessible"
+    else:
+        summary = "unknown"
     return {"id": sid, "name": st["name"], "aliases": _aliases(conn, sid), "lat": st["lat"], "lon": st["lon"], "lines": _lines(conn, sid),
             "platforms": platforms, "surface_stops": [p for p in boarding if p["kind"] == "stop"], "entrances": entrances, "node_count": sum(1 for k in kids if k["location_type"] == 3),
             "wheelchair_summary": summary, "candidates": [h["name"] for h in hits[1:]]}
