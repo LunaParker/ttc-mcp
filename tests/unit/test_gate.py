@@ -15,7 +15,7 @@ from ttc_mcp import gate, server
 from ttc_mcp.config import Gate
 
 GATE = Gate("client-id-test", "secret-test", "https://ttc.example", frozenset({"owner@example.com"}), "jwt-test", None, None)
-CLOUD_VARS = ("GOOGLE_CLOUD_PROJECT", "STORAGE_ENCRYPTION_KEY")
+CLOUD_VARS = ("GOOGLE_CLOUD_PROJECT", "STORAGE_ENCRYPTION_KEY", "TTC_MCP_STATIC_BUCKET")
 
 
 async def _ok(context):
@@ -84,7 +84,7 @@ def _free_port():
 
 
 def _env(tmp_path, **gate_vars):
-    """The developer's shell minus anything that would turn the gate or Firestore on; the test names what it wants."""
+    """The developer's shell minus anything that would turn the gate, Firestore or the bucket on; the test names what it wants."""
     env = {k: v for k, v in os.environ.items() if k not in CLOUD_VARS and not k.startswith("GOOGLE_OAUTH")}
     return {**env, "TTC_MCP_SKIP_REFRESH": "1", "TTC_MCP_CACHE": str(tmp_path), **gate_vars}
 

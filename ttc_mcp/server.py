@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import os
 import sys
+from collections.abc import Callable
 from contextlib import asynccontextmanager, suppress
 
 from fastmcp import FastMCP
@@ -12,6 +13,7 @@ from ttc_mcp import __version__
 from ttc_mcp.adapters.ckan import make_client
 from ttc_mcp.config import Gate, gate_settings, settings
 from ttc_mcp.gate import EmailAllowlist, build_auth
+from ttc_mcp.static.bucket import GcsBlobs, pull
 from ttc_mcp.static.refresh import ensure_static
 from ttc_mcp.tools import advisory_tools, derived_tools, realtime_tools, static_tools
 
@@ -28,41 +30,49 @@ INSTRUCTIONS = (
     "Real-time and advisory answers are best effort, read from the TTC's own site endpoints, none of which publish terms."
 )
 RECHECK_S = 24 * 3600
+PULL_S = 6 * 3600
 
 
-def _recheck(cache_dir, user_agent: str) -> dict:
+def _recheck(cache_dir, user_agent: str) -> str:
     with make_client(user_agent) as client:
-        return ensure_static(cache_dir, client)
+        rep = ensure_static(cache_dir, client)
+    return f"{rep['reason']} ({rep.get('feed_version')})"
 
 
-async def _recheck_loop() -> None:
-    """Local mode (spec 2.1): the CKAN check again every RECHECK_S, in a worker thread because ensure_static runs its own loop."""
-    s = settings()
+async def _loop(fn: Callable[[], str], seconds: float, label: str) -> None:
+    """One sync job on a timer, in a worker thread (ensure_static runs its own event loop); one failure never ends the loop."""
     while True:
-        await asyncio.sleep(RECHECK_S)
+        await asyncio.sleep(seconds)
         try:
-            rep = await asyncio.to_thread(_recheck, s.cache_dir, s.user_agent)
-            print(f"[ttc-mcp] static recheck: {rep['reason']} ({rep.get('feed_version')})", file=sys.stderr)
-        except Exception as e:  # one failed check must not end the loop
-            print(f"[ttc-mcp] static recheck failed: {e}", file=sys.stderr)
+            print(f"[ttc-mcp] {label}: {await asyncio.to_thread(fn)}", file=sys.stderr)
+        except Exception as e:
+            print(f"[ttc-mcp] {label} failed: {e}", file=sys.stderr)
 
 
-@asynccontextmanager
-async def _recheck_lifespan(server: FastMCP):
-    task = asyncio.create_task(_recheck_loop())
-    try:
-        yield {}
-    finally:
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
+def periodic(fn: Callable[[], str], seconds: float, label: str):
+    """A FastMCP lifespan that runs fn every `seconds` while the server is up: the stdio CKAN recheck (spec 2.1), the http bucket pull (6.9)."""
+    @asynccontextmanager
+    async def lifespan(server: FastMCP):
+        task = asyncio.create_task(_loop(fn, seconds, label))
+        try:
+            yield {}
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+    return lifespan
 
 
-def create_app(*, recheck: bool = False, gate: Gate | None = None) -> FastMCP:
-    """recheck (stdio with refresh on) keeps checking CKAN while the server runs; HTTP leaves that to the Job (spec 6.9).
-    gate turns on the Google OAuth gate with its email allowlist; stdio never passes one."""
-    mcp = FastMCP("ttc-mcp", instructions=INSTRUCTIONS, version=__version__, lifespan=_recheck_lifespan if recheck else None,
-                  auth=build_auth(gate) if gate is not None else None)
+def _recheck_lifespan(server: FastMCP):
+    s = settings()
+    return periodic(lambda: _recheck(s.cache_dir, s.user_agent), RECHECK_S, "static recheck")(server)
+
+
+def create_app(*, recheck: bool = False, gate: Gate | None = None, puller: Callable[[], str] | None = None, pull_s: float | None = None) -> FastMCP:
+    """recheck (stdio with refresh on) keeps checking CKAN while the server runs; puller (http with a bucket) re-pulls the store every
+    pull_s (PULL_S by default); gate turns on the Google OAuth gate with its email allowlist (spec 6.9). stdio never passes a gate or a puller."""
+    lifespan = _recheck_lifespan if recheck else periodic(puller, PULL_S if pull_s is None else pull_s, "bucket pull") if puller else None
+    mcp = FastMCP("ttc-mcp", instructions=INSTRUCTIONS, version=__version__, lifespan=lifespan, auth=build_auth(gate) if gate is not None else None)
     if gate is not None:
         mcp.add_middleware(EmailAllowlist(gate.allowed_emails))
     static_tools.register(mcp)
@@ -86,7 +96,15 @@ def main(argv=None) -> int:
         with make_client(s.user_agent) as client:
             rep = ensure_static(s.cache_dir, client)
             print(f"[ttc-mcp] static store: {rep['reason']} ({rep.get('feed_version')})", file=sys.stderr)
-    app = create_app(recheck=refresh and a.transport == "stdio", gate=gate)
+    puller = None
+    if a.transport == "http" and s.static_bucket:
+        blobs = GcsBlobs(s.static_bucket)
+
+        def puller() -> str:
+            m = pull(s.cache_dir, blobs)
+            return "manifest " + ", ".join(f.feed_version for f in m.feeds) if m else "bucket has no manifest"
+        print(f"[ttc-mcp] bucket pull: {puller()}", file=sys.stderr)
+    app = create_app(recheck=refresh and a.transport == "stdio", gate=gate, puller=puller, pull_s=s.pull_s)
     if a.transport == "stdio":
         app.run(transport="stdio", show_banner=False)
     else:
