@@ -96,3 +96,52 @@ def test_instructions_point_trip_questions_at_connections_and_name_the_derived_t
     from ttc_mcp.server import INSTRUCTIONS
 
     assert "connections" in INSTRUCTIONS and "route_shape" in INSTRUCTIONS and "accessibility" in INSTRUCTIONS and "trip" in INSTRUCTIONS
+
+
+@pytest.mark.anyio
+async def test_the_recheck_lifespan_runs_ensure_static_on_the_interval_and_stops_cleanly(app_env, monkeypatch, capsys):
+    import asyncio
+    from pathlib import Path
+
+    from ttc_mcp import server
+
+    calls = []
+
+    def fake_ensure(cache_dir, client):
+        calls.append((Path(cache_dir), client.headers["user-agent"]))
+        return {"changed": False, "feed_version": "S1000538", "reason": "etags unchanged"}
+
+    monkeypatch.setattr(server, "RECHECK_S", 0.01)
+    monkeypatch.setattr(server, "ensure_static", fake_ensure)
+    async with Client(server.create_app(recheck=True)) as c:
+        await c.list_tools()
+        await asyncio.sleep(0.15)
+    n = len(calls)
+    assert n >= 2 and calls[0][0] == Path(runtime.settings().cache_dir) and calls[0][1].startswith("ttc-mcp/")
+    await asyncio.sleep(0.05)
+    assert len(calls) == n, "the loop must stop with the server"
+    assert "[ttc-mcp] static recheck: etags unchanged (S1000538)" in capsys.readouterr().err
+    async with Client(server.create_app()) as c:
+        await c.list_tools()
+        await asyncio.sleep(0.05)
+    assert len(calls) == n, "no recheck unless asked (http, --no-refresh, TTC_MCP_SKIP_REFRESH)"
+
+
+@pytest.mark.anyio
+async def test_a_failing_recheck_is_logged_and_the_loop_goes_on(app_env, monkeypatch, capsys):
+    import asyncio
+
+    from ttc_mcp import server
+
+    calls = []
+
+    def fake_ensure(cache_dir, client):
+        calls.append(1)
+        raise RuntimeError("ckan down")
+
+    monkeypatch.setattr(server, "RECHECK_S", 0.01)
+    monkeypatch.setattr(server, "ensure_static", fake_ensure)
+    async with Client(server.create_app(recheck=True)) as c:
+        await asyncio.sleep(0.1)
+        assert "error" not in (await c.call_tool("routes", {"overnight": True})).data
+    assert len(calls) >= 2 and "[ttc-mcp] static recheck failed: ckan down" in capsys.readouterr().err
