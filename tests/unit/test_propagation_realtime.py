@@ -30,12 +30,17 @@ async def test_arrivals_flag_detoured_vehicles_and_list_disruptions(app_env):
 async def test_next_trains_report_suspended_platforms_inside_a_closure(app_env, monkeypatch):
     async with Client(make_app([])) as c:
         day = (await c.call_tool("next_trains", {"query": "York Mills"})).data
-        assert {p["service"] for p in day["platforms"]} == {"no_prediction"} and {d["alert_id"] for d in day["disruptions"]} == {"77519", "77535"}
-        assert "disruption" not in day["platforms"][0]
+        assert {p["platform"]: p["service"] for p in day["platforms"]} == {"13791": "normal", "13792": "no_prediction"}
+        assert {d["alert_id"] for d in day["disruptions"]} == {"77519", "77535"} and not any("disruption" in p for p in day["platforms"])
     monkeypatch.setattr("ttc_mcp.runtime.now", lambda: NIGHT)
     async with Client(make_app([])) as c:
         night = (await c.call_tool("next_trains", {"query": "York Mills"})).data
-        assert all(p["service"] == "suspended" and p["disruption"]["alert_id"] == "77538" and p["disruption"]["source"] == "gtfsrt alerts" for p in night["platforms"])
+        by = {p["platform"]: p for p in night["platforms"]}
+        assert (by["13791"]["service"], by["13791"]["next_min"], by["13791"]["basis"]) == ("normal", [3, 9], "realtime") and "disruption" not in by["13791"]
+        assert by["13792"]["service"] == "suspended" and (by["13792"]["disruption"]["alert_id"], by["13792"]["disruption"]["role"]) == ("77519", "shuttle_terminus")
+        assert next(d for d in night["disruptions"] if d["alert_id"] == "77519")["role"] == "shuttle_terminus"
         assert night["meta"]["advisories"]["cache"] == "live" and night["meta"]["source"].startswith("ntas")
         bloor = (await c.call_tool("next_trains", {"query": "13863"})).data
         assert bloor["platforms"][0]["service"] == "normal" and bloor["disruptions"] == []
+        lawrence = (await c.call_tool("next_trains", {"query": "Lawrence"})).data
+        assert all(p["service"] == "suspended" and p["disruption"]["alert_id"] == "77519" and "role" not in p["disruption"] for p in lawrence["platforms"])

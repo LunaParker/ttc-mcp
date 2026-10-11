@@ -19,15 +19,18 @@ async def test_a_closure_reads_the_same_from_service_status_station_next_trains_
         st = (await call(server_url, "station", query=sid))["station"]
         assert cl["alert_id"] in ids(st["disruptions"])
         svc = {s["line"]: s for s in st["service"]}[line]
-        assert svc["service"] in ("reduced", "suspended") and (svc["service"] == "suspended") == cl["active_now"]
+        # A span end station is served on its open side: reduced, with the closure carrying the terminus role (F1).
+        terminus = cl["active_now"] and sid in (cl["stations"][0], cl["stations"][-1]) and svc["service"] == "reduced"
+        assert svc["service"] in ("reduced", "suspended") and (svc["service"] == "suspended") == (cl["active_now"] and not terminus)
         if cl["active_now"]:
-            assert svc["disruption"]["alert_id"] == cl["alert_id"]
+            assert svc["disruption"]["alert_id"] == cl["alert_id"] and (svc["disruption"].get("role") == "shuttle_terminus") == terminus
         trains = await call(server_url, "next_trains", query=sid)
         assert cl["alert_id"] in ids(trains["disruptions"])
         on_line = [p for p in trains["platforms"] if p["line"] == line]
-        assert on_line and all((p["service"] == "suspended") == cl["active_now"] for p in on_line)
+        assert on_line and all((p["service"] == "suspended") == cl["active_now"] for p in on_line if not terminus)
+        assert not terminus or any(p["service"] != "suspended" for p in on_line)
         status = {p["number"]: p["status"] for p in st["platforms"]}
-        assert all((status[p["platform"]] == "closed") == cl["active_now"] for p in on_line)
+        assert all((status[p["platform"]] == "closed") == (p["service"] == "suspended" if cl["active_now"] else False) for p in on_line)
         other_lines = [p for p in trains["platforms"] if p["line"] != line]
         assert all(p["service"] != "suspended" for p in other_lines) or cl["active_now"] is False
         arr = await call(server_url, "arrivals", stop=on_line[0]["platform"])

@@ -72,3 +72,17 @@ async def test_advisory_tools_degrade_when_alerts_are_down(app_env):
     async with Client(make_app([], fail=("www.ttc.ca",))) as c:
         s = (await c.call_tool("service_changes", {})).data
         assert s["count"] == 1 and "ttcapi unavailable" in s["note"]
+
+
+@pytest.mark.anyio
+async def test_alerts_by_stop_keep_the_closure_at_a_served_end_platform(app_env, monkeypatch):
+    import datetime as dt
+
+    from ttc_mcp.static.schedule import TZ
+
+    monkeypatch.setattr("ttc_mcp.runtime.now", lambda: dt.datetime(2026, 10, 6, 23, 30, tzinfo=TZ))
+    async with Client(make_app([])) as c:
+        ym = (await c.call_tool("alerts", {"stop": "13791"})).data["alerts"]
+        assert [(a["alert_id"], a.get("role")) for a in ym] == [("77519", "shuttle_terminus")]
+        assert [(a["alert_id"], a.get("role")) for a in (await c.call_tool("alerts", {"stop": "13793", "type": "closure"})).data["alerts"]] == [("77519", None)]
+        assert (await c.call_tool("alerts", {"stop": "13791", "type": "rsz"})).data["alerts"] == []

@@ -235,18 +235,18 @@ def _closure_extent(conn, el: dict, pattern_id: int) -> tuple[int, int] | None:
 
 
 def _closed_positions(conn, disr: Disruptions, pattern_id: int, route: str) -> list[tuple[int, dict]]:
-    """The pattern positions closed now for this line, with the closing element (its station's closure when there is one)."""
+    """The pattern positions closed now for this line with the closing element: the station's closure (the whole span, so the
+    split reaches both ends although an end platform may be served), else the platform's own listing."""
     out = []
     for pos, sid, _ in pattern_rows(conn, pattern_id):
         row = stop_row(conn, sid)
-        el = disr.platform_closed_now(row)
+        el = disr.station_closed_now(row["parent_station"], route) or disr.platform_closed_now(row)
         if not el:
             continue
-        station = disr.station_closed_now(row["parent_station"], route)
         # Belt and braces: phase 3 already ignores an RT listing that names only other lines.
-        if station is None and el["source"] == "gtfsrt alerts" and el["routes"] and route not in el["routes"]:
+        if el["source"] == "gtfsrt alerts" and el["routes"] and route not in el["routes"]:
             continue
-        out.append((pos, station or el))
+        out.append((pos, el))
     return out
 
 

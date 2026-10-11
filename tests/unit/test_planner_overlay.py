@@ -150,6 +150,13 @@ def test_a_ride_into_the_closed_block_is_still_split(conn, origin, dest, modes):
     assert [l["mode"] for l in over[0]["legs"] if l["mode"] != "walk"] == modes
 
 
+def test_the_northbound_split_spans_the_whole_closure_although_york_mills_northbound_is_served(conn):
+    legs = [l for l in planner.overlay(conn, build(conn, NOW_NIGHT), trip(conn, "Union", "Finch"))[0]["legs"] if l["mode"] != "walk"]
+    assert [l["mode"] for l in legs] == ["ride", "shuttle", "ride"]
+    assert (legs[1]["from"]["name"], legs[1]["to"]["name"]) == ("Eglinton", "York Mills")
+    assert legs[0]["alight"]["number"] == "13796" and legs[2]["board"]["number"] == "13791"
+
+
 def test_a_two_station_closure_with_no_interior_still_gets_a_shuttle(conn):
     disr = closure_77519(conn, rt_feed=False, stop_ids=("7462", "2811"))
     legs = [l for l in planner.overlay(conn, disr, finch_union(conn, NOW_NIGHT))[0]["legs"] if l["mode"] != "walk"]

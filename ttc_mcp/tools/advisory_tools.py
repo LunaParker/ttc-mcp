@@ -10,7 +10,7 @@ from ttc_mcp import advisory, runtime
 from ttc_mcp.domain import detours as det
 from ttc_mcp.domain import service_changes as sc
 from ttc_mcp.domain.arrivals import stop_row
-from ttc_mcp.domain.disruptions import station_by_name, station_row
+from ttc_mcp.domain.disruptions import element_key, station_by_name, station_row
 from ttc_mcp.realtime import attempt
 
 Kind = Literal["closure", "suspension", "detour", "rsz", "elevator", "escalator", "other"]
@@ -60,8 +60,9 @@ def register(mcp: FastMCP) -> None:
                 row = stop_row(conn, stop.strip())
                 if row is None:
                     return {"error": f"stop {stop} not found"}, [], advisory.SOURCE
-                ids = {id(e) for e in snap.disruptions.for_stop(row)}
-                els = [e for e in els if id(e) in ids]
+                # The stop's own view (closure copies carry the terminus role), narrowed to what the other filters kept.
+                keys = {element_key(e) for e in els}
+                els = [e for e in snap.disruptions.for_stop(row) if element_key(e) in keys]
             out = [_objects(conn, e) for e in els]
             return {"alerts": out, "counts": dict(Counter(e["type"] for e in out)), "as_of": snap.as_of()}, [], advisory.SOURCE
         return await _aguard(run)

@@ -27,10 +27,15 @@ async def test_stop_and_station_carry_disruptions_and_service(app_env):
 async def test_station_is_suspended_inside_a_closure_window(app_env, monkeypatch):
     monkeypatch.setattr("ttc_mcp.runtime.now", lambda: NIGHT)
     async with Client(make_app([])) as c:
-        st = (await c.call_tool("station", {"query": "York Mills"})).data["station"]
+        st = (await c.call_tool("station", {"query": "Lawrence"})).data["station"]
         assert st["service"][0]["service"] == "suspended" and st["service"][0]["disruption"]["active_now"] is True
         status = {p["number"]: p["status"] for p in st["platforms"]}
-        assert status["13791"] == status["13792"] == "closed" and status["14806"] == "open"
+        assert status["13793"] == status["13794"] == "closed"
+        ym = (await c.call_tool("station", {"query": "York Mills"})).data["station"]
+        assert (ym["service"][0]["service"], ym["service"][0]["disruption"]["role"]) == ("reduced", "shuttle_terminus")
+        status = {p["number"]: p["status"] for p in ym["platforms"]}
+        assert status["13791"] == "open" and status["13792"] == "closed" and status["14806"] == "open"
+        assert next(d for d in ym["disruptions"] if d["alert_id"] == "77519")["role"] == "shuttle_terminus"
 
 
 @pytest.mark.anyio
