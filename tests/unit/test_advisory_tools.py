@@ -97,3 +97,9 @@ async def test_detours_resolve_trips_held_by_the_other_loaded_feed(two_feeds):
         d = (await c.call_tool("detours", {"route": "504"})).data
         assert d["meta"]["static_feed"] == "S1000542" and d["resolved"] == 1 and d["detours"][0]["directions"][0]["pattern"] == 6
         assert d["detours"][0]["skipped_stops"] == ["14993", "14994", "15039"]
+
+
+@pytest.mark.anyio
+async def test_alerts_accept_the_delay_type(app_env):
+    async with Client(make_app([])) as c:
+        assert (await c.call_tool("alerts", {"type": "delay"})).data["alerts"] == []

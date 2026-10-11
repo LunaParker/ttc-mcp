@@ -57,8 +57,9 @@ def test_classify_never_trusts_effect_alone():
     assert classify("Light Rail", "NO_SERVICE", "No Service", "Line 5 Eglinton: No service between ...", ("5",)) == "closure"
     assert classify("LRT", "REDUCED_SERVICE", "Subway Closure - Early Closure", "x", ("6",)) == "closure"
     assert classify("Bus", "NO_SERVICE", "No Service", "x", ("5",)) == "closure"
-    assert classify("Bus", "SIGNIFICANT_DELAYS", "Delay", "...") == "other"
+    assert classify("Bus", "SIGNIFICANT_DELAYS", "Delays", "...") == "delay" and classify("Subway", "SIGNIFICANT_DELAYS", "", "...") == "delay"
     assert classify("Subway", "SIGNIFICANT_DELAYS", "Reduced Speed Zone", "...") == "rsz"
+    assert classify("Bus", "OTHER_EFFECT", "Delays", "...") == "other"
     assert classify("Elevator", "ACCESSIBILITY_ISSUE", "Out of service", "...") == "elevator"
     assert classify("Bus", "DETOUR", "Detour", "...") == "detour"
 
@@ -75,3 +76,15 @@ def test_a_line_5_closure_classifies_as_a_closure_whatever_its_route_type():
     bus = {**line5, "id": 90520, "route": "32", "routeType": "Bus", "headerText": "32 Eglinton West: No service between ..."}
     by = {a.id: a for a in parse_alerts(json.dumps({**doc, "routes": [line5, bus]}).encode(), {}).value.alerts}
     assert (by["90519"].kind, by["90519"].routes, by["90519"].route_type) == ("closure", ("5",), "Light Rail") and by["90520"].kind == "suspension"
+
+
+def test_a_significant_delay_that_is_not_a_reduced_speed_zone_classifies_delay():
+    from ttc_mcp.adapters.ttc_alerts import KINDS
+
+    doc = json.loads((FIX / "alerts.json").read_bytes())
+    rsz = next(x for x in doc["routes"] if str(x["id"]) == "77535")
+    delay = {**rsz, "id": 90535, "route": "29", "routeType": "Bus", "effectDesc": "Delays", "direction": "Both ways",
+             "headerText": "29 Dufferin: Delays of up to 15 minutes due to a collision."}
+    by = {a.id: a for a in parse_alerts(json.dumps({**doc, "routes": [rsz, delay]}).encode(), {}).value.alerts}
+    assert (by["90535"].kind, by["90535"].rsz, by["77535"].kind, by["77535"].rsz["reduced_speed_kmh"]) == ("delay", None, "rsz", "25")
+    assert "delay" in KINDS

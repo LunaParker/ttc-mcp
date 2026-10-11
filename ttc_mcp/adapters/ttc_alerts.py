@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from ttc_mcp.cache import Parsed
 from ttc_mcp.static.schedule import TZ
 
-KINDS = ("closure", "suspension", "detour", "rsz", "elevator", "escalator", "other")
+KINDS = ("closure", "suspension", "detour", "rsz", "elevator", "escalator", "delay", "other")
 RAIL_LINES = ("1", "2", "4", "5", "6")
 RAIL_TYPES = ("Subway", "LRT", "Light Rail")
 RSZ_FIELDS = {"reducedSpeed": "reduced_speed_kmh", "rszLength": "length_m", "trackPercent": "track_percent",
@@ -63,7 +63,7 @@ def local_time(s: str | None) -> dt.datetime | None:
 
 def classify(route_type: str, effect: str, effect_desc: str, header: str, routes: tuple[str, ...] = ()) -> str:
     """Closures come from effectDesc, header text and the line (a rail route number or routeType, so Lines 5 and 6 count
-    whatever label alerts.ttc.ca picks), never from effect alone (spec 6.7, 6.8)."""
+    whatever label alerts.ttc.ca picks), never from effect alone (spec 6.7, 6.8); a non-RSZ SIGNIFICANT_DELAYS is a delay."""
     if route_type == "Elevator":
         return "elevator"
     if route_type == "Escalator":
@@ -78,6 +78,8 @@ def classify(route_type: str, effect: str, effect_desc: str, header: str, routes
         return "detour"
     if effect == "NO_SERVICE" or effect_desc == "No Service":
         return "suspension"
+    if effect == "SIGNIFICANT_DELAYS":
+        return "delay"
     return "other"
 
 

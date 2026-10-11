@@ -13,7 +13,7 @@ from ttc_mcp.domain.arrivals import stop_row
 from ttc_mcp.domain.disruptions import element_key, station_by_name, station_row
 from ttc_mcp.realtime import attempt
 
-Kind = Literal["closure", "suspension", "detour", "rsz", "elevator", "escalator", "other"]
+Kind = Literal["closure", "suspension", "detour", "rsz", "elevator", "escalator", "delay", "other"]
 
 
 async def _aguard(fn):

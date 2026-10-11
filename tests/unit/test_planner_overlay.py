@@ -257,11 +257,12 @@ def test_the_closure_verdict_of_a_span_on_pattern_54(conn):
     assert v(copy, 3, 4) == ("drop", "77519") and v(copy, 0, 2) == ("ride", "77519") and v(copy, 0, 4) == ("split", "77519")
 
 
-def test_route_level_alerts_annotate_every_ride_leg_of_their_route_once(conn):
-    """A Line 1 delay and a stopless 121 detour name no stations or stops; RSZ and unit alerts keep their own rules."""
+@pytest.mark.parametrize("kind", ["delay", "other"])
+def test_route_level_alerts_annotate_every_ride_leg_of_their_route_once(conn, kind):
+    """A Line 1 delay (its own kind, or other) and a stopless 121 detour name no stations or stops; RSZ and unit alerts keep their own rules."""
     base = [a for a in alerts().alerts if a.id != "77530"]
     detour = next(a for a in alerts().alerts if a.id == "77530")
-    delay = dataclasses.replace(detour, id="90001", kind="other", routes=("1",), header="Line 1: Delays of up to 10 minutes")
+    delay = dataclasses.replace(detour, id="90001", kind=kind, routes=("1",), header="Line 1: Delays of up to 10 minutes")
     later = dataclasses.replace(delay, id="90002", windows=(), start=NOW_DAY.replace(hour=20), end=None)
     disr = Disruptions.build(conn, AlertList(None, None, base + [delay, later, dataclasses.replace(detour, routes=("121",))]), rt(), groups(conn), NOW_DAY)
     cherry_front = planner.resolve_endpoint(conn, {"lat": 43.6527, "lon": -79.3581})
