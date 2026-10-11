@@ -22,7 +22,7 @@ CLOSED = "every option is cut by a closure (no shuttle service, or a bypassed bo
 
 
 def _input_error(origin, destination, walk_m: int, limit: int, depart_at: str | None) -> str | None:
-    """The planner runs synchronously on the event loop, so walk_m and limit are bounded and bad input never reaches it."""
+    """The planner runs synchronously in a worker thread, so walk_m and limit are bounded and bad input never reaches it."""
     if not 1 <= limit <= LIMIT_MAX:
         return f"limit must be between 1 and {LIMIT_MAX}"
     if not 1 <= walk_m <= WALK_MAX_M:
@@ -52,6 +52,12 @@ def _around_skipped(conn, disr: Disruptions, e: planner.Endpoint, which: str, wa
     if served:
         notes.append(f"{which} stop {e.label['stop']} is skipped by detour {el['detour_id']}; using the served stops within {walk_m} m of it")
     return planner.Endpoint(e.label, served)
+
+
+def _plan(conn, disr, o, d, now, max_transfers, limit, usable, verdict):
+    found = planner.search(conn, o, d, now=now, max_transfers=max_transfers, limit=limit * 3, usable=usable,
+                           rideable=lambda pid, a, b: verdict(pid, a, b) != "drop")
+    return found, planner.overlay(conn, disr, found)[:limit]
 
 
 def register(mcp: FastMCP) -> None:
@@ -140,9 +146,7 @@ def register(mcp: FastMCP) -> None:
             for which, e in (("origin", o), ("destination", d)):
                 if not any(usable(s) for s in e.stops):
                     return {**head, "options": [], "note": "; ".join(notes + [f"every stop at the {which} is skipped by a detour"])}, [], "", snap
-            found = planner.search(conn, o, d, now=now, max_transfers=max_transfers, limit=limit * 3, usable=usable,
-                                   rideable=lambda pid, a, b: verdict(pid, a, b) != "drop")
-            opts = planner.overlay(conn, disr, found)[:limit]
+            found, opts = await asyncio.to_thread(_plan, conn, disr, o, d, now, max_transfers, limit, usable, verdict)
             use_live = depart_at is None or abs(now - runtime.now()) <= LIVE_WINDOW
             rides = [(opt, leg) for opt in opts if (leg := next((l for l in opt["legs"] if l["mode"] != "walk"), None)) and leg["mode"] == "ride"]
             nexts = await asyncio.gather(*(live.next_for_leg(feed, rt, leg, now=now, use_live=use_live, clock=runtime.now()) for _, leg in rides))

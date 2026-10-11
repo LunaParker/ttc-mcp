@@ -219,3 +219,20 @@ async def test_connections_hide_the_planners_private_keys(app_env, monkeypatch):
         night = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union", "max_transfers": 0})).data
         legs = night["options"][0]["legs"]
         assert [l["mode"] for l in legs] == ["ride", "shuttle", "ride"] and not any("board_pos" in l or "alight_pos" in l for l in legs)
+
+
+@pytest.mark.anyio
+async def test_connections_plan_off_the_event_loop(app_env, monkeypatch):
+    """Spec 6.9 carry-over: the planner's tens of milliseconds must not stall every other request of the single instance."""
+    import threading
+
+    from ttc_mcp.domain import planner
+    seen, real = [], planner.search
+
+    def spy(*a, **k):
+        seen.append(threading.get_ident())
+        return real(*a, **k)
+    monkeypatch.setattr(planner, "search", spy)
+    async with Client(make_app([])) as c:
+        assert (await c.call_tool("connections", {"origin": CHERRY_FRONT, "destination": "Union"})).data["options"]
+    assert seen and all(t != threading.get_ident() for t in seen)
