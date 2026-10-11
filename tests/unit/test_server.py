@@ -116,6 +116,8 @@ async def test_the_recheck_lifespan_runs_ensure_static_on_the_interval_and_stops
     async with Client(server.create_app(recheck=True)) as c:
         await c.list_tools()
         await asyncio.sleep(0.15)
+    # The loop is cancelled with the server; a check already running in its worker thread finishes on its own first.
+    await asyncio.sleep(0.05)
     n = len(calls)
     assert n >= 2 and calls[0][0] == Path(runtime.settings().cache_dir) and calls[0][1].startswith("ttc-mcp/")
     await asyncio.sleep(0.05)
