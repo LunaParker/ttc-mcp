@@ -143,7 +143,7 @@ class Disruptions:
                 self.by_route.setdefault(r, []).append(el)
 
     @classmethod
-    def build(cls, conn, alerts: AlertList | None, rt: RtAlertFeed | None, groups: list[dict], now: dt.datetime) -> "Disruptions":
+    def build(cls, conn, alerts: AlertList | None, rt: RtAlertFeed | None, groups: list[dict], now: dt.datetime) -> Disruptions:
         els = [element(conn, a, now) for a in (alerts.alerts if alerts else [])] + detour_elements(groups)
         return cls(conn, els, platform_closures(rt, now.timestamp()))
 

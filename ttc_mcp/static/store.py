@@ -64,7 +64,7 @@ class StaticStore:
         self.checked_at, self.ckan_last_modified = checked_at, ckan_last_modified
 
     @classmethod
-    def from_manifest(cls, cache_dir: Path) -> "StaticStore":
+    def from_manifest(cls, cache_dir: Path) -> StaticStore:
         feeds, manifest = [], Manifest.load(cache_dir)
         for e in manifest.feeds:
             p = Path(cache_dir) / e.path

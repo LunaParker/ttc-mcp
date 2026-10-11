@@ -96,7 +96,7 @@ def simplify(points: list[tuple[float, float]], tolerance_m: float) -> list[tupl
         if idx >= 0 and best > tolerance_m:
             keep[idx] = True
             stack.extend(((a, idx), (idx, b)))
-    return [p for p, k in zip(points, keep) if k]
+    return [p for p, k in zip(points, keep, strict=True) if k]
 
 
 def slice_by_dist(points: list, dists, d0: float, d1: float) -> list:

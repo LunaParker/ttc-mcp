@@ -5,6 +5,7 @@ import datetime as dt
 import json
 import re
 from dataclasses import dataclass
+from functools import partial
 
 from ttc_mcp.domain.arrivals import stop_row
 from ttc_mcp.domain.disruptions import UNIT_KINDS, Disruptions, element_key, station_by_name, station_row
@@ -373,18 +374,20 @@ def _rank(o: dict) -> tuple:
     return o["transfers"], o["typical_min"] is None, o["known_min"] if o["typical_min"] is None else o["typical_min"], o["stops"]
 
 
+def _touch(found: dict, affects: dict, el: dict, numbers: list[int]) -> None:
+    """Record a disruption once per option and widen the legs it affects."""
+    key = element_key(el)
+    found.setdefault(key, el)
+    affects[key] = sorted(set(affects.get(key, ())) | set(numbers))
+
+
 def overlay(conn, disr: Disruptions, options: list[dict]) -> list[dict]:
     """Decision h: closures cut rail legs (shuttle when offered, else drop); RSZ, suspensions, detours and route-level alerts
     annotate. Each disruption names the legs it touches (affects, 1-based) on a copy; the snapshot's dicts are never mutated."""
     kept = []
     for opt in options:
         legs, found, affects, dropped = [], {}, {}, False
-
-        def touch(el: dict, numbers: list[int]) -> None:
-            key = element_key(el)
-            found.setdefault(key, el)
-            affects[key] = sorted(set(affects.get(key, ())) | set(numbers))
-
+        touch = partial(_touch, found, affects)
         for leg in opt["legs"]:
             if leg["mode"] != "ride":
                 legs.append(leg)
@@ -398,12 +401,12 @@ def overlay(conn, disr: Disruptions, options: list[dict]) -> list[dict]:
             legs.extend(parts)
             if el:
                 touch(el, numbers)
-            for n, part in zip(numbers, parts):
+            for n, part in zip(numbers, parts, strict=True):
                 if part["mode"] == "ride":
                     for el in _annotations(conn, disr, part, rows):
                         touch(el, [n])
             # Route-level alerts (delays, stopless detours and suspensions) touch every ride on the route, none once a shuttle replaced it.
-            rides = [n for n, part in zip(numbers, parts) if part["mode"] == "ride"]
+            rides = [n for n, part in zip(numbers, parts, strict=True) if part["mode"] == "ride"]
             for el in disr.by_route.get(leg["route"], []) if rides else ():
                 if el["active_now"] and not el["stations"] and not el["stops"] and el["type"] not in (*UNIT_KINDS, "rsz"):
                     touch(el, rides)

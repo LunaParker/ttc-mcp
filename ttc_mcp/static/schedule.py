@@ -5,7 +5,7 @@ import sqlite3
 from zoneinfo import ZoneInfo
 
 TZ = ZoneInfo("America/Toronto")
-UTC = dt.timezone.utc
+UTC = dt.UTC
 DAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 

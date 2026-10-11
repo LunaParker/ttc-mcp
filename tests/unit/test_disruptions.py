@@ -93,7 +93,9 @@ def test_service_status_summary(conn):
     d504 = next(x for x in s["surface"] if x.get("detour_id") == "9001")
     assert (d504["effect"], d504["skipped_stops"], d504["reason"], d504["active_now"]) == ("Detour", 3, "504 King – Temporary route change due to track work", True)
     assert all(set(x) == SURFACE_KEYS for x in s["surface"]), [set(x) for x in s["surface"]]
-    name = lambda n: conn.execute("SELECT name FROM stops WHERE stop_id=?", (n,)).fetchone()[0]
+    def name(n):
+        return conn.execute("SELECT name FROM stops WHERE stop_id=?", (n,)).fetchone()[0]
+
     assert (d504["source"], d504["alert_id"], d504["direction"], d504["from"], d504["to"], d504["text"]) == \
         ("detour feed", None, "East - 504A King towards Distillery", name("4569"), name("4573"), "504 King streetcars will divert via Queen St.")
     assert d504["service_dates"] == ["20261005", "20261007"]

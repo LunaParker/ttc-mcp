@@ -36,7 +36,7 @@ def _objects(conn, el: dict) -> dict:
     for n in el["stops"][:50]:
         r = conn.execute("SELECT name FROM stops WHERE stop_id=?", (n,)).fetchone()
         stops.append({"number": n, "name": r["name"] if r else None})
-    return {**el, "station_objects": [{"id": s, "name": n} for s, n in zip(el["stations"], el["station_names"])], "stop_objects": stops}
+    return {**el, "station_objects": [{"id": s, "name": n} for s, n in zip(el["stations"], el["station_names"], strict=True)], "stop_objects": stops}
 
 
 def register(mcp: FastMCP) -> None:

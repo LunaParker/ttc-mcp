@@ -31,7 +31,7 @@ def merged(rt: RtAlertFeed | None, changes: list[ServiceChange] | None, *, route
                     "text": c.text or None, "url": c.url, "category": c.category, "source": "ttcapi"})
         spans.append((c.start, c.end))
     keep = []
-    for rec, (start, end) in zip(out, spans):
+    for rec, (start, end) in zip(out, spans, strict=True):
         if route and route not in rec["routes"]:
             continue
         if day and not overlaps(start, end, day):

@@ -7,7 +7,8 @@ from typing import Literal
 from fastmcp import FastMCP
 
 from ttc_mcp import advisory, runtime
-from ttc_mcp.domain import accessibility as acc, live, planner, shapes
+from ttc_mcp.domain import accessibility as acc
+from ttc_mcp.domain import live, planner, shapes
 from ttc_mcp.domain.arrivals import stop_row
 from ttc_mcp.domain.disruptions import Disruptions, station_row
 from ttc_mcp.static.schedule import TZ
@@ -147,7 +148,7 @@ def register(mcp: FastMCP) -> None:
             nexts = await asyncio.gather(*(live.next_for_leg(feed, rt, leg, now=now, use_live=use_live, clock=runtime.now()) for _, leg in rides))
             for opt in opts:
                 opt["basis"] = "schedule"
-            for (opt, leg), (rows, _, note) in zip(rides, nexts):
+            for (opt, leg), (rows, _, note) in zip(rides, nexts, strict=True):
                 leg["next"] = rows
                 if note:
                     leg["next_note"] = note

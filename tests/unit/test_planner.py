@@ -90,7 +90,9 @@ def test_overnight_route_only_appears_overnight(conn):
 
 
 def test_unusable_stops_are_skipped(conn):
-    usable = lambda sid: sid != "15246"
+    def usable(sid):
+        return sid != "15246"
+
     opts = planner.search(conn, planner.resolve_endpoint(conn, CHERRY_FRONT), planner.resolve_endpoint(conn, "Union"), now=NOW, usable=usable)
     assert all(_rides(o)[0]["board"]["number"] != "15246" for o in opts)
     banned = {"15246", "15637"}
@@ -136,7 +138,9 @@ def test_a_span_that_is_not_rideable_is_no_candidate_so_the_transfer_scan_routes
     monkeypatch.setattr(planner, "transfer_stops", lambda c, sid: {**real(c, sid), **({"11169": 50} if sid == "13860" else {})})
     assert all(o["transfers"] == 0 for o in planner.search(conn, finch, union, now=NOW, limit=10))
     lawrence = {"13793", "13794"}
-    closed = lambda pid, a, b: not any(sid in lawrence for _, sid, _ in planner.pattern_rows(conn, pid)[a:b + 1])
+    def closed(pid, a, b):
+        return not any(sid in lawrence for _, sid, _ in planner.pattern_rows(conn, pid)[a:b + 1])
+
     opts = planner.search(conn, finch, union, now=NOW, limit=10, rideable=closed)
     assert opts and all(o["transfers"] == 1 for o in opts)
     assert [(r["route"], r["board"]["number"], r["alight"]["number"]) for r in _rides(opts[0])] == [("1", "14111", "13860"), ("121", "11169", "16754")]
