@@ -79,11 +79,28 @@ def test_a_partial_download_never_becomes_the_file(tmp_path, monkeypatch):
         path.write_bytes(b"half")
         raise OSError("connection reset")
     monkeypatch.setattr(blobs, "download", broken)
-    try:
+    with pytest.raises(OSError):
         bucket.pull(dst, blobs)
-    except OSError:
-        pass
-    assert not (dst / "static-S1.sqlite").exists() and not (dst / NAME).exists()
+    assert not (dst / "static-S1.sqlite").exists() and not (dst / "static-S1.part").exists() and not (dst / NAME).exists()
+
+
+def test_pull_removes_feed_files_the_new_manifest_no_longer_lists(tmp_path):
+    """Cloud Run's disk is instance memory: a feed the Job's manifest dropped must not stay on the serving instance."""
+    src, dst = tmp_path / "src", tmp_path / "dst"
+    src.mkdir(), dst.mkdir()
+    _store(src, "S1", "S2")
+    blobs = bucket.MemoryBlobs()
+    bucket.push(src, blobs)
+    bucket.pull(dst, blobs)
+    assert (dst / "static-S1.sqlite").exists() and (dst / "static-S2.sqlite").exists()
+    m = Manifest.load(src)
+    m.feeds = [f for f in m.feeds if f.feed_version == "S2"]
+    m.save(src)
+    bucket.push(src, blobs)
+    m = bucket.pull(dst, blobs)
+    assert [f.feed_version for f in m.feeds] == ["S2"] and [f.feed_version for f in Manifest.load(dst).feeds] == ["S2"]
+    assert not (dst / "static-S1.sqlite").exists() and (dst / "static-S2.sqlite").read_bytes() == b"x" * 1001
+    assert not list(dst.glob("*.part"))
 
 
 class FakeBlob:

@@ -85,8 +85,8 @@ class GcsBlobs:
 
 
 def pull(cache_dir: Path, blobs: Blobs, log=None) -> Manifest | None:
-    """Bring the bucket's manifest and the feeds it lists into cache_dir. Files already there with the bucket's size are kept; each
-    download lands in a .part file first; the manifest is written last, so a reader never sees a feed that is not there yet."""
+    """Bring the bucket's manifest and the feeds it lists into cache_dir: same-size files are kept, a download lands in a .part file first,
+    the manifest is written after the feeds, then static-*.sqlite files it no longer lists go. A feed missing from the bucket is logged."""
     cache_dir = Path(cache_dir)
     raw = blobs.read(NAME)
     if raw is None:
@@ -108,6 +108,11 @@ def pull(cache_dir: Path, blobs: Blobs, log=None) -> Manifest | None:
         finally:
             part.unlink(missing_ok=True)
     manifest.save(cache_dir)
+    listed = {f.path for f in manifest.feeds}
+    for stale in cache_dir.glob("static-*.sqlite"):
+        if stale.name not in listed:
+            stale.unlink()
+            _log(log, f"[bucket] removed {stale.name}, no longer in the manifest")
     return manifest
 
 
