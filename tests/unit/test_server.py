@@ -177,7 +177,8 @@ async def test_scheduled_departures_resolve_a_stop_code_and_reject_an_unknown_st
     async with Client(app) as c:
         by_code = (await c.call_tool("scheduled_departures", {"stop": "407", "limit": 3})).data
         by_id = (await c.call_tool("scheduled_departures", {"stop": "99407", "limit": 3})).data
-        assert len(by_code["departures"]) == 3 and by_code["departures"] == by_id["departures"] and by_code["stop"] == "407"
+        assert len(by_code["departures"]) == 3 and by_code["departures"] == by_id["departures"]
+        assert by_code["stop"] == {"number": "99407", "name": "Test St at 407 Stop", "lat": 43.7, "lon": -79.4, "station": None}
         r = (await c.call_tool("scheduled_departures", {"stop": "nowhere"})).data
         assert r["error"] == "stop nowhere not found" and "departures" not in r and r["meta"]["static_feed"] == "S1000538"
 

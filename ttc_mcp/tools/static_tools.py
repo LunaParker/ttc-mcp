@@ -122,6 +122,7 @@ def register(mcp: FastMCP) -> None:
             row = stop_row(f.conn, stop)
             if row is None:
                 return {"error": f"stop {stop} not found"}
-            return {"stop": stop, "from": when.isoformat(timespec="seconds"), "basis": "schedule",
+            head = {"number": row["stop_id"], "name": row["name"], "lat": row["lat"], "lon": row["lon"], "station": row["parent_station"] or None}
+            return {"stop": head, "from": when.isoformat(timespec="seconds"), "basis": "schedule",
                     "departures": schedule.departures_at(f.conn, row["stop_id"], when, limit=limit, route=route)}
         return _guard(run)
