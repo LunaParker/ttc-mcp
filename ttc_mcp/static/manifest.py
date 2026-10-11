@@ -28,12 +28,13 @@ class Manifest:
     ckan_last_modified: str | None = None
 
     @classmethod
+    def from_doc(cls, doc: dict) -> Manifest:
+        return cls([FeedEntry(**f) for f in doc.get("feeds", [])], doc.get("checked_at"), doc.get("ckan_last_modified"))
+
+    @classmethod
     def load(cls, cache_dir: Path) -> Manifest:
         p = Path(cache_dir) / NAME
-        if not p.exists():
-            return cls([])
-        doc = json.loads(p.read_text())
-        return cls([FeedEntry(**f) for f in doc.get("feeds", [])], doc.get("checked_at"), doc.get("ckan_last_modified"))
+        return cls.from_doc(json.loads(p.read_text())) if p.exists() else cls([])
 
     def save(self, cache_dir: Path) -> None:
         Path(cache_dir).mkdir(parents=True, exist_ok=True)
