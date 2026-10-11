@@ -1,14 +1,16 @@
 FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim
 
 WORKDIR /app
-ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_NO_SYNC=1
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_NO_SYNC=1 PYTHONUNBUFFERED=1
 
 # Dependencies first, so a code change does not re-resolve them.
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --extra cloud --no-install-project
 
+# The project as a wheel, so its bytecode is compiled here rather than at every cold start.
+COPY README.md ./
 COPY ttc_mcp ./ttc_mcp
-RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --extra cloud
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --extra cloud --no-editable
 
 # Spec 6.9: http on $PORT, the store under /data (pulled from the bucket), CKAN left to the Job.
 ENV TTC_MCP_TRANSPORT=http TTC_MCP_SKIP_REFRESH=1 TTC_MCP_CACHE=/data PORT=8080

@@ -6,9 +6,9 @@
 .cache
 .mcp.json
 .pytest_cache
-__pycache__
-*.pyc
-*.sqlite
+**/__pycache__
+**/*.pyc
+**/*.sqlite
 dist
 docs
 scripts
