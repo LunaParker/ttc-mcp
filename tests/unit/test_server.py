@@ -42,6 +42,8 @@ async def test_find_stops_and_meta(app):
 async def test_station_alias_and_unknown_stop_error(app):
     async with Client(app) as c:
         assert (await c.call_tool("station", {"query": "Dundas"})).data["station"]["name"] == "TMU"
+        st = (await c.call_tool("station", {"query": "York Mills"})).data["station"]
+        assert all(p["status"] == "open" for p in st["platforms"]) and st["surface_stops"] and all(b["status"] == "open" for b in st["surface_stops"])
         assert "error" in (await c.call_tool("stop", {"number": "0"})).data
 
 

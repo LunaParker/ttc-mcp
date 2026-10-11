@@ -33,7 +33,7 @@ async def test_station_is_suspended_inside_a_closure_window(app_env, monkeypatch
         assert status["13793"] == status["13794"] == "closed"
         ym = (await c.call_tool("station", {"query": "York Mills"})).data["station"]
         assert (ym["service"][0]["service"], ym["service"][0]["disruption"]["role"]) == ("reduced", "shuttle_terminus")
-        status = {p["number"]: p["status"] for p in ym["platforms"]}
+        status = {p["number"]: p["status"] for p in ym["platforms"] + ym["surface_stops"]}
         assert status["13791"] == "open" and status["13792"] == "closed" and status["14806"] == "open"
         assert next(d for d in ym["disruptions"] if d["alert_id"] == "77519")["role"] == "shuttle_terminus"
 

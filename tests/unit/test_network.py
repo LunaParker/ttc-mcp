@@ -60,3 +60,14 @@ def test_route_stops_returns_ranked_patterns_with_typical_minutes(conn):
     p = r["patterns"][0]
     assert p["rank"] == 1 and p["stops"][0]["typical_min"] == 0 and p["stops"][-1]["typical_min"] > 10
     assert net.route_stops(conn, "999", "0") is None
+
+
+def test_station_platforms_are_the_rail_platforms_and_bus_bays_are_surface_stops(conn):
+    """York Mills' nine bus bays are children of the station flagged 0: stops at the station, never platforms, so the summary
+    reads the two rail platforms only."""
+    s = net.station_detail(conn, "York Mills")
+    assert {p["number"] for p in s["platforms"]} == {"13791", "13792"} and s["wheelchair_summary"] == "accessible"
+    bays = s["surface_stops"]
+    assert {b["number"] for b in bays} >= {"14806", "14814"} and all(b["kind"] == "stop" and b["station"] == "43276" for b in bays)
+    assert net.stop_detail(conn, "14806")["kind"] == "stop" and net.stop_detail(conn, "13791")["kind"] == "platform"
+    assert net.station_detail(conn, "St George")["wheelchair_summary"] == "accessible"
