@@ -157,7 +157,8 @@ def register(mcp: FastMCP) -> None:
                 for leg in opt["legs"]:
                     for key in ("board_pos", "alight_pos"):
                         leg.pop(key, None)
-                opt["first_departure"] = {k: opt["first_departure"][k] for k in ("when", "in_min", "trip_id")}
+                dep = opt["first_departure"]
+                opt["first_departure"] = {k: dep[k] for k in ("when", "in_min", "trip_id")} if dep else None
             # Closed spans are pruned inside search; an unconstrained search tells a closure from an empty timetable.
             if not opts and (found or planner.search(conn, o, d, now=now, max_transfers=max_transfers, limit=1, usable=usable)):
                 notes.append(CLOSED)

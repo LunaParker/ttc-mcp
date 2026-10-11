@@ -76,7 +76,7 @@ async def test_connections_apply_the_closure_overlay_at_night(app_env, monkeypat
         assert all(n["basis"] == "schedule" for n in ride["next"]) and day["meta"]["cache"] == "static" and day["meta"]["advisories"]["source"]
         shuttle_first = (await c.call_tool("connections", {"origin": "Lawrence", "destination": "Union", "max_transfers": 0})).data["options"][0]
         assert [l["mode"] for l in shuttle_first["legs"]][0] == "shuttle" and shuttle_first["basis"] == "schedule"
-        assert not any("next" in l for l in shuttle_first["legs"])
+        assert not any("next" in l for l in shuttle_first["legs"]) and shuttle_first["first_departure"] is None
 
 
 @pytest.mark.anyio

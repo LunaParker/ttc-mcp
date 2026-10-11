@@ -282,3 +282,11 @@ def test_a_lone_closed_stop_inside_the_extent_is_bypassed_while_an_end_station_i
     assert into and planner.overlay(conn, disr, into) == []
     whole = trip(conn, "Finch", "Sheppard-Yonge")
     assert planner.overlay(conn, disr, whole)[0]["legs"] == whole[0]["legs"]
+
+
+def test_an_option_that_starts_with_a_shuttle_states_no_first_departure(conn):
+    """The departure record came from the ride the closure replaced; a shuttle has no timetable, so the option states none."""
+    over = planner.overlay(conn, build(conn, NOW_NIGHT), trip(conn, "Lawrence", "Union"))
+    assert over and [l["mode"] for l in over[0]["legs"] if l["mode"] != "walk"][0] == "shuttle" and over[0]["first_departure"] is None
+    whole = planner.overlay(conn, build(conn, NOW_NIGHT), finch_union(conn, NOW_NIGHT))
+    assert whole[0]["first_departure"]["in_min"] >= 0
