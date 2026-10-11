@@ -151,6 +151,12 @@ def register(mcp: FastMCP) -> None:
                 if note:
                     leg["next_note"] = note
                 opt["basis"] = rows[0]["basis"] if rows else "schedule"
+            # Pattern positions index a private table and the departure record is the timetable's; neither is part of the answer.
+            for opt in opts:
+                for leg in opt["legs"]:
+                    for key in ("board_pos", "alight_pos"):
+                        leg.pop(key, None)
+                opt["first_departure"] = {k: opt["first_departure"][k] for k in ("when", "in_min", "trip_id")}
             # Closed spans are pruned inside search; an unconstrained search tells a closure from an empty timetable.
             if not opts and (found or planner.search(conn, o, d, now=now, max_transfers=max_transfers, limit=1, usable=usable)):
                 notes.append(CLOSED)

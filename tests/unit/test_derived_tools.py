@@ -203,3 +203,19 @@ async def test_connections_route_around_a_closure_without_shuttle_service(app_en
     rides = [l for l in r["options"][0]["legs"] if l["mode"] == "ride"]
     assert [(l["route"], l["board"]["number"], l["alight"]["number"]) for l in rides][0] == ("1", "14111", "13860") and r["options"][0]["transfers"] == 1
     assert (rides[1]["route"], rides[1]["board"]["number"]) == ("121", "11169") and rides[1]["alight"]["number"] in {"16754", "246"}
+
+
+@pytest.mark.anyio
+async def test_connections_hide_the_planners_private_keys(app_env, monkeypatch):
+    """board_pos and alight_pos index a private table and first_departure is a whole timetable record; the tool trims them."""
+    async with Client(make_app([])) as c:
+        r = (await c.call_tool("connections", {"origin": CHERRY_FRONT, "destination": "Union"})).data
+        legs = [l for o in r["options"] for l in o["legs"]]
+        assert legs and not any("board_pos" in l or "alight_pos" in l for l in legs)
+        assert all({"pattern_id", "transit"} <= set(l) for l in legs if l["mode"] == "ride")
+        assert all(set(o["first_departure"]) == {"when", "in_min", "trip_id"} for o in r["options"]) and r["options"][0]["first_departure"]["in_min"] >= 0
+    monkeypatch.setattr("ttc_mcp.runtime.now", lambda: NIGHT)
+    async with Client(make_app([])) as c:
+        night = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union", "max_transfers": 0})).data
+        legs = night["options"][0]["legs"]
+        assert [l["mode"] for l in legs] == ["ride", "shuttle", "ride"] and not any("board_pos" in l or "alight_pos" in l for l in legs)
