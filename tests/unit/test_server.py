@@ -1,28 +1,18 @@
 import asyncio
-import datetime as dt
-import shutil
 
 import pytest
 from fastmcp import Client
 
+from tests.mockttc import make_app
 from ttc_mcp import runtime
-from ttc_mcp.static.manifest import FeedEntry, Manifest
 
 TOOLS = {"find_stops", "nearest_stops", "stop", "station", "routes", "route_stops", "service_hours", "scheduled_departures", "arrivals", "next_trains", "vehicles", "feed_status", "alerts", "service_status", "detours", "service_changes", "route_shape", "accessibility", "connections"}
 
 
 @pytest.fixture
-def app(tmp_path, fixture_db, monkeypatch):
-    shutil.copy(fixture_db, tmp_path / "static-S1000538.sqlite")
-    Manifest([FeedEntry("S1000538", "20260906", "20261031", "static-S1000538.sqlite", '"e"', "u", "t")]).save(tmp_path)
-    monkeypatch.setenv("TTC_MCP_CACHE", str(tmp_path))
-    monkeypatch.setenv("TTC_MCP_SKIP_REFRESH", "1")
-    monkeypatch.setattr(runtime, "now", lambda: dt.datetime(2026, 10, 6, 8, 0, tzinfo=runtime.TZ))
-    runtime.reset()
-    from ttc_mcp.server import create_app
-
-    yield create_app()
-    runtime.reset()
+def app(app_env):
+    """The server over app_env's store with tests.mockttc's TTC client installed; app_env's teardown resets the runtime."""
+    return make_app([])
 
 
 @pytest.mark.anyio
@@ -151,8 +141,6 @@ async def test_a_failing_recheck_is_logged_and_the_loop_goes_on(app_env, monkeyp
 
 @pytest.mark.anyio
 async def test_station_results_carry_id_and_aliases_beside_number(app_env):
-    from tests.mockttc import make_app
-
     async with Client(make_app([])) as c:
         near = (await c.call_tool("nearest_stops", {"lat": 43.6527, "lon": -79.3581, "radius_m": 2500, "kind": "station", "limit": 10})).data["results"]
         union = next(r for r in near if r["name"] == "Union")
