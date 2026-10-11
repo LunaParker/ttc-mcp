@@ -1,0 +1,15 @@
+.git
+.github
+.idea
+.run
+.venv
+.cache
+.mcp.json
+.pytest_cache
+__pycache__
+*.pyc
+*.sqlite
+dist
+docs
+scripts
+tests

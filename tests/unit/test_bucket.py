@@ -139,7 +139,6 @@ class FakeClient:
 
 
 def test_gcs_blobs_drive_the_client_api_for_each_operation(tmp_path):
-    pytest.importorskip("google.api_core", reason="needs the cloud extra; CI's unit job syncs without it")
     g = bucket.GcsBlobs("ttc-mcp-static-test", client=FakeClient())
     assert g.read("manifest.json") is None and g.size("manifest.json") is None and g.download("x", tmp_path / "x") is False
     g.write("manifest.json", b"{}")
