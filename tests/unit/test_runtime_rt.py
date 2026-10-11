@@ -1,3 +1,5 @@
+import datetime as dt
+
 import httpx
 import pytest
 
@@ -46,3 +48,12 @@ def test_meta_rt_merges_hits_worst_first():
     none = runtime.meta_rt(feed, [None, None], source="ntas + static stop_times")
     assert (none["cache"], none["staleness"], none["feed_timestamp"]) == (None, "unavailable", None)
     runtime.reset()
+
+
+def test_ttc_mcp_now_pins_the_clock_per_call(monkeypatch):
+    monkeypatch.setenv("TTC_MCP_NOW", "2026-10-06T08:00")
+    assert runtime.now() == dt.datetime(2026, 10, 6, 8, 0, tzinfo=runtime.TZ) and runtime.now().tzinfo is runtime.TZ
+    monkeypatch.setenv("TTC_MCP_NOW", "2026-10-06T12:00:00+00:00")
+    assert runtime.now() == dt.datetime(2026, 10, 6, 8, 0, tzinfo=runtime.TZ) and runtime.now().hour == 8 and runtime.now().tzinfo is runtime.TZ
+    monkeypatch.delenv("TTC_MCP_NOW")
+    assert abs((runtime.now() - dt.datetime.now(dt.UTC)).total_seconds()) < 5 and runtime.now().tzinfo is runtime.TZ

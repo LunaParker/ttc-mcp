@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Build the image, build the fixture store inside it, serve it, list the tools and call one. Exit 0 only when all of that works.
+# The server runs with TTC_MCP_NOW pinned inside the fixture feed's window (2026-09-06 to 2026-10-31), so it passes on any real date.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 IMAGE=${IMAGE:-ttc-mcp:smoke}
@@ -24,7 +25,7 @@ echo "image smoke: $TS"
 docker volume create "$VOL" >/dev/null
 docker run --rm -v "$VOL:/data" -v "$PWD/tests/fixtures:/fx:ro" "$IMAGE" \
   /app/.venv/bin/ttc-mcp-build --from-zip /fx/gtfs-mini.zip --surface-zip /fx/surface-mini.zip --no-checks --no-ttcapi
-docker run -d --name "$NAME" -v "$VOL:/data" -p "$PORT:8080" "$IMAGE" >/dev/null
+docker run -d --name "$NAME" -e TTC_MCP_NOW=2026-10-06T08:00 -v "$VOL:/data" -p "$PORT:8080" "$IMAGE" >/dev/null
 for _ in $(seq 1 60); do
   if curl -s -o /dev/null "http://127.0.0.1:$PORT/mcp"; then break; fi
   [[ "$(docker inspect -f '{{.State.Running}}' "$NAME")" == true ]] || { echo "server container exited before it answered"; exit 1; }
