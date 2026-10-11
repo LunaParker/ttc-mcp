@@ -140,3 +140,21 @@ def test_lookup_trip_tries_todays_feed_first_then_every_other_loaded_feed(two_fe
     assert (f.version, row["headsign"]) == ("S1000542", "West - 504A King towards Dundas West Station")
     assert store.lookup_trip("nope", today) is None
     store.close()
+
+
+def test_get_store_keeps_its_connections_over_a_check_only_manifest_save_and_reopens_on_a_feed_change(app_env, fixture_db):
+    cache = app_env.settings().cache_dir
+    store = app_env.get_store()
+    feed = store.for_date(dt.date(2026, 10, 6))
+    m = Manifest.load(cache)
+    m.checked_at, m.ckan_last_modified = "2026-10-06T03:00:00-04:00", "2026-09-30T14:17:52"
+    m.save(cache)
+    assert app_env.get_store() is store and feed.conn.execute("SELECT 1").fetchone()[0] == 1
+    st = app_env.get_store().status(dt.date(2026, 10, 6))
+    assert (st["last_check"], st["ckan_last_refreshed"]) == ("2026-10-06T03:00:00-04:00", "2026-09-30T14:17:52")
+    shutil.copy(fixture_db, cache / "s42.sqlite")
+    m.upsert(entry("S1000542", "20260930", "20261031", "s42.sqlite"))
+    m.save(cache)
+    reopened = app_env.get_store()
+    assert reopened is not store and [f.version for f in reopened.feeds] == ["S1000538", "S1000542"]
+    assert reopened.status(dt.date(2026, 10, 6))["last_check"] == "2026-10-06T03:00:00-04:00"

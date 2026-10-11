@@ -8,12 +8,12 @@ from ttc_mcp.cache import Hit
 from ttc_mcp.config import settings
 from ttc_mcp.domain import freshness
 from ttc_mcp.realtime import Realtime
-from ttc_mcp.static.manifest import NAME as MANIFEST
+from ttc_mcp.static.manifest import Manifest
 from ttc_mcp.static.schedule import TZ
 from ttc_mcp.static.store import FeedDb, StaticStore, TripLookup
 
 _store: StaticStore | None = None
-_store_key: tuple[Path, float] | None = None
+_store_key: tuple | None = None
 _realtime: Realtime | None = None
 
 
@@ -33,15 +33,17 @@ def reset() -> None:
 
 
 def get_store(cache_dir: Path | None = None) -> StaticStore:
-    """Open the store from the manifest; reopen when the manifest changes on disk."""
+    """Open the store from the manifest; reopen only when its feeds change. A check that saves nothing but checked_at
+    must not close connections a tool call in flight still holds."""
     global _store, _store_key
     cache_dir = Path(cache_dir or settings().cache_dir)
-    mpath = cache_dir / MANIFEST
-    key = (cache_dir, mpath.stat().st_mtime if mpath.exists() else 0.0)
+    m = Manifest.load(cache_dir)
+    key = (cache_dir, tuple((f.feed_version, f.path, f.etag, f.surface_etag) for f in m.feeds))
     if _store is None or _store_key != key:
         if _store:
             _store.close()
         _store, _store_key = StaticStore.from_manifest(cache_dir), key
+    _store.checked_at, _store.ckan_last_modified = m.checked_at, m.ckan_last_modified
     return _store
 
 
