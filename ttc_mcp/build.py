@@ -20,12 +20,13 @@ def main(argv=None) -> int:
     p.add_argument("--from-zip", type=Path, help="build from a local merged GTFS zip instead of CKAN")
     p.add_argument("--surface-zip", type=Path)
     p.add_argument("--no-ttcapi", action="store_true", help="skip the ttc.ca service-level fetch")
+    p.add_argument("--no-checks", action="store_true", help="skip the post-build checks (spec 8 items 3 and 9)")
     a = p.parse_args(argv)
     if a.from_zip:
-        rep = build_from_zips(a.cache, a.from_zip, a.surface_zip, ttcapi=not a.no_ttcapi)
+        rep = build_from_zips(a.cache, a.from_zip, a.surface_zip, ttcapi=not a.no_ttcapi, checks=not a.no_checks)
     else:
         with make_client(s.user_agent) as client:
-            rep = ensure_static(a.cache, client, force=a.force, surface=not a.no_surface, ttcapi=not a.no_ttcapi)
+            rep = ensure_static(a.cache, client, force=a.force, surface=not a.no_surface, ttcapi=not a.no_ttcapi, checks=not a.no_checks)
     print(json.dumps({k: v for k, v in rep.items() if k != "manifest"}))
     return 0
 
