@@ -36,7 +36,7 @@ def route_shape(conn, route: str, direction: str, *, pattern: int | None = None,
         return None
     stops, dists = json.loads(p["stops"]), json.loads(p["dists"])
     names = {r[0]: r[1] for r in conn.execute(f"SELECT stop_id, name FROM stops WHERE stop_id IN ({','.join('?' * len(stops))})", [s for _, s in stops])}
-    rows = [{"seq": seq, "number": sid, "name": names.get(sid), "dist_m": d} for (seq, sid), d in zip(stops, dists)]
+    rows = [{"seq": seq, "number": sid, "name": names.get(sid), "dist_m": d} for (seq, sid), d in zip(stops, dists, strict=True)]
     headsigns = json.loads(p["headsigns"])
     out = {"route": p["route"], "direction_id": str(p["direction_id"]), "pattern": p["rank"], "pattern_id": p["pattern_id"],
            "headsign": max(headsigns, key=headsigns.get) if headsigns else None, "shape_id": p["shape_id"], "trips_using": p["trip_count"],

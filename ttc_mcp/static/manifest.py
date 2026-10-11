@@ -28,7 +28,7 @@ class Manifest:
     ckan_last_modified: str | None = None
 
     @classmethod
-    def load(cls, cache_dir: Path) -> "Manifest":
+    def load(cls, cache_dir: Path) -> Manifest:
         p = Path(cache_dir) / NAME
         if not p.exists():
             return cls([])

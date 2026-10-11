@@ -30,8 +30,9 @@ def make_async_client(user_agent: str, timeout: float = DEFAULT_TIMEOUT) -> http
     return httpx.AsyncClient(headers={"User-Agent": user_agent}, timeout=timeout, follow_redirects=True)
 
 
-async def fetch(client: httpx.AsyncClient, url: str, validators: Validators = Validators(), *, timeout: float | None = None) -> Fetched:
+async def fetch(client: httpx.AsyncClient, url: str, validators: Validators | None = None, *, timeout: float | None = None) -> Fetched:
     """GET with optional conditional headers and a per-request timeout; 200 and 304 are answers, everything else is a FetchError."""
+    validators = validators if validators is not None else Validators()
     headers = {}
     if validators.etag:
         headers["If-None-Match"] = validators.etag

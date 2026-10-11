@@ -68,7 +68,7 @@ class Realtime:
         jobs = [self.stop_predictions(PROBE_STOP, force=True), self.vehicles(force=True), self.next_trains(PROBE_PLATFORM, force=True),
                 self.alerts(force=True), self.rt_alerts(force=True), self.detours(force=True), self.service_changes(force=True), self.trips(force=True)]
         results = await asyncio.gather(*jobs, return_exceptions=True)
-        return {s.name: (str(r) if isinstance(r, Exception) else None) for s, r in zip(SOURCES, results)}
+        return {s.name: (str(r) if isinstance(r, Exception) else None) for s, r in zip(SOURCES, results, strict=True)}
 
     def status(self) -> list[dict]:
         rows = self.cache.status(self.clock())

@@ -16,7 +16,11 @@ ttc-mcp = "ttc_mcp.server:main"
 ttc-mcp-build = "ttc_mcp.build:main"
 
 [dependency-groups]
-dev = ["pytest>=8", "anyio>=4"]
+dev = [
+    "pytest>=8",
+    "anyio>=4",
+    "ruff>=0.17.0",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -28,3 +32,15 @@ packages = ["ttc_mcp"]
 [tool.pytest.ini_options]
 testpaths = ["tests/unit"]
 addopts = "-q"
+
+[tool.ruff]
+line-length = 160
+target-version = "py313"
+
+[tool.ruff.lint]
+# The dense one-line style is deliberate (E501 off) and `l` names a leg throughout the planner (E741 off).
+select = ["F", "E", "W", "I", "B", "UP"]
+ignore = ["E501", "E741"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["ttc_mcp", "tests"]

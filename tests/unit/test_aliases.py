@@ -31,6 +31,7 @@ def test_substring_fallback_and_no_match(conn):
 
 def _mini_db():
     import sqlite3
+
     from ttc_mcp.static.schema import SCHEMA
     c = sqlite3.connect(":memory:")
     c.row_factory = sqlite3.Row

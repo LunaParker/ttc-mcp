@@ -77,9 +77,9 @@ def register(mcp: FastMCP) -> None:
                 return {"error": f"{query!r} is not a rail station or platform"}, [], ""
             station, platforms = res
             results = await asyncio.gather(*(_try(rt.next_trains(p["stop_id"])) for p in platforms))
-            entries = [trains.platform_entry(conn, p, h.parsed if h else None, err, now) for p, (h, err) in zip(platforms, results)]
+            entries = [trains.platform_entry(conn, p, h.parsed if h else None, err, now) for p, (h, err) in zip(platforms, results, strict=True)]
             snap = await advisory.snapshot(feed)
-            entries = [trains.suspended(e, closed) if (closed := snap.disruptions.platform_closed_now(p)) else e for p, e in zip(platforms, entries)]
+            entries = [trains.suspended(e, closed) if (closed := snap.disruptions.platform_closed_now(p)) else e for p, e in zip(platforms, entries, strict=True)]
             # The timetable counts as a source only where a platform actually answered from it; suspended entries carry no basis.
             source = "ntas" + (" + static stop_times" if any(e.get("basis") == "schedule" and e.get("scheduled_next_min") for e in entries) else "")
             return {"station": {"id": station["stop_id"], "name": station["name"]}, "platforms": entries,

@@ -107,7 +107,7 @@ async def test_service_status_closures_resolve_through_the_static_station_tool(s
     ss = await call(server_url, "service_status")
     assert ss["as_of"] and ss["counts"]["rsz"] >= 0 and ss["meta"]["errors"] is None
     for cl in ss["closures"][:3]:
-        for sid, name in zip(cl["stations"], cl["station_names"]):
+        for sid, name in zip(cl["stations"], cl["station_names"], strict=True):
             assert (await call(server_url, "station", query=sid))["station"]["name"] == name
         assert all(len(w) == 2 for w in cl["windows"])
 
