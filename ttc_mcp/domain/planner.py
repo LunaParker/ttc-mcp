@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 from dataclasses import dataclass
 
 from ttc_mcp.domain.arrivals import stop_row
@@ -17,6 +18,8 @@ HORIZON_MIN = 120
 SHUTTLE_RUNS = ("will operate", "running", "operating")
 RAIL = ("subway", "lrt")
 DIRECTION_WORDS = ("northbound", "southbound", "eastbound", "westbound")
+# The terminal an RSZ's direction text names ("Southbound From Finch", "Eastbound To Kennedy"); the last To/From wins.
+TERMINAL = re.compile(r"^.*\b(to|from)\s+(\S.*?)\s*$", re.IGNORECASE)
 
 
 @dataclass
@@ -233,11 +236,29 @@ def _platforms(conn, ids: list[str]) -> list[tuple[str | None, str]]:
     return [rows[sid] for sid in ids if sid in rows]
 
 
-def _rsz_touches(el: dict, platforms: list[tuple[str | None, str]]) -> bool:
-    """The zone names a traversed station and its direction word, if any, is in that platform's name (Line 1 headsigns carry none)."""
+def _norm(s: str | None) -> str:
+    return " ".join((s or "").lower().replace("-", " ").replace(".", "").split())
+
+
+def _headsign_names(headsign: str | None, name: str) -> bool:
+    """The headsign points at the terminal: the name is a prefix of the station after 'towards' ('... towards Finch Station')."""
+    h, x = _norm(headsign), _norm(name)
+    tail = h.split(" towards ")[-1]
+    return bool(x) and (tail.startswith(x) or f" {x}" in f" {h}")
+
+
+def _rsz_touches(el: dict, leg: dict, platforms: list[tuple[str | None, str]]) -> bool:
+    """The zone names a traversed station and runs the leg's way: by its terminal when the text says "To X" (the headsign names X)
+    or "From X" (it does not), else by its direction word in that platform's name; "Both ways" or no direction always does."""
     at = [name for station, name in platforms if station in el["stations"]]
-    word = next((w for w in DIRECTION_WORDS if w in (el.get("direction") or "").lower()), None)
-    return bool(at) and (word is None or any(word in name.lower() for name in at))
+    if not at:
+        return False
+    text = el.get("direction") or ""
+    if m := TERMINAL.match(text):
+        named = _headsign_names(leg["headsign"], m.group(2))
+        return named if m.group(1).lower() == "to" else not named
+    word = next((w for w in DIRECTION_WORDS if w in text.lower()), None)
+    return word is None or any(word in name.lower() for name in at)
 
 
 def _closure_extent(conn, el: dict, pattern_id: int) -> tuple[int, int] | None:
@@ -330,7 +351,7 @@ def _annotations(conn, disr: Disruptions, leg: dict, rows: list) -> list[dict]:
     traversed = [r[1] for r in rows[leg["board_pos"]:leg["alight_pos"] + 1]]
     if leg["transit"] in RAIL:
         platforms = _platforms(conn, traversed)
-        return [el for el in disr.elements if el["type"] == "rsz" and el["active_now"] and leg["route"] in el["routes"] and _rsz_touches(el, platforms)]
+        return [el for el in disr.elements if el["type"] == "rsz" and el["active_now"] and leg["route"] in el["routes"] and _rsz_touches(el, leg, platforms)]
     return [el for sid in traversed for el in disr.by_stop.get(sid, [])
             if el["type"] in ("suspension", "detour") and el["active_now"] and (not el["routes"] or leg["route"] in el["routes"])]
 

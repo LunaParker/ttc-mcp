@@ -66,6 +66,22 @@ def test_rsz_annotation_respects_the_zone_direction(conn):
     assert {d["alert_id"] for d in planner.overlay(conn, disr, north)[0]["disruptions"]} == {"90002", "90003", "90004"}
 
 
+def test_rsz_direction_matches_the_terminal_before_the_platform_name(conn):
+    """Line 1's University side signs Vaughan-bound trains Northbound: "Southbound From Finch" still means the leg away from Finch.
+    The fixture has no Spadina station (its platforms carry no parent), so the zone resolves to St George, which pattern 54 passes."""
+    rsz = next(a for a in alerts().alerts if a.id == "77535")
+    zones = [dataclasses.replace(rsz, id=i, direction=d, stop_ids=("1581", "13853"), station_names=("St George", "Spadina"),
+                                 stop_start="St George", stop_end="Spadina") for i, d in (("90011", "Southbound From Finch"), ("90012", "Northbound To Finch"))]
+    disr = Disruptions.build(conn, AlertList(None, None, zones), None, [], NOW_DAY)
+    assert [el["stations"] for el in disr.elements] == [["43269"], ["43269"]]
+    south = planner.search(conn, planner.resolve_endpoint(conn, "Finch"), planner.resolve_endpoint(conn, "Dupont"), now=NOW_DAY, max_transfers=0)
+    ride = next(l for l in south[0]["legs"] if l["mode"] == "ride")
+    assert (ride["pattern_id"], ride["headsign"]) == (54, "Yonge-University Line towards Vaughan Metropolitan Centre Station")
+    assert {d["alert_id"] for d in planner.overlay(conn, disr, south)[0]["disruptions"]} == {"90011"}
+    north = planner.search(conn, planner.resolve_endpoint(conn, "Dupont"), planner.resolve_endpoint(conn, "Finch"), now=NOW_DAY, max_transfers=0)
+    assert {d["alert_id"] for d in planner.overlay(conn, disr, north)[0]["disruptions"]} == {"90012"}
+
+
 def test_day_closure_not_active_leaves_the_ride_whole_but_notes_the_rsz(conn):
     over = planner.overlay(conn, build(conn, NOW_DAY), finch_union(conn, NOW_DAY))
     assert [l["mode"] for l in over[0]["legs"] if l["mode"] != "walk"] == ["ride"]
