@@ -69,8 +69,8 @@ def test_future_elevator_outage_is_upcoming_not_out_of_service(conn):
     assert not [u for u in r["units"] if u["code"] == "1Y1L"]
     period = [start.isoformat(timespec="minutes"), end.isoformat(timespec="minutes")]
     assert r["upcoming"] == [{"alert_id": "77513", "kind": "elevator", "code": "1Y1L", "period": period, "text": future.header}]
-    # St George's summary is partially accessible in the fixture (two unflagged platforms), which decides before its uncoded nodes.
-    assert r["step_free"] == {"verdict": "no", "basis": "platforms"}
+    # St George has two platforms flagged 0 in the fixture: unknown, never accessible (spec 6.2), so no confident no.
+    assert r["step_free"] == {"verdict": "unknown", "basis": "platforms unknown"}
 
 
 def test_a_digit_query_is_a_station_id_then_a_stop_before_any_name(conn, fixture_db, tmp_path):
@@ -113,11 +113,18 @@ def test_step_free_yes_needs_an_accessible_summary_and_no_from_an_alert_notes_a_
     flagged.execute("UPDATE stops SET wheelchair=0 WHERE parent_station='14587' AND location_type=0")
     r = acc.for_station(flagged, acc.resolve(flagged, "Queen"), disruptions(flagged, quiet))
     assert (r["summary"], r["step_free"]) == ("unknown", {"verdict": "unknown", "basis": "platforms unknown"})
+    # A 0 flag beside a 1 reads partially accessible, but 0 means unknown: no platform is flagged 2, so no confident no.
+    flagged.execute("UPDATE stops SET wheelchair=1 WHERE stop_id='13811'")
+    r = acc.for_station(flagged, acc.resolve(flagged, "Queen"), disruptions(flagged, quiet))
+    assert (r["summary"], r["step_free"]) == ("partially accessible", {"verdict": "unknown", "basis": "platforms unknown"})
+    flagged.execute("UPDATE stops SET wheelchair=2 WHERE stop_id='13812'")
+    r = acc.for_station(flagged, acc.resolve(flagged, "Queen"), disruptions(flagged, quiet))
+    assert (r["summary"], r["step_free"]) == ("partially accessible", {"verdict": "no", "basis": "platforms"})
     flagged.close()
     out = dataclasses.replace(next(a for a in alerts().alerts if a.id == "77513"), stop_ids=("14587",), unit_code="9Y1L")
     r = acc.for_station(conn, acc.resolve(conn, "Queen"), disruptions(conn, AlertList(None, None, [out])))
     assert r["step_free"] == {"verdict": "no", "basis": "alerts", "basis_note": "a step-free path may remain through another elevator"}
     st_george = acc.for_station(conn, acc.resolve(conn, "St George"), disruptions(conn))
     assert st_george["summary"] == "partially accessible" and st_george["step_free"]["basis"] == "alerts"
-    assert acc.for_station(conn, acc.resolve(conn, "St George"), disruptions(conn, quiet))["step_free"] == {"verdict": "no", "basis": "platforms"}
+    assert acc.for_station(conn, acc.resolve(conn, "St George"), disruptions(conn, quiet))["step_free"] == {"verdict": "unknown", "basis": "platforms unknown"}
     assert acc.for_station(conn, acc.resolve(conn, "King"), disruptions(conn, quiet))["step_free"] == {"verdict": "no", "basis": "platforms"}

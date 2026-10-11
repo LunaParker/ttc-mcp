@@ -19,14 +19,15 @@ def for_stop(conn, row) -> dict:
     return {"stop": {"number": row["stop_id"], "name": row["name"]}, "wheelchair": row["wheelchair"], "boarding": BOARDING.get(row["wheelchair"], "unknown")}
 
 
-def step_free(summary: str, elevators: list[dict], uncoded: int) -> dict:
-    """Spec 6.2 verdict: yes needs accessible platforms, every elevator node coded and none out. An outage says no (another
-    elevator may keep a path); otherwise platforms flagged short of accessible decide before the nodes do."""
+def step_free(platforms: list[dict], elevators: list[dict], uncoded: int) -> dict:
+    """Spec 6.2 verdict: an outage says no (another elevator may keep a path); a platform flagged 2 says no; a 0 flag means
+    unknown, never accessible; with every platform flagged 1, yes needs every elevator node coded and none out."""
     if any(r["status"] == "out_of_service" for r in elevators):
         return {"verdict": "no", "basis": "alerts", "basis_note": "a step-free path may remain through another elevator"}
-    if summary in ("partially accessible", "not accessible"):
+    flags = {p["wheelchair"] for p in platforms}
+    if 2 in flags:
         return {"verdict": "no", "basis": "platforms"}
-    if summary == "unknown":
+    if flags != {1}:
         return {"verdict": "unknown", "basis": "platforms unknown"}
     if not elevators and uncoded == 0:
         return {"verdict": "unknown", "basis": "no elevator nodes"}
@@ -64,7 +65,7 @@ def for_station(conn, station, disr: Disruptions) -> dict:
                                      "status": "in_service", "alert_id": None, "text": None})
         rec.update(status="out_of_service", alert_id=el["alert_id"], text=el["text"])
     rows = sorted(units.values(), key=lambda r: (r["kind"], r["code"]))
-    verdict = step_free(detail["wheelchair_summary"], [r for r in rows if r["kind"] == "elevator"], uncoded["elevator"])
+    verdict = step_free(detail["platforms"], [r for r in rows if r["kind"] == "elevator"], uncoded["elevator"])
     return {"station": {"id": sid, "name": station["name"]}, "summary": detail["wheelchair_summary"],
             "platforms": [{"platform": p["number"], "name": p["name"], "wheelchair": p["wheelchair"]} for p in detail["platforms"]],
             "entrances": [{"id": e["number"], "name": e["name"], "lat": e["lat"], "lon": e["lon"], "wheelchair": e["wheelchair"]} for e in detail["entrances"]],
