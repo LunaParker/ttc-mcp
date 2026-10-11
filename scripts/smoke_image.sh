@@ -10,12 +10,12 @@ trap cleanup EXIT
 
 docker build -t "$IMAGE" .
 # The store's per-thread connections and FastMCP's threadpool rely on a serialized sqlite3 (threadsafety 3).
-TS=$(docker run --rm "$IMAGE" uv run --no-dev python -c 'import sqlite3; print("sqlite3.threadsafety", sqlite3.threadsafety, sqlite3.sqlite_version)')
+TS=$(docker run --rm "$IMAGE" /app/.venv/bin/python -c 'import sqlite3; print("sqlite3.threadsafety", sqlite3.threadsafety, sqlite3.sqlite_version)')
 echo "image smoke: $TS"
 [[ "$TS" == "sqlite3.threadsafety 3 "* ]] || { echo "sqlite3 in the image is not serialized"; exit 1; }
 docker volume create "$VOL" >/dev/null
 docker run --rm -v "$VOL:/data" -v "$PWD/tests/fixtures:/fx:ro" "$IMAGE" \
-  uv run --no-dev ttc-mcp-build --from-zip /fx/gtfs-mini.zip --surface-zip /fx/surface-mini.zip --no-checks
+  /app/.venv/bin/ttc-mcp-build --from-zip /fx/gtfs-mini.zip --surface-zip /fx/surface-mini.zip --no-checks --no-ttcapi
 docker run -d --name ttc-mcp-smoke -v "$VOL:/data" -p "$PORT:8080" "$IMAGE" >/dev/null
 for _ in $(seq 1 60); do
   if curl -s -o /dev/null "http://127.0.0.1:$PORT/mcp"; then break; fi
@@ -31,5 +31,5 @@ want = {"find_stops", "nearest_stops", "stop", "station", "routes", "route_stops
 missing = want - tools
 assert not missing, f"missing tools: {missing}"
 print(f"image smoke: {len(tools)} tools")'
-docker logs ttc-mcp-smoke 2>&1 | grep -q "Traceback" && { echo "traceback in server log"; docker logs ttc-mcp-smoke; exit 1; }
+docker logs ttc-mcp-smoke 2>&1 | grep "Traceback" >/dev/null && { echo "traceback in server log"; docker logs ttc-mcp-smoke; exit 1; }
 echo "image smoke: PASS"
