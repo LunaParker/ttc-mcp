@@ -34,12 +34,15 @@ class Gate:
 
 
 def settings() -> Settings:
+    pull_s = int(os.environ.get("TTC_MCP_PULL_S") or 6 * 3600)
+    if pull_s < 60:
+        raise RuntimeError(f"TTC_MCP_PULL_S is {pull_s}; the bucket pull interval must be at least 60 seconds")
     return Settings(
         cache_dir=Path(os.environ.get("TTC_MCP_CACHE") or Path.home() / ".cache" / "ttc-mcp").expanduser(),
         user_agent=os.environ.get("TTC_MCP_UA") or DEFAULT_UA,
         skip_refresh=os.environ.get("TTC_MCP_SKIP_REFRESH", "") in ("1", "true", "yes"),
         static_bucket=os.environ.get("TTC_MCP_STATIC_BUCKET") or None,
-        pull_s=int(os.environ.get("TTC_MCP_PULL_S") or 6 * 3600),
+        pull_s=pull_s,
     )
 
 

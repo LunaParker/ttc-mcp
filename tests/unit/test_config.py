@@ -64,3 +64,12 @@ def test_settings_read_the_bucket_and_the_pull_interval(monkeypatch):
     monkeypatch.setenv("TTC_MCP_STATIC_BUCKET", "ttc-mcp-static-test")
     monkeypatch.setenv("TTC_MCP_PULL_S", "60")
     assert (config.settings().static_bucket, config.settings().pull_s) == ("ttc-mcp-static-test", 60)
+
+
+def test_settings_refuse_a_pull_interval_under_a_minute(monkeypatch):
+    for raw in ("0", "-5"):
+        monkeypatch.setenv("TTC_MCP_PULL_S", raw)
+        with pytest.raises(RuntimeError, match="TTC_MCP_PULL_S"):
+            config.settings()
+    monkeypatch.setenv("TTC_MCP_PULL_S", "60")
+    assert config.settings().pull_s == 60
