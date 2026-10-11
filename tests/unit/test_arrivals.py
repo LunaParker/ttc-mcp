@@ -60,7 +60,8 @@ def test_rail_rows_expand_minutes_with_the_platform_direction(conn):
     rows = arrivals.rail_rows(conn, "13863", [NextTrains("13863", "1", "1", "Northbound to Finch", [0, 4, 5])])
     assert [r["eta_min"] for r in rows] == [0, 4, 5]
     assert rows[0] == {"route": "1", "direction_id": "1", "headsign": "Yonge-University Line towards Finch Station",
-                       "direction_text": "Northbound to Finch", "eta_min": 0, "vehicle_id": None, "basis": "realtime", "scheduled_only": False}
+                       "direction_text": "Northbound to Finch", "eta_min": 0, "vehicle_id": None, "basis": "realtime", "scheduled_only": False,
+                       "crowding": {"label": "No info", "gtfs": None, "confidence": "none"}}
     assert arrivals.rail_rows(conn, "13863", [NextTrains("13863", "1", "1", "Northbound to Finch", [3])], route="2") == []
 
 

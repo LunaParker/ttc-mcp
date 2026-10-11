@@ -53,6 +53,7 @@ async def test_arrivals_on_a_rail_platform_use_ntas_and_reject_stations(app_env)
     async with Client(make_app([])) as c:
         r = (await c.call_tool("arrivals", {"stop": "13863"})).data
         assert [a["eta_min"] for a in r["arrivals"]] == [0, 4, 5] and r["arrivals"][0]["route"] == "1" and r["meta"]["source"] == "ntas"
+        assert all(a["crowding"] == {"label": "No info", "gtfs": None, "confidence": "none"} for a in r["arrivals"])
         assert "error" in (await c.call_tool("arrivals", {"stop": "14572"})).data
         assert "error" in (await c.call_tool("arrivals", {"stop": "0"})).data
 

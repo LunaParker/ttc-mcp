@@ -56,13 +56,14 @@ def surface_rows(conn, stop_id: str, preds: StopPredictions, vehicles: VehicleFe
 
 
 def rail_rows(conn, stop_id: str, trains: list[NextTrains], *, route: str | None = None) -> list[dict]:
+    """NTAS publishes no occupancy, so every rail row carries crowding No info (spec 6.8)."""
     served, rows = served_at(conn, stop_id), []
     for t in trains:
         if route and t.line != route:
             continue
         d, h = (served.get(t.line) or [(None, t.direction_text)])[0]
         rows.extend({"route": t.line, "direction_id": d, "headsign": h, "direction_text": t.direction_text, "eta_min": m,
-                     "vehicle_id": None, "basis": "realtime", "scheduled_only": False} for m in t.next_min)
+                     "vehicle_id": None, "basis": "realtime", "scheduled_only": False, "crowding": crowding(None)} for m in t.next_min)
     rows.sort(key=lambda r: r["eta_min"])
     return rows
 
