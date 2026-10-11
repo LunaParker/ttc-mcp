@@ -145,3 +145,17 @@ async def test_a_failing_recheck_is_logged_and_the_loop_goes_on(app_env, monkeyp
         await asyncio.sleep(0.1)
         assert "error" not in (await c.call_tool("routes", {"overnight": True})).data
     assert len(calls) >= 2 and "[ttc-mcp] static recheck failed: ckan down" in capsys.readouterr().err
+
+
+@pytest.mark.anyio
+async def test_station_results_carry_id_and_aliases_beside_number(app_env):
+    from tests.mockttc import make_app
+
+    async with Client(make_app([])) as c:
+        near = (await c.call_tool("nearest_stops", {"lat": 43.6527, "lon": -79.3581, "radius_m": 2500, "kind": "station", "limit": 10})).data["results"]
+        union = next(r for r in near if r["name"] == "Union")
+        assert (union["id"], union["number"], union["aliases"], union["kind"], union["lines"]) == ("15772", "15772", ["union"], "station", ["1"])
+        found = (await c.call_tool("find_stops", {"query": "Union"})).data["stops"]
+        st = next(s for s in found if s["kind"] == "station")
+        assert (st["id"], st["number"], st["aliases"]) == ("15772", "15772", ["union"])
+        assert all(not {"id", "aliases"} & s.keys() for s in found if s["kind"] != "station") and len(found) > 1
