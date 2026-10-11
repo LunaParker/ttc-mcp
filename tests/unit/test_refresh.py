@@ -109,3 +109,25 @@ def test_every_run_records_the_check_time_and_ckans_last_modified(tmp_path):
     assert [f.feed_version for f in m2.feeds] == ["S1000538"]
     rep = build_from_zips(tmp_path, MERGED, SURFACE, today=dt.date(2026, 10, 5))
     assert rep["changed"] and Manifest.load(tmp_path).checked_at == m2.checked_at
+
+
+def test_a_build_runs_the_static_checks_and_the_live_ones_when_alerts_answer(tmp_path):
+    """Spec 8 items 3 and 9: every rebuild logs the suffix, alert-station and unit-code checks; an unchanged store runs none."""
+    lines = []
+    base = client()
+    handler = base._transport.handler  # noqa: SLF001
+
+    def routed(req):
+        if req.url.host == "alerts.ttc.ca":
+            return httpx.Response(200, content=(FIX / "advisories" / "alerts.json").read_bytes())
+        return handler(req)
+    live = httpx.Client(transport=httpx.MockTransport(routed), headers={"User-Agent": "t/1"})
+    rep = ensure_static(tmp_path, live, today=dt.date(2026, 10, 5), ttcapi=False, log=lines.append)
+    assert rep["checks"]["suffixes"] == [] and [u["value"] for u in rep["checks"]["alert_stations"]] == ["4917"] and rep["checks"]["unit_codes"]["codes"] == 2
+    assert sum(l.startswith("[check]") for l in lines) == 3
+    assert "checks" not in ensure_static(tmp_path, live, today=dt.date(2026, 10, 5), ttcapi=False, log=lines.append)
+    lines.clear()
+    rep = ensure_static(tmp_path, client(etag_merged='"m2"'), today=dt.date(2026, 10, 5), ttcapi=False, log=lines.append)
+    assert rep["checks"]["unit_codes"] is None and any("alerts.ttc.ca unavailable" in l for l in lines)
+    assert build_from_zips(tmp_path, MERGED, SURFACE, today=dt.date(2026, 10, 5))["checks"]["alert_stations"] is None
+    assert "checks" not in ensure_static(tmp_path, client(etag_merged='"m2"'), today=dt.date(2026, 10, 5), ttcapi=False, checks=False, force=True)

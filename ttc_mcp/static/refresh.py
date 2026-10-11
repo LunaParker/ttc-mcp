@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -8,8 +9,11 @@ from pathlib import Path
 import httpx
 
 from ttc_mcp.adapters import ckan
+from ttc_mcp.adapters.ttc_alerts import AlertList, parse_alerts
 from ttc_mcp.config import settings
+from ttc_mcp.sources import ALERTS
 from ttc_mcp.static.build import build_sqlite
+from ttc_mcp.static.checks import run_checks
 from ttc_mcp.static.manifest import FeedEntry, Manifest
 from ttc_mcp.static.schedule import TZ
 from ttc_mcp.static.schema import SCHEMA_VERSION
@@ -40,6 +44,27 @@ def _levels_for(merged_zip: Path, user_agent: str, log) -> dict[str, dict]:
     return levels
 
 
+def _alerts_for_checks(client: httpx.Client, log) -> AlertList | None:
+    """One advisory fetch for the post-build checks; a failure skips the live checks and never fails the build."""
+    try:
+        r = client.get(ALERTS.url, timeout=ALERTS.timeout)
+        r.raise_for_status()
+        return parse_alerts(r.content, {}).value
+    except Exception as e:
+        _log(log, f"[check] alerts.ttc.ca unavailable: {e}")
+        return None
+
+
+def _checked(cache_dir: Path, rep: dict, alerts: AlertList | None, log) -> dict:
+    conn = sqlite3.connect(f"file:{cache_dir / f'static-{rep['feed_version']}.sqlite'}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        rep["checks"] = run_checks(conn, alerts, log=log)
+    finally:
+        conn.close()
+    return rep
+
+
 def _register(cache_dir: Path, manifest: Manifest, merged_zip: Path, surface_zip: Path | None, *,
               url: str, etag: str | None, surface_etag: str | None, today: dt.date, log, service_levels: dict | None = None) -> dict:
     tmp_out = cache_dir / "static-building.sqlite"
@@ -56,7 +81,7 @@ def _register(cache_dir: Path, manifest: Manifest, merged_zip: Path, surface_zip
 
 
 def ensure_static(cache_dir: Path, client: httpx.Client, *, today: dt.date | None = None, force: bool = False,
-                  surface: bool = True, log=None, ttcapi: bool = True) -> dict:
+                  surface: bool = True, log=None, ttcapi: bool = True, checks: bool = True) -> dict:
     cache_dir = Path(cache_dir)
     today = today or dt.date.today()
     manifest = Manifest.load(cache_dir)
@@ -88,13 +113,14 @@ def ensure_static(cache_dir: Path, client: httpx.Client, *, today: dt.date | Non
     rep = _register(cache_dir, manifest, merged_zip, surface_zip, url=merged.url, etag=merged_etag,
                      surface_etag=surf_etag, today=today, log=log, service_levels=levels)
     rep["reason"] = reason or rep["reason"]
-    return rep
+    return _checked(cache_dir, rep, _alerts_for_checks(client, log), log) if checks else rep
 
 
 def build_from_zips(cache_dir: Path, merged_zip: Path, surface_zip: Path | None, *, today: dt.date | None = None,
-                    log=None, ttcapi: bool = False) -> dict:
+                    log=None, ttcapi: bool = False, checks: bool = True) -> dict:
     cache_dir = Path(cache_dir)
     levels = _levels_for(Path(merged_zip), settings().user_agent, log) if ttcapi else None
-    return _register(cache_dir, Manifest.load(cache_dir), Path(merged_zip), Path(surface_zip) if surface_zip else None,
-                     url=f"file://{Path(merged_zip).resolve()}", etag=None, surface_etag=None,
-                     today=today or dt.date.today(), log=log, service_levels=levels)
+    rep = _register(cache_dir, Manifest.load(cache_dir), Path(merged_zip), Path(surface_zip) if surface_zip else None,
+                    url=f"file://{Path(merged_zip).resolve()}", etag=None, surface_etag=None,
+                    today=today or dt.date.today(), log=log, service_levels=levels)
+    return _checked(cache_dir, rep, None, log) if checks else rep
