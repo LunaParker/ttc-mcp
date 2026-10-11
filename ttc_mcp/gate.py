@@ -35,6 +35,8 @@ def client_storage(gate: Gate):
     one URL shared by every gateway) and Fernet-encrypted; None means FastMCP's in-memory default."""
     if not gate.firestore_project:
         return None
+    if not gate.storage_key:
+        raise RuntimeError("GOOGLE_CLOUD_PROJECT is set but STORAGE_ENCRYPTION_KEY is not; OAuth state in Firestore must be encrypted")
     from cryptography.fernet import Fernet
     from key_value.aio.stores.firestore import FirestoreStore, FirestoreV1CollectionSanitizationStrategy, FirestoreV1KeySanitizationStrategy
     from key_value.aio.wrappers.encryption import FernetEncryptionWrapper

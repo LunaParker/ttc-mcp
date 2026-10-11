@@ -62,8 +62,8 @@ def create_app(*, recheck: bool = False, gate: Gate | None = None) -> FastMCP:
     """recheck (stdio with refresh on) keeps checking CKAN while the server runs; HTTP leaves that to the Job (spec 6.9).
     gate turns on the Google OAuth gate with its email allowlist; stdio never passes one."""
     mcp = FastMCP("ttc-mcp", instructions=INSTRUCTIONS, version=__version__, lifespan=_recheck_lifespan if recheck else None,
-                  auth=build_auth(gate) if gate else None)
-    if gate:
+                  auth=build_auth(gate) if gate is not None else None)
+    if gate is not None:
         mcp.add_middleware(EmailAllowlist(gate.allowed_emails))
     static_tools.register(mcp)
     realtime_tools.register(mcp)
@@ -80,12 +80,12 @@ def main(argv=None) -> int:
     p.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8080")))
     p.add_argument("--no-refresh", action="store_true", help="do not check CKAN for a new feed on startup")
     a = p.parse_args(argv)
+    gate = gate_settings() if a.transport == "http" else None
     refresh = not (a.no_refresh or s.skip_refresh)
     if refresh:
         with make_client(s.user_agent) as client:
             rep = ensure_static(s.cache_dir, client)
             print(f"[ttc-mcp] static store: {rep['reason']} ({rep.get('feed_version')})", file=sys.stderr)
-    gate = gate_settings() if a.transport == "http" else None
     app = create_app(recheck=refresh and a.transport == "stdio", gate=gate)
     if a.transport == "stdio":
         app.run(transport="stdio", show_banner=False)
