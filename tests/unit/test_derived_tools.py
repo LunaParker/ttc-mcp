@@ -236,3 +236,46 @@ async def test_connections_plan_off_the_event_loop(app_env, monkeypatch):
     async with Client(make_app([])) as c:
         assert (await c.call_tool("connections", {"origin": CHERRY_FRONT, "destination": "Union"})).data["options"]
     assert seen and all(t != threading.get_ident() for t in seen)
+
+
+@pytest.mark.anyio
+async def test_the_plan_worker_never_borrows_the_loop_threads_connection(app_env, monkeypatch):
+    """SQLite in multi-thread mode forbids one connection in two threads at once: the planner's worker, and the snapshot's
+    Disruptions it reads there, must query through the worker's own connection."""
+    import threading
+
+    from ttc_mcp.domain import planner
+    used, real = [], {n: getattr(planner, n) for n in ("search", "pattern_meta", "overlay")}
+
+    def spy(name):
+        def f(conn, *a, **k):
+            used.append((name, threading.get_ident(), conn, a[0].conn if name == "overlay" else conn))
+            return real[name](conn, *a, **k)
+        return f
+    for n in real:
+        monkeypatch.setattr(planner, n, spy(n))
+    async with Client(make_app([])) as c:
+        for extra in ({}, {"depart_at": "2026-10-06T08:00"}):
+            assert (await c.call_tool("connections", {"origin": CHERRY_FRONT, "destination": "Union", **extra})).data["options"]
+        loop_conn = app_env.feed_for().conn
+    worker = [u for u in used if u[1] != threading.get_ident()]
+    assert {u[0] for u in worker} == {"search", "pattern_meta", "overlay"}
+    assert all(conn is not loop_conn and disr_conn is conn for _, _, conn, disr_conn in worker)
+
+
+def test_disruptions_query_through_the_calling_threads_connection(fixture_db, conn):
+    import threading
+
+    from ttc_mcp.adapters.ttc_alerts import AlertList
+    from ttc_mcp.domain.disruptions import Disruptions
+    from ttc_mcp.static.store import FeedDb
+
+    feed = FeedDb("S1000538", dt.date(2026, 9, 1), dt.date(2026, 10, 31), fixture_db)
+    d = Disruptions.build(lambda: feed.conn, AlertList(None, None, []), None, [], NIGHT)
+    seen = {}
+    t = threading.Thread(target=lambda: seen.update(disr=d.conn, own=feed.conn))
+    t.start()
+    t.join()
+    assert d.conn is feed.conn and seen["disr"] is seen["own"] and seen["disr"] is not d.conn
+    assert Disruptions.build(conn, AlertList(None, None, []), None, [], NIGHT).conn is conn
+    feed.close()
