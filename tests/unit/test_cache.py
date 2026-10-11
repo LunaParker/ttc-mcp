@@ -148,3 +148,63 @@ async def test_status_reports_entries_including_failed_ones():
     assert (bad["last_fetch"], bad["cache"], bad["verdict"], bad["last_error"]) == (None, None, "unavailable", "down")
     clock.t += 30
     assert cache.status()[0]["cache"] == "expired"
+
+
+@pytest.mark.anyio
+async def test_a_failure_holds_the_entry_serving_the_stale_body_until_the_hold_ends():
+    clock = Clock()
+    cache = Cache(clock)
+    fetch = fetcher([b"good", RuntimeError("boom"), b"again"])
+    await cache.get(SRC, "k", fetch, parse)
+    clock.t += 31
+    failed_at = clock()
+    first = await cache.get(SRC, "k", fetch, parse)
+    assert (first.cache, first.error, len(fetch.calls)) == ("stale_fallback", "boom", 2)
+    e = cache.entries["k"]
+    assert (e.failures, e.retry_after) == (1, failed_at + 60)   # min(ttl * 2, max_stale / 4)
+    for _ in range(3):
+        clock.t += 1
+        held = await cache.get(SRC, "k", fetch, parse)
+        assert (held.cache, held.parsed, held.error) == ("stale_fallback", "good", f"boom; retry in {round(e.retry_after - clock())} s")
+    assert len(fetch.calls) == 2
+    clock.t = e.retry_after
+    h = await cache.get(SRC, "k", fetch, parse)
+    assert (h.cache, h.parsed, len(fetch.calls), e.failures, e.retry_after) == ("live", "again", 3, 0, None)
+
+
+@pytest.mark.anyio
+async def test_calls_inside_the_hold_make_no_request_and_the_hold_grows_to_a_quarter_of_max_stale():
+    clock = Clock()
+    cache, fetch = Cache(clock), fetcher([RuntimeError("down")])
+    with pytest.raises(SourceUnavailable, match="down"):
+        await cache.get(SRC, "k", fetch, parse)
+    for _ in range(3):
+        clock.t += 5
+        with pytest.raises(SourceUnavailable, match="down; retry in [45][0-9] s"):
+            await cache.get(SRC, "k", fetch, parse)
+    assert len(fetch.calls) == 1
+    e = cache.entries["k"]
+    for expected in (120, 150, 150):   # doubling, then the cap of max_stale / 4
+        clock.t = e.retry_after
+        with pytest.raises(SourceUnavailable):
+            await cache.get(SRC, "k", fetch, parse)
+        assert e.retry_after == clock() + expected
+    assert (e.failures, len(fetch.calls)) == (4, 4)
+
+
+@pytest.mark.anyio
+async def test_force_bypasses_the_hold_and_403s_are_counted():
+    from ttc_mcp.adapters.http import FetchError
+
+    clock = Clock()
+    cache, fetch = Cache(clock), fetcher([FetchError("HTTP 403", 403), FetchError("HTTP 429", 429), RuntimeError("x"), b"ok"])
+    for _ in range(3):
+        with pytest.raises(SourceUnavailable):
+            await cache.get(SRC, "k", fetch, parse, force=True)
+    e = cache.entries["k"]
+    assert (e.failures, e.status_counts, len(fetch.calls)) == (3, {"403": 1, "429": 1}, 3)
+    row = cache.status()[0]
+    assert (row["failures"], row["status_counts"], row["retry_after"]) == (3, {"403": 1, "429": 1}, e.retry_after)
+    h = await cache.get(SRC, "k", fetch, parse, force=True)
+    assert (h.cache, h.parsed, e.failures, e.retry_after, cache.status()[0]["retry_after"]) == ("live", "ok", 0, None, None)
+    assert e.status_counts == {"403": 1, "429": 1}

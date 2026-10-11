@@ -3,7 +3,7 @@ import pytest
 
 from ttc_mcp.adapters import http
 from ttc_mcp.adapters.http import FetchError, Validators
-from ttc_mcp.sources import NTAS, SOURCES, STOP_XML, VEHICLES
+from ttc_mcp.sources import ALERTS, DETOURS, NTAS, RT_ALERTS, SERVICE_CHANGES, SOURCES, STOP_XML, TRIPS, VEHICLES
 
 
 def test_sources_carry_spec_ttls_and_thresholds():
@@ -13,6 +13,7 @@ def test_sources_carry_spec_ttls_and_thresholds():
     assert [s.key for s in SOURCES][:3] == ["stop_xml", "vehicles", "ntas"]
     assert STOP_XML.url.format(stop="15461") == "https://bustime.ttc.ca/bustime/map/getStopPredictions.jsp?stop=15461&route=all"
     assert NTAS.url.format(platform="13863") == "https://ntas.ttc.ca/api/ntas/get-next-train-time/13863"
+    assert {s.timeout for s in (STOP_XML, VEHICLES, NTAS, TRIPS)} == {10.0} and {s.timeout for s in (ALERTS, RT_ALERTS, DETOURS, SERVICE_CHANGES)} == {5.0}
 
 
 @pytest.mark.anyio
@@ -63,3 +64,26 @@ async def test_make_async_client_sets_user_agent_and_timeout():
         assert c.headers["user-agent"] == "ttc-mcp/0.1.0" and c.timeout.read == 10.0
     finally:
         await c.aclose()
+
+
+@pytest.mark.anyio
+async def test_fetch_applies_a_per_request_timeout_and_keeps_the_clients_default_otherwise():
+    seen = {}
+
+    def handler(req):
+        seen.update(req.extensions.get("timeout") or {})
+        return httpx.Response(200)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=10.0) as c:
+        await http.fetch(c, "https://example.test/a", timeout=5.0)
+        assert seen == {"connect": 5.0, "read": 5.0, "write": 5.0, "pool": 5.0}
+        await http.fetch(c, "https://example.test/a")
+        assert seen["read"] == 10.0
+
+
+@pytest.mark.anyio
+async def test_fetch_errors_carry_the_http_status():
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(429))) as c:
+        with pytest.raises(FetchError) as info:
+            await http.fetch(c, "https://example.test/x")
+    assert info.value.status == 429
