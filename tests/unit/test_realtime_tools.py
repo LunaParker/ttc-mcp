@@ -91,6 +91,8 @@ async def test_feed_status_reports_static_and_sources_and_probes(app_env):
     async with Client(make_app(calls)) as c:
         r = (await c.call_tool("feed_status", {})).data
         assert r["static"]["feed_version"] == "S1000538" and r["static"]["verdict"] == "fresh" and r["static"]["end"] == "20261031"
+        assert (r["static"]["last_check"], r["static"]["ckan_last_refreshed"], r["static"]["newer_package_seen"]) == (None, None, False)
+        assert "newer_seen" not in r["static"]
         assert {s["name"]: s["verdict"] for s in r["sources"]} == {n: "unused" for n in NAMES}
         assert r["ntas_coverage"] == {} and "probed" not in r
         p = (await c.call_tool("feed_status", {"probe": True})).data

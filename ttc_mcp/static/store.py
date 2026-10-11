@@ -59,13 +59,14 @@ class FeedDb:
 
 
 class StaticStore:
-    def __init__(self, feeds: list[FeedDb]):
+    def __init__(self, feeds: list[FeedDb], *, checked_at: str | None = None, ckan_last_modified: str | None = None):
         self.feeds = sorted(feeds, key=lambda f: (f.start, f.version))
+        self.checked_at, self.ckan_last_modified = checked_at, ckan_last_modified
 
     @classmethod
     def from_manifest(cls, cache_dir: Path) -> "StaticStore":
-        feeds = []
-        for e in Manifest.load(cache_dir).feeds:
+        feeds, manifest = [], Manifest.load(cache_dir)
+        for e in manifest.feeds:
             p = Path(cache_dir) / e.path
             if not p.exists():
                 continue
@@ -78,7 +79,7 @@ class StaticStore:
             conn = sqlite3.connect(f"file:{p}?mode=ro&immutable=1", uri=True, check_same_thread=False)
             conn.row_factory = sqlite3.Row
             feeds.append(FeedDb(e.feed_version, _d(e.start), _d(e.end), p, conn))
-        return cls(feeds)
+        return cls(feeds, checked_at=manifest.checked_at, ckan_last_modified=manifest.ckan_last_modified)
 
     def for_date(self, d: dt.date) -> FeedDb | None:
         covering = [f for f in self.feeds if f.covers(d)]
@@ -111,7 +112,8 @@ class StaticStore:
             verdict = "expiring" if days <= EXPIRING_DAYS and not newer else "fresh"
         return {"feeds": [{"version": f.version, "start": f.start.isoformat(), "end": f.end.isoformat(),
                            "path": str(f.path), "bytes": f.path.stat().st_size} for f in self.feeds],
-                "active": active.version if active else None, "verdict": verdict, "days_remaining": days, "newer_seen": newer}
+                "active": active.version if active else None, "verdict": verdict, "days_remaining": days, "newer_package_seen": newer,
+                "last_check": self.checked_at, "ckan_last_refreshed": self.ckan_last_modified}
 
     def close(self) -> None:
         for f in self.feeds:

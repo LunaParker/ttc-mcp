@@ -111,6 +111,7 @@ def register(mcp: FastMCP) -> None:
         info = dict(active.conn.execute("SELECT * FROM feed_info").fetchone()) if active else {}
         static = {"feed_version": st["active"], "start": info.get("feed_start_date"), "end": info.get("feed_end_date"),
                   "etag": info.get("source_etag"), "built_at": info.get("built_at"), "days_remaining": st["days_remaining"],
-                  "newer_seen": st["newer_seen"], "verdict": st["verdict"], "feeds": st["feeds"]}
+                  "newer_package_seen": st["newer_package_seen"], "last_check": st["last_check"],
+                  "ckan_last_refreshed": st["ckan_last_refreshed"], "verdict": st["verdict"], "feeds": st["feeds"]}
         return {"static": static, "sources": rt.status(), "ntas_coverage": rt.ntas_coverage(),
                 **({"probed": probed} if probed is not None else {}), "meta": runtime.meta(active)}

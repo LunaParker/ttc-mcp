@@ -61,7 +61,20 @@ def test_status_is_fresh_near_the_end_when_a_newer_feed_is_loaded(tmp_path, fixt
                    entry("S1000550", "20261101", "20261219", "s50.sqlite"))
     store = StaticStore.from_manifest(cache)
     st = store.status(dt.date(2026, 10, 30))
-    assert st["verdict"] == "fresh" and st["newer_seen"] is True and st["active"] == "S1000542"
+    assert st["verdict"] == "fresh" and st["newer_package_seen"] is True and st["active"] == "S1000542"
+    store.close()
+
+
+def test_status_carries_the_manifests_check_time_and_ckan_refresh(tmp_path, fixture_db):
+    cache = _cache(tmp_path, fixture_db, entry("S1000542", "20260930", "20261031", "s42.sqlite"))
+    m = Manifest.load(cache)
+    assert (m.checked_at, m.ckan_last_modified) == (None, None)
+    m.checked_at, m.ckan_last_modified = "2026-10-06T03:00:00-04:00", "2026-09-30T14:17:52"
+    m.save(cache)
+    store = StaticStore.from_manifest(cache)
+    st = store.status(dt.date(2026, 10, 5))
+    assert (st["last_check"], st["ckan_last_refreshed"], st["newer_package_seen"]) == ("2026-10-06T03:00:00-04:00", "2026-09-30T14:17:52", False)
+    assert "newer_seen" not in st
     store.close()
 
 
