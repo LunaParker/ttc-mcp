@@ -207,11 +207,14 @@ async def test_the_pull_lifespan_runs_the_puller_on_the_interval_and_stops_clean
     async with Client(server.create_app(puller=lambda: calls.append(1) or "pulled")) as c:
         await asyncio.sleep(0.08)
         assert (await c.call_tool("routes", {})).data["routes"]
+    await asyncio.sleep(0.05)  # a pull already in its worker thread finishes on its own first
+    n = len(calls)
+    assert n >= 2 and "[ttc-mcp] bucket pull: pulled" in capsys.readouterr().err
     await asyncio.sleep(0.05)
-    assert len(calls) >= 2 and "[ttc-mcp] bucket pull: pulled" in capsys.readouterr().err
+    assert len(calls) == n, "the loop must stop with the server"
 
 
-def test_http_mode_with_a_bucket_pulls_the_store_before_serving(tmp_path, monkeypatch, fixture_db):
+def test_http_mode_with_a_bucket_pulls_the_store_before_serving(tmp_path, monkeypatch, fixture_db, capsys):
     """The cold start of spec 6.9: with TTC_MCP_STATIC_BUCKET set the manifest and feeds come from the bucket, never from CKAN."""
     import shutil
 
@@ -230,9 +233,10 @@ def test_http_mode_with_a_bucket_pulls_the_store_before_serving(tmp_path, monkey
     cache = tmp_path / "cache"
     monkeypatch.setenv("TTC_MCP_CACHE", str(cache))
     monkeypatch.setenv("TTC_MCP_STATIC_BUCKET", "ttc-mcp-static-test")
-    monkeypatch.setenv("TTC_MCP_SKIP_REFRESH", "1")
+    monkeypatch.delenv("TTC_MCP_SKIP_REFRESH", raising=False)
     monkeypatch.delenv("GOOGLE_OAUTH_CLIENT_ID", raising=False)
     monkeypatch.setattr(server, "GcsBlobs", lambda name: blobs)
+    monkeypatch.setattr(server, "ensure_static", lambda *args, **kwargs: pytest.fail("CKAN was checked although the bucket is authoritative"))
     created = {}
     real_create = server.create_app
 
@@ -243,4 +247,6 @@ def test_http_mode_with_a_bucket_pulls_the_store_before_serving(tmp_path, monkey
     monkeypatch.setattr(FastMCP, "run", lambda self, *a, **k: None)
     assert server.main(["--transport", "http"]) == 0
     assert Manifest.load(cache).feeds[0].feed_version == "S1000538" and (cache / "static-S1000538.sqlite").exists()
+    err = capsys.readouterr().err
+    assert "[bucket] pulled static-S1000538.sqlite" in err and "[ttc-mcp] bucket pull: manifest S1000538" in err
     assert created["puller"] is not None and created["puller"]() == "manifest S1000538"

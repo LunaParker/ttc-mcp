@@ -91,7 +91,7 @@ def main(argv=None) -> int:
     p.add_argument("--no-refresh", action="store_true", help="do not check CKAN for a new feed on startup")
     a = p.parse_args(argv)
     gate = gate_settings() if a.transport == "http" else None
-    refresh = not (a.no_refresh or s.skip_refresh)
+    refresh = not (a.no_refresh or s.skip_refresh or (a.transport == "http" and s.static_bucket))  # a bucket is authoritative (spec 6.9)
     if refresh:
         with make_client(s.user_agent) as client:
             rep = ensure_static(s.cache_dir, client)
