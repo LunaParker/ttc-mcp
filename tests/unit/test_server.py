@@ -159,3 +159,20 @@ async def test_station_results_carry_id_and_aliases_beside_number(app_env):
         st = next(s for s in found if s["kind"] == "station")
         assert (st["id"], st["number"], st["aliases"]) == ("15772", "15772", ["union"])
         assert all(not {"id", "aliases"} & s.keys() for s in found if s["kind"] != "station") and len(found) > 1
+
+
+@pytest.mark.anyio
+async def test_scheduled_departures_resolve_a_stop_code_and_reject_an_unknown_stop(app, tmp_path):
+    import sqlite3
+
+    db = sqlite3.connect(tmp_path / "static-S1000538.sqlite")
+    db.execute("INSERT INTO stops (stop_id, stop_code, name, lat, lon, location_type) VALUES ('99407', '407', 'Test St at 407 Stop', 43.7, -79.4, 0)")
+    db.execute("INSERT INTO departures (stop_id, dep_secs, trip_id, stop_sequence) SELECT 99407, dep_secs, trip_id, stop_sequence FROM departures WHERE stop_id=15461")
+    db.commit()
+    db.close()
+    async with Client(app) as c:
+        by_code = (await c.call_tool("scheduled_departures", {"stop": "407", "limit": 3})).data
+        by_id = (await c.call_tool("scheduled_departures", {"stop": "99407", "limit": 3})).data
+        assert len(by_code["departures"]) == 3 and by_code["departures"] == by_id["departures"] and by_code["stop"] == "407"
+        r = (await c.call_tool("scheduled_departures", {"stop": "nowhere"})).data
+        assert r["error"] == "stop nowhere not found" and "departures" not in r and r["meta"]["static_feed"] == "S1000538"

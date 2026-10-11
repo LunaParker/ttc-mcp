@@ -116,5 +116,11 @@ def register(mcp: FastMCP) -> None:
         when = dt.datetime.fromisoformat(at) if at else runtime.now()
         if when.tzinfo is None:
             when = when.replace(tzinfo=schedule.TZ)
-        return _guard(lambda f: {"stop": stop, "from": when.isoformat(timespec="seconds"), "basis": "schedule",
-                                 "departures": schedule.departures_at(f.conn, stop, when, limit=limit, route=route)})
+
+        def run(f):
+            row = stop_row(f.conn, stop)
+            if row is None:
+                return {"error": f"stop {stop} not found"}
+            return {"stop": stop, "from": when.isoformat(timespec="seconds"), "basis": "schedule",
+                    "departures": schedule.departures_at(f.conn, row["stop_id"], when, limit=limit, route=route)}
+        return _guard(run)
