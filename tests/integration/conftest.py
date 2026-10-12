@@ -8,6 +8,8 @@ from contextlib import contextmanager
 
 import pytest
 
+CLOUD_VARS = ("GOOGLE_CLOUD_PROJECT", "STORAGE_ENCRYPTION_KEY", "TTC_MCP_STATIC_BUCKET")
+
 
 def _free_port() -> int:
     with socket.socket() as s:
@@ -18,7 +20,8 @@ def _free_port() -> int:
 @contextmanager
 def _boot():
     port = _free_port()
-    env = {**os.environ, "TTC_MCP_SKIP_REFRESH": "1"}
+    # The developer's shell minus the gate, Firestore and the bucket, as tests/unit/test_gate.py's _env: the suite talks to an ungated local store.
+    env = {**{k: v for k, v in os.environ.items() if k not in CLOUD_VARS and not k.startswith("GOOGLE_OAUTH")}, "TTC_MCP_SKIP_REFRESH": "1"}
     proc = subprocess.Popen([sys.executable, "-m", "ttc_mcp.server", "--transport", "http", "--host", "127.0.0.1", "--port", str(port)],
                             env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     deadline = time.time() + 30

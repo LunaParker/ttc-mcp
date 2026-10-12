@@ -95,13 +95,14 @@ def _boot(env, port):
     deadline = time.time() + 30
     while time.time() < deadline:
         if proc.poll() is not None:
-            raise RuntimeError(f"server exited early:\n{proc.stderr.read()}")
+            raise RuntimeError(f"server exited early:\n{proc.communicate()[1]}")
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=0.5):
                 return proc
         except OSError:
             time.sleep(0.2)
     proc.kill()
+    proc.communicate()
     raise RuntimeError("server did not open its port")
 
 
@@ -113,24 +114,25 @@ def test_the_gated_http_server_refuses_an_unauthenticated_call_and_publishes_its
     port = _free_port()
     env = _env(tmp_path, GOOGLE_OAUTH_CLIENT_ID="client-id-test", GOOGLE_OAUTH_CLIENT_SECRET="secret-test", BASE_URL=f"http://127.0.0.1:{port}",
                JWT_SIGNING_KEY="jwt-test", ALLOWED_EMAILS="owner@example.com")
-    proc = _boot(env, port)
-    try:
-        r = httpx.post(f"http://127.0.0.1:{port}/mcp", json=LIST, headers=HEADERS)
-        assert r.status_code == 401 and "www-authenticate" in {k.lower() for k in r.headers}
-        meta = httpx.get(f"http://127.0.0.1:{port}/.well-known/oauth-protected-resource/mcp")
-        assert meta.status_code == 200 and "authorization_servers" in meta.json()
-    finally:
-        proc.terminate()
-        proc.wait(10)
-    assert "Traceback" not in proc.stderr.read()
+    with _boot(env, port) as proc:
+        try:
+            r = httpx.post(f"http://127.0.0.1:{port}/mcp", json=LIST, headers=HEADERS)
+            assert r.status_code == 401 and "www-authenticate" in {k.lower() for k in r.headers}
+            meta = httpx.get(f"http://127.0.0.1:{port}/.well-known/oauth-protected-resource/mcp")
+            assert meta.status_code == 200 and "authorization_servers" in meta.json()
+        finally:
+            proc.terminate()
+            proc.wait(10)
+        err = proc.stderr.read()
+    assert "Traceback" not in err
 
 
 def test_an_ungated_http_server_answers_tools_list(tmp_path):
     port = _free_port()
-    proc = _boot(_env(tmp_path), port)
-    try:
-        r = httpx.post(f"http://127.0.0.1:{port}/mcp", json=LIST, headers=HEADERS)
-        assert r.status_code == 200 and {t["name"] for t in json.loads(r.text)["result"]["tools"]} >= {"connections", "feed_status"}
-    finally:
-        proc.terminate()
-        proc.wait(10)
+    with _boot(_env(tmp_path), port) as proc:
+        try:
+            r = httpx.post(f"http://127.0.0.1:{port}/mcp", json=LIST, headers=HEADERS)
+            assert r.status_code == 200 and {t["name"] for t in json.loads(r.text)["result"]["tools"]} >= {"connections", "feed_status"}
+        finally:
+            proc.terminate()
+            proc.wait(10)
