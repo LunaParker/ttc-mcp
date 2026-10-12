@@ -9,7 +9,7 @@ RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --extra 
 
 # The project as a wheel, compiled here rather than at every cold start. Rebuilt every time: uv's cache
 # keys a local wheel on pyproject.toml, not the code, so the cache mount would reinstall stale code.
-COPY README.md ./
+COPY README.md LICENSE.md ./
 COPY ttc_mcp ./ttc_mcp
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --extra cloud --no-editable --reinstall-package ttc-mcp
 
