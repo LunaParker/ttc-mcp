@@ -21,8 +21,8 @@ jobs:
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: true
-      - name: Sync the locked environment (Python from .python-version)
-        run: uv sync --frozen
+      - name: Sync the locked environment with the cloud extra (Python from .python-version)
+        run: uv sync --frozen --extra cloud
       - name: Run the unit suite
         run: uv run pytest tests/unit
 
@@ -56,3 +56,11 @@ jobs:
           name: dist
           path: dist/
           retention-days: 7
+
+  image:
+    name: Image smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build the image, build the fixture store inside it, serve it, list the tools
+        run: scripts/smoke_image.sh

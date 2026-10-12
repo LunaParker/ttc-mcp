@@ -24,8 +24,19 @@ def _log(log, msg):
     (log or (lambda m: print(m, file=sys.stderr)))(msg)
 
 
-def _levels_for(merged_zip: Path, user_agent: str, log) -> dict[str, dict]:
+def _run(coro):
+    """asyncio.run when this thread has no loop; otherwise a worker thread with its own loop (a caller inside FastMCP's loop)."""
     import asyncio
+    import concurrent.futures
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with concurrent.futures.ThreadPoolExecutor(1) as ex:
+        return ex.submit(asyncio.run, coro).result()
+
+
+def _levels_for(merged_zip: Path, user_agent: str, log) -> dict[str, dict]:
     import zipfile
 
     from ttc_mcp.adapters.http import make_async_client
@@ -39,7 +50,7 @@ def _levels_for(merged_zip: Path, user_agent: str, log) -> dict[str, dict]:
         async with make_async_client(user_agent, timeout=10) as client:
             return await fetch_route_levels(client, names, log=log)
 
-    levels = asyncio.run(go())
+    levels = _run(go())
     _log(log, f"[refresh] ttc.ca service levels: {len(levels)} of {len(names)} routes")
     return levels
 

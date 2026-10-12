@@ -3,8 +3,10 @@ from __future__ import annotations
 import datetime as dt
 import sqlite3
 import sys
+import threading
+import weakref
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ttc_mcp.static.manifest import Manifest
@@ -46,16 +48,60 @@ def schema_version(path: Path) -> int:
         c.close()
 
 
+def open_ro(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+class _Held:
+    """A thread's connection, kept in its thread-local; when the thread exits it dies and its finalizer closes the connection."""
+    __slots__ = ("conn", "__weakref__")
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+
+def _forget(conn: sqlite3.Connection, opened: list[sqlite3.Connection], lock: threading.Lock) -> None:
+    with lock:
+        if conn not in opened:
+            return  # close() already took it
+        opened.remove(conn)
+    conn.close()
+
+
 @dataclass
 class FeedDb:
     version: str
     start: dt.date
     end: dt.date
     path: Path
-    conn: sqlite3.Connection
+    _local: threading.local = field(default_factory=threading.local, repr=False, compare=False)
+    _opened: list[sqlite3.Connection] = field(default_factory=list, repr=False, compare=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        """One read-only connection per thread: SQLite in multi-thread mode forbids sharing one across threads at once."""
+        # Reopening after close() is intended: a call in flight on a feed of the store runtime.get_store just replaced keeps working.
+        held = getattr(self._local, "held", None)
+        if held is None:
+            held = self._local.held = _Held(open_ro(self.path))
+            with self._lock:
+                self._opened.append(held.conn)
+            weakref.finalize(held, _forget, held.conn, self._opened, self._lock)
+        return held.conn
 
     def covers(self, d: dt.date) -> bool:
         return self.start <= d <= self.end
+
+    def close(self) -> None:
+        with self._lock:
+            opened = self._opened[:]
+            self._opened.clear()  # in place, never rebound: the finalizers hold this list
+        for c in opened:
+            c.close()
+        self._local = threading.local()
 
 
 class StaticStore:
@@ -76,9 +122,7 @@ class StaticStore:
                 print(f"[store] skipping {p.name}: its schema {found} is {age} (this server reads {SCHEMA_VERSION}); the next ttc-mcp-build "
                       "(or ttc-mcp-build --from-zip for a local feed) rebuilds it", file=sys.stderr)
                 continue
-            conn = sqlite3.connect(f"file:{p}?mode=ro&immutable=1", uri=True, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            feeds.append(FeedDb(e.feed_version, _d(e.start), _d(e.end), p, conn))
+            feeds.append(FeedDb(e.feed_version, _d(e.start), _d(e.end), p))
         return cls(feeds, checked_at=manifest.checked_at, ckan_last_modified=manifest.ckan_last_modified)
 
     def for_date(self, d: dt.date) -> FeedDb | None:
@@ -117,4 +161,4 @@ class StaticStore:
 
     def close(self) -> None:
         for f in self.feeds:
-            f.conn.close()
+            f.close()

@@ -11,6 +11,9 @@ dependencies = [
   "pydantic>=2",
 ]
 
+[project.optional-dependencies]
+cloud = ["py-key-value-aio[firestore]>=0.4.6", "google-cloud-storage>=3"]
+
 [project.scripts]
 ttc-mcp = "ttc_mcp.server:main"
 ttc-mcp-build = "ttc_mcp.build:main"
@@ -32,6 +35,8 @@ packages = ["ttc_mcp"]
 [tool.pytest.ini_options]
 testpaths = ["tests/unit"]
 addopts = "-q"
+# fastmcp 3.4.8 imports authlib's deprecated httpx client module when it loads GoogleProvider; the warning is upstream's, not ours.
+filterwarnings = ["ignore:The httpx module is deprecated:authlib.deprecate.AuthlibDeprecationWarning"]
 
 [tool.ruff]
 line-length = 160

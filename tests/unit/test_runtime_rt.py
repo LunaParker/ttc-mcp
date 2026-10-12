@@ -1,3 +1,5 @@
+import datetime as dt
+
 import httpx
 import pytest
 
@@ -35,7 +37,7 @@ async def test_set_realtime_replaces_the_singleton():
 def test_meta_rt_merges_hits_worst_first():
     runtime.reset()
     now = runtime.get_realtime().clock()
-    feed = FeedDb("S1000538", None, None, None, None)
+    feed = FeedDb("S1000538", None, None, None)
     hits = [hit(STOP_XML, "ttl", now - 20), hit(VEHICLES, "live", now - 1, feed_ts=int(now) - 25)]
     m = runtime.meta_rt(feed, hits, source="bustime getStopPredictions.jsp + gtfsrt/vehicles")
     assert m["source"].startswith("bustime") and m["cache"] == "ttl" and m["staleness"] == "fresh"
@@ -46,3 +48,12 @@ def test_meta_rt_merges_hits_worst_first():
     none = runtime.meta_rt(feed, [None, None], source="ntas + static stop_times")
     assert (none["cache"], none["staleness"], none["feed_timestamp"]) == (None, "unavailable", None)
     runtime.reset()
+
+
+def test_ttc_mcp_now_pins_the_clock_per_call(monkeypatch):
+    monkeypatch.setenv("TTC_MCP_NOW", "2026-10-06T08:00")
+    assert runtime.now() == dt.datetime(2026, 10, 6, 8, 0, tzinfo=runtime.TZ) and runtime.now().tzinfo is runtime.TZ
+    monkeypatch.setenv("TTC_MCP_NOW", "2026-10-06T12:00:00+00:00")
+    assert runtime.now() == dt.datetime(2026, 10, 6, 8, 0, tzinfo=runtime.TZ) and runtime.now().hour == 8 and runtime.now().tzinfo is runtime.TZ
+    monkeypatch.delenv("TTC_MCP_NOW")
+    assert abs((runtime.now() - dt.datetime.now(dt.UTC)).total_seconds()) < 5 and runtime.now().tzinfo is runtime.TZ

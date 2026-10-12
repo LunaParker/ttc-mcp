@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import sqlite3
+from collections.abc import Callable
 
 from ttc_mcp.adapters.gtfsrt_alerts import RtAlertFeed
 from ttc_mcp.adapters.ttc_alerts import Alert, AlertList
@@ -127,9 +129,14 @@ def _dedupe(els: list[dict]) -> list[dict]:
     return out
 
 
+def _getter(conn) -> Callable[[], sqlite3.Connection]:
+    # A Connection is itself callable, so test the type rather than callable().
+    return (lambda: conn) if isinstance(conn, sqlite3.Connection) else conn
+
+
 class Disruptions:
     def __init__(self, conn, elements: list[dict], platform_closed: dict[str, list[dict]]):
-        self.conn, self.elements, self.platform_closed = conn, elements, platform_closed
+        self._conn, self.elements, self.platform_closed = _getter(conn), elements, platform_closed
         self._served: dict[tuple, bool] = {}
         self.by_station: dict[str, list[dict]] = {}
         self.by_stop: dict[str, list[dict]] = {}
@@ -142,10 +149,18 @@ class Disruptions:
             for r in el["routes"]:
                 self.by_route.setdefault(r, []).append(el)
 
+    @property
+    def conn(self) -> sqlite3.Connection:
+        """The calling thread's connection: a snapshot built on the loop is also read from worker threads."""
+        return self._conn()
+
     @classmethod
     def build(cls, conn, alerts: AlertList | None, rt: RtAlertFeed | None, groups: list[dict], now: dt.datetime) -> Disruptions:
-        els = [element(conn, a, now) for a in (alerts.alerts if alerts else [])] + detour_elements(groups)
-        return cls(conn, els, platform_closures(rt, now.timestamp()))
+        """conn is a connection or a zero-argument getter of one; pass a getter when the result is read from other threads."""
+        get = _getter(conn)
+        c = get()
+        els = [element(c, a, now) for a in (alerts.alerts if alerts else [])] + detour_elements(groups)
+        return cls(get, els, platform_closures(rt, now.timestamp()))
 
     def station_closed_now(self, sid: str, line: str | None = None) -> dict | None:
         return next((el for el in self.by_station.get(sid, []) if el["type"] == "closure" and el["active_now"]

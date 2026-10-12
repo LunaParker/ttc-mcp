@@ -53,7 +53,7 @@ async def snapshot(feed: FeedDb) -> Snapshot:
     if _memo.get("key") != key:
         groups = detours.resolve_detours(feed.conn, dh.parsed, now.date(), rt=rh.parsed if rh else None,
                                          lookup=runtime.trip_lookup(now.date())) if dh else []
-        disr = Disruptions.build(feed.conn, ah.parsed if ah else None, rh.parsed if rh else None, groups, now)
+        disr = Disruptions.build(lambda: feed.conn, ah.parsed if ah else None, rh.parsed if rh else None, groups, now)
         _memo.update(key=key, value=(disr, groups, detours.trip_detour_map(dh.parsed) if dh else {}))
     disr, groups, tmap = _memo["value"]
     errors = {k: v for k, v in (("alerts", ae), ("rt_alerts", re_), ("detours", de)) if v}

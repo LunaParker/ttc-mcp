@@ -1,27 +1,18 @@
-import datetime as dt
-import shutil
+import asyncio
 
 import pytest
 from fastmcp import Client
 
+from tests.mockttc import make_app
 from ttc_mcp import runtime
-from ttc_mcp.static.manifest import FeedEntry, Manifest
 
 TOOLS = {"find_stops", "nearest_stops", "stop", "station", "routes", "route_stops", "service_hours", "scheduled_departures", "arrivals", "next_trains", "vehicles", "feed_status", "alerts", "service_status", "detours", "service_changes", "route_shape", "accessibility", "connections"}
 
 
 @pytest.fixture
-def app(tmp_path, fixture_db, monkeypatch):
-    shutil.copy(fixture_db, tmp_path / "static-S1000538.sqlite")
-    Manifest([FeedEntry("S1000538", "20260906", "20261031", "static-S1000538.sqlite", '"e"', "u", "t")]).save(tmp_path)
-    monkeypatch.setenv("TTC_MCP_CACHE", str(tmp_path))
-    monkeypatch.setenv("TTC_MCP_SKIP_REFRESH", "1")
-    monkeypatch.setattr(runtime, "now", lambda: dt.datetime(2026, 10, 6, 8, 0, tzinfo=runtime.TZ))
-    runtime.reset()
-    from ttc_mcp.server import create_app
-
-    yield create_app()
-    runtime.reset()
+def app(app_env):
+    """The server over app_env's store with tests.mockttc's TTC client installed; app_env's teardown resets the runtime."""
+    return make_app([])
 
 
 @pytest.mark.anyio
@@ -102,7 +93,6 @@ def test_instructions_point_trip_questions_at_connections_and_name_the_derived_t
 
 @pytest.mark.anyio
 async def test_the_recheck_lifespan_runs_ensure_static_on_the_interval_and_stops_cleanly(app_env, monkeypatch, capsys):
-    import asyncio
     from pathlib import Path
 
     from ttc_mcp import server
@@ -133,8 +123,6 @@ async def test_the_recheck_lifespan_runs_ensure_static_on_the_interval_and_stops
 
 @pytest.mark.anyio
 async def test_a_failing_recheck_is_logged_and_the_loop_goes_on(app_env, monkeypatch, capsys):
-    import asyncio
-
     from ttc_mcp import server
 
     calls = []
@@ -153,8 +141,6 @@ async def test_a_failing_recheck_is_logged_and_the_loop_goes_on(app_env, monkeyp
 
 @pytest.mark.anyio
 async def test_station_results_carry_id_and_aliases_beside_number(app_env):
-    from tests.mockttc import make_app
-
     async with Client(make_app([])) as c:
         near = (await c.call_tool("nearest_stops", {"lat": 43.6527, "lon": -79.3581, "radius_m": 2500, "kind": "station", "limit": 10})).data["results"]
         union = next(r for r in near if r["name"] == "Union")
@@ -199,3 +185,78 @@ async def test_live_tool_descriptions_say_best_effort_and_the_occupancy_scope(ap
     for name in ("vehicles", "arrivals"):
         assert "historical occupancy" in desc[name] and "out of scope" in desc[name], name
     assert "best effort" not in desc["routes"]
+
+
+@pytest.mark.anyio
+async def test_the_pull_lifespan_runs_the_puller_on_the_interval_and_stops_cleanly(app_env, monkeypatch, capsys):
+    from ttc_mcp import server
+    calls = []
+    monkeypatch.setattr(server, "PULL_S", 0.01)
+    async with Client(server.create_app(puller=lambda: calls.append(1) or "pulled")) as c:
+        await asyncio.sleep(0.08)
+        assert (await c.call_tool("routes", {})).data["routes"]
+    await asyncio.sleep(0.05)  # a pull already in its worker thread finishes on its own first
+    n = len(calls)
+    assert n >= 2 and "[ttc-mcp] bucket pull: pulled" in capsys.readouterr().err
+    await asyncio.sleep(0.05)
+    assert len(calls) == n, "the loop must stop with the server"
+
+
+def test_http_mode_with_a_bucket_pulls_the_store_before_serving(tmp_path, monkeypatch, fixture_db, capsys):
+    """The cold start of spec 6.9: with TTC_MCP_STATIC_BUCKET set the manifest and feeds come from the bucket, never from CKAN."""
+    import shutil
+
+    from fastmcp import FastMCP
+
+    from ttc_mcp import server
+    from ttc_mcp.static import bucket
+    from ttc_mcp.static.manifest import FeedEntry, Manifest
+    src = tmp_path / "src"
+    src.mkdir()
+    shutil.copy(fixture_db, src / "static-S1000538.sqlite")
+    m = Manifest([FeedEntry("S1000538", "20260901", "20261031", "static-S1000538.sqlite", '"e"', "https://x/merged.zip", "2026-10-11T04:30:00-0400")])
+    m.save(src)
+    blobs = bucket.MemoryBlobs()
+    bucket.push(src, blobs)
+    cache = tmp_path / "cache"
+    monkeypatch.setenv("TTC_MCP_CACHE", str(cache))
+    monkeypatch.setenv("TTC_MCP_STATIC_BUCKET", "ttc-mcp-static-test")
+    monkeypatch.delenv("TTC_MCP_SKIP_REFRESH", raising=False)
+    monkeypatch.delenv("GOOGLE_OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.setattr(server, "GcsBlobs", lambda name: blobs)
+    monkeypatch.setattr(server, "ensure_static", lambda *args, **kwargs: pytest.fail("CKAN was checked although the bucket is authoritative"))
+    created = {}
+    real_create = server.create_app
+
+    def spy_create(**kw):
+        created.update(kw)
+        return real_create(**kw)
+    monkeypatch.setattr(server, "create_app", spy_create)
+    monkeypatch.setattr(FastMCP, "run", lambda self, *a, **k: None)
+    assert server.main(["--transport", "http"]) == 0
+    assert Manifest.load(cache).feeds[0].feed_version == "S1000538" and (cache / "static-S1000538.sqlite").exists()
+    err = capsys.readouterr().err
+    assert "[bucket] pulled static-S1000538.sqlite" in err and "[ttc-mcp] bucket pull: manifest S1000538" in err
+    assert created["puller"] is not None and created["puller"]() == "manifest S1000538"
+
+
+GATE_ENV = {"GOOGLE_OAUTH_CLIENT_ID": "client-id-test", "GOOGLE_OAUTH_CLIENT_SECRET": "secret-test", "BASE_URL": "https://ttc.example",
+            "JWT_SIGNING_KEY": "jwt-test", "ALLOWED_EMAILS": "owner@example.com"}
+NO_GATE = "[ttc-mcp] http transport has no gate: set GOOGLE_OAUTH_CLIENT_ID to require Google sign-in"
+
+
+@pytest.mark.parametrize("gated", [False, True])
+def test_an_http_start_without_the_gate_says_so(tmp_path, monkeypatch, capsys, gated):
+    """Ungated http admits anyone who reaches the port (spec 6.9), so the start names the variable that turns the gate on."""
+    from fastmcp import FastMCP
+
+    from ttc_mcp import server
+    monkeypatch.setenv("TTC_MCP_CACHE", str(tmp_path))
+    monkeypatch.setenv("TTC_MCP_SKIP_REFRESH", "1")
+    for k in ("TTC_MCP_STATIC_BUCKET", "GOOGLE_CLOUD_PROJECT", "STORAGE_ENCRYPTION_KEY", *GATE_ENV):
+        monkeypatch.delenv(k, raising=False)
+    for k, v in (GATE_ENV.items() if gated else ()):
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(FastMCP, "run", lambda self, *a, **k: None)
+    assert server.main(["--transport", "http"]) == 0
+    assert (NO_GATE in capsys.readouterr().err) is not gated

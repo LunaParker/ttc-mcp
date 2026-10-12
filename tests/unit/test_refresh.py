@@ -2,6 +2,7 @@ import datetime as dt
 import sqlite3
 
 import httpx
+import pytest
 
 from tests.conftest import FIX
 from ttc_mcp.static.manifest import Manifest
@@ -131,3 +132,17 @@ def test_a_build_runs_the_static_checks_and_the_live_ones_when_alerts_answer(tmp
     assert rep["checks"]["unit_codes"] is None and any("alerts.ttc.ca unavailable" in l for l in lines)
     assert build_from_zips(tmp_path, MERGED, SURFACE, today=dt.date(2026, 10, 5))["checks"]["alert_stations"] is None
     assert "checks" not in ensure_static(tmp_path, client(etag_merged='"m2"'), today=dt.date(2026, 10, 5), ttcapi=False, checks=False, force=True)
+
+
+@pytest.mark.anyio
+async def test_the_service_level_fetch_works_inside_a_running_event_loop(monkeypatch):
+    """Spec 6.9 carry-over: _levels_for ran asyncio.run, which raises when a loop is already running in the thread."""
+    from ttc_mcp.static import refresh
+
+    def fake_async_client(user_agent, timeout=10.0):
+        def handler(req):
+            return httpx.Response(200, json={"route": {"serviceLevel": {"name": "Regular"}}})
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler), headers={"User-Agent": user_agent})
+    monkeypatch.setattr("ttc_mcp.adapters.http.make_async_client", fake_async_client)
+    levels = refresh._levels_for(MERGED, "t/1", None)
+    assert levels and all(v["name"] == "Regular" for v in levels.values())

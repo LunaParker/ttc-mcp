@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 from pathlib import Path
 
 from ttc_mcp.adapters.http import make_async_client
@@ -22,7 +23,13 @@ class StoreUnavailable(RuntimeError):
 
 
 def now() -> dt.datetime:
-    return dt.datetime.now(TZ)
+    """Toronto wall clock, unless TTC_MCP_NOW (ISO 8601, naive means Toronto) pins it for smoke tests or to reproduce a day.
+    Read on every call so a test can set and unset it."""
+    pinned = os.environ.get("TTC_MCP_NOW")
+    if not pinned:
+        return dt.datetime.now(TZ)
+    t = dt.datetime.fromisoformat(pinned)
+    return t.replace(tzinfo=TZ) if t.tzinfo is None else t.astimezone(TZ)
 
 
 def reset() -> None:
