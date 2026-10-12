@@ -28,7 +28,7 @@ INSTRUCTIONS = (
     "Every answer carries meta (source, fetched_at, cache, static_feed, staleness). "
     "Contains information licensed under the Open Government Licence – Toronto (https://open.toronto.ca/open-data-licence/). "
     "Timetables and the GTFS-Realtime feeds are TTC open data on the City of Toronto's portal; stop and train predictions, alerts.ttc.ca "
-    "and ttc.ca route data come from endpoints behind the TTC's website, which publishes no terms for them. "
+    "and ttc.ca route data come from endpoints behind the TTC's website, which publishes no terms specific to them. "
     "Real-time and advisory answers are best effort."
 )
 RECHECK_S = 24 * 3600
