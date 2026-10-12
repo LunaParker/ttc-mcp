@@ -264,3 +264,50 @@ def test_an_http_start_without_the_gate_says_so(tmp_path, monkeypatch, capsys, g
     monkeypatch.setattr(FastMCP, "run", lambda self, *a, **k: None)
     assert server.main(["--transport", "http"]) == 0
     assert (NO_GATE in capsys.readouterr().err) is not gated
+
+
+@pytest.mark.parametrize("transport", ["stdio", "http"])
+def test_an_unreachable_portal_at_startup_is_logged_and_the_store_on_disk_is_served(app_env, monkeypatch, capsys, transport):
+    """Spec 6.9 local mode: a failed startup check must not stop a server whose store is on disk; stdio's recheck tries again later."""
+    import httpx
+    from fastmcp import FastMCP
+
+    from ttc_mcp import server
+    for k in ("TTC_MCP_SKIP_REFRESH", "TTC_MCP_STATIC_BUCKET", *GATE_ENV):
+        monkeypatch.delenv(k, raising=False)
+
+    def unreachable(*args, **kwargs):
+        raise httpx.ConnectError("[Errno 61] Connection refused")
+    monkeypatch.setattr(server, "ensure_static", unreachable)
+    created, ran = {}, []
+    real_create = server.create_app
+
+    def spy_create(**kw):
+        created.update(kw)
+        return real_create(**kw)
+    monkeypatch.setattr(server, "create_app", spy_create)
+    monkeypatch.setattr(FastMCP, "run", lambda self, *a, **k: ran.append(k.get("transport")))
+    assert server.main(["--transport", transport]) == 0
+    assert ran == [transport] and created["recheck"] is (transport == "stdio")
+    err = capsys.readouterr().err
+    assert "[ttc-mcp] static check failed (ConnectError: [Errno 61] Connection refused); serving the store on disk: S1000538" in err
+
+
+def test_an_unreachable_portal_with_no_store_yet_still_starts_and_says_how_to_build(tmp_path, monkeypatch, capsys):
+    """Spec 9: a server with no store answers its tools with 'not built yet' rather than failing to start."""
+    import httpx
+    from fastmcp import FastMCP
+
+    from ttc_mcp import server
+    monkeypatch.setenv("TTC_MCP_CACHE", str(tmp_path))
+    for k in ("TTC_MCP_SKIP_REFRESH", "TTC_MCP_STATIC_BUCKET"):
+        monkeypatch.delenv(k, raising=False)
+
+    def timed_out(*args, **kwargs):
+        raise httpx.ConnectTimeout("timed out")
+    monkeypatch.setattr(server, "ensure_static", timed_out)
+    ran = []
+    monkeypatch.setattr(FastMCP, "run", lambda self, *a, **k: ran.append(k.get("transport")))
+    assert server.main(["--transport", "stdio"]) == 0 and ran == ["stdio"]
+    err = capsys.readouterr().err
+    assert "[ttc-mcp] static check failed (ConnectTimeout: timed out); no store on disk yet: tools answer 'not built yet' until ttc-mcp-build succeeds" in err

@@ -22,7 +22,8 @@ class ResourceRef:
 
 
 def make_client(user_agent: str, timeout: float = 120.0) -> httpx.Client:
-    return httpx.Client(headers={"User-Agent": user_agent}, timeout=timeout, follow_redirects=True)
+    # Connecting fails fast so an unreachable portal can't stall a server's start; reads keep the long budget for the 80 MB zips.
+    return httpx.Client(headers={"User-Agent": user_agent}, timeout=httpx.Timeout(timeout, connect=10.0), follow_redirects=True)
 
 
 def resolve_zip(client: httpx.Client, package_id: str) -> ResourceRef:

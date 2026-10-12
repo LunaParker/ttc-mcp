@@ -46,3 +46,9 @@ def test_download_streams_to_dest_and_returns_etag(tmp_path):
 def test_make_client_sets_user_agent():
     c = ckan.make_client("ttc-mcp/0.1")
     assert c.headers["User-Agent"] == "ttc-mcp/0.1"
+
+
+def test_the_client_gives_up_connecting_in_seconds_but_waits_for_big_downloads():
+    """An unreachable portal should fail a check quickly; the 80 MB zips still get their two minutes per read."""
+    with ckan.make_client("ttc-mcp/0.1") as c:
+        assert (c.timeout.connect, c.timeout.read, c.timeout.write) == (10.0, 120.0, 120.0)
