@@ -429,7 +429,7 @@ Request budget compared with v0.2 polling: polling cost about 14,000 requests an
 
 ### 6.9 Transport and hosting (decision j, v0.6)
 
-**Decision:** the server is a FastMCP 3 application (`fastmcp==3.4.x`) exposing **streamable HTTP** at `/mcp`, with authentication and authorization in-process rather than through a separate proxy: `GoogleProvider` (OAuth with dynamic client registration, `require_authorization_consent="remember"`) plus the `EmailAllowlist` middleware (`ALLOWED_EMAILS=lunaparker33@gmail.com`). The gate runs in-process, not as a proxy in front of a loopback server, because the tools are native Python and there is no third-party backend to wrap. A `--transport stdio` mode remains for local development and for any developer who wants to run it on their own machine.
+**Decision:** the server is a FastMCP application (`fastmcp>=4.1,<5` since 2026-10-11) exposing **streamable HTTP** at `/mcp`, with authentication and authorization in-process rather than through a separate proxy: `GoogleProvider` (OAuth with dynamic client registration, `require_authorization_consent="remember"`) plus the `EmailAllowlist` middleware (`ALLOWED_EMAILS=lunaparker33@gmail.com`). The gate runs in-process, not as a proxy in front of a loopback server, because the tools are native Python and there is no third-party backend to wrap. A `--transport stdio` mode remains for local development and for any developer who wants to run it on their own machine.
 
 **Why:** a hosted connector reaches claude.ai, Claude Desktop, iOS and Claude Code through one URL; stdio would confine the server to one machine. The on-demand design (decision g) is what makes hosting cheap: an idle instance makes no requests and can scale to zero.
 
@@ -494,7 +494,7 @@ Environment variables the code reads (`grep -rn os.environ ttc_mcp/`; the gate v
 | g | Fetch model | on demand with TTL cache, single-flight, last-known-good; static checked once a day; no pollers |
 | h | Trip questions and disruptions (incl. Lines 5/6 as rail, section 6.8) | `nearest_stops` bridge from an external geocoder; `connections` (direct + one transfer, live and disruption overlay, shuttle legs); `service_status`; disruptions propagated into every answer; station alias table; geocoding out of scope |
 | i | Real-time gaps (Lines 5/6, outages) | scheduled departures from `stop_times` as the fallback; every arrivals-style row carries `basis` realtime/schedule; `vehicles` declares rail unavailable; `feed_status` reports NTAS coverage per line |
-| j | Transport and hosting | FastMCP 3 streamable HTTP (stateless JSON) with in-process Google OAuth gate + email allowlist; Cloud Run `ttc-mcp` in us-east1, min 0 / max 1; static store built by a daily Cloud Run Job into a GCS bucket and pulled at cold start and every 6 h; stdio mode for local use |
+| j | Transport and hosting | FastMCP 4 streamable HTTP (stateless JSON) with in-process Google OAuth gate + email allowlist; Cloud Run `ttc-mcp` in us-east1, min 0 / max 1; static store built by a daily Cloud Run Job into a GCS bucket and pulled at cold start and every 6 h; stdio mode for local use |
 
 ## 8. To validate during implementation
 
@@ -559,6 +559,7 @@ Core server: ~3 days solo / ~1.5 days with Claude; the on-demand model removes t
 - Live fetch layer: arrivals 246 ms first call, 2 ms from TTL; surface feeds `feed_header` lag 7 s; `alerts.ttc.ca` answers with `http_last_modified`; `connections` 6 to 212 ms per call; ttc.ca `serviceChanges` empty while GTFS-RT carries 23 `MODIFIED_SERVICE` entities; `detours` resolves 60 of 60 entities.
 - Follow-up the same evening: the merged feed lists bus bays and streetcar platforms as station children with `wheelchair` 0; counted as platforms they had read 31 of 114 stations `partially accessible` with `step_free` `platforms unknown` (Eglinton, Finch and York Mills among them). With platforms limited to rail-served children the live split is 103 accessible, 5 not accessible (College, Islington, King, Museum, Old Mill), 1 partially accessible (Spadina) and 5 unknown (the former Line 3 stations).
 - Build-time checks (8 items 3 and 9) first run on the live store: suffixes with no station 3 (130 Westlake Rd - Guildwood Station; Toronto Pearson Airport - Viscount Station, twice), alert stations unresolved 0 of 41 alerts, unit codes matching a coded node 10 of 18.
+- FastMCP 3.4.8 to 4.1.0 and pydantic 2.13.5 to 2.14.0 (Dependabot PR #5, merged after phase 5a): the unit suite (388, gate tests included), the live suite (20), the image smoke and the four CI jobs passed without a code change. FastMCP 4 is built on MCP SDK v2 and the 2026-07-28 protocol, whose modern requests are sessionless (any replica can answer them, which fits the stateless single-instance shape); older clients negotiate the previous protocol per connection. Sampling and roots are gone from the server API; this server never used them.
 
 ### 2026-10-11 (phase 5a: the container, local)
 

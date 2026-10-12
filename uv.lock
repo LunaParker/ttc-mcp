@@ -1654,7 +1654,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastmcp", specifier = ">=3.4,<5" },
+    { name = "fastmcp", specifier = ">=4.1,<5" },
     { name = "google-cloud-storage", marker = "extra == 'cloud'", specifier = ">=3" },
     { name = "gtfs-realtime-bindings", specifier = ">=3.0" },
     { name = "httpx", specifier = ">=0.28" },
