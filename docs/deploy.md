@@ -6,7 +6,7 @@
 
 | Item | Value |
 |---|---|
-| Project | `$PROJECT_ID`, number `$PROJECT_NUMBER` |
+| Project | `$PROJECT_ID`, number `$PROJECT_NUMBER`: step 1 sets both, so run every step in that shell |
 | Region | `us-east1` for everything: service, Job, bucket, Artifact Registry, Scheduler |
 | Service | Cloud Run `ttc-mcp`: `--allow-unauthenticated` (the gate is the app), min 0 / max 1, 1 GiB, 1 CPU, cpu-boost, timeout 300 s, gen2, CPU allocated only during requests (the default) |
 | URL | `https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app`; the MCP endpoint is `/mcp`; the OAuth redirect URI is `/auth/callback` |
@@ -27,6 +27,8 @@ The cap is project-wide, so other services' spend counts against it. Open the bu
 
 ```bash
 gcloud auth list
+export PROJECT_ID=your-project-id
+export PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
 gcloud config set project $PROJECT_ID
 gcloud billing projects describe $PROJECT_ID --format='value(billingAccountName)'
 gcloud billing budgets list --billing-account="$(gcloud billing projects describe $PROJECT_ID --format='value(billingAccountName)' | sed 's#billingAccounts/##')" --format='table(displayName,amount.specifiedAmount.units,thresholdRules[].thresholdPercent)'

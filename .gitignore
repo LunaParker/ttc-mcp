@@ -9,4 +9,5 @@ __pycache__/
 *.tmp
 *.part
 .mcp.json
+CLAUDE.local.md
 dist/
