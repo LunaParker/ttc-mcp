@@ -36,7 +36,7 @@ Claude Code, in a project's `.mcp.json`:
 { "mcpServers": { "ttc": { "command": "uv", "args": ["run", "--project", "/absolute/path/to/ttc-mcp", "ttc-mcp", "--transport", "stdio"] } } }
 ```
 
-Environment: `TTC_MCP_CACHE` (default `~/.cache/ttc-mcp`), `TTC_MCP_UA` (User-Agent; the TTC's hosts reject Python's default) and `TTC_MCP_SKIP_REFRESH=1` to skip the startup CKAN check are the local ones; the full table is under Cloud Run below. `ttc-mcp-build --no-ttcapi` skips the ttc.ca service-level fetch (one request per route at build time); `--from-zip`/`--surface-zip` build from local GTFS zips; `--bucket` (or `TTC_MCP_STATIC_BUCKET`) pulls the bucket's store before the CKAN check and pushes the build into it after (`--from-zip` never pulls).
+Environment: `TTC_MCP_CACHE` (default `~/.cache/ttc-mcp`), `TTC_MCP_UA` (User-Agent; the TTC's hosts reject Python's default) and `TTC_MCP_SKIP_REFRESH=1` to skip the startup CKAN check are the local ones; the full table is under Cloud Run below. `ttc-mcp-build --no-ttcapi` skips the ttc.ca service-level fetch (one request per route at build time); `--from-zip`/`--surface-zip` build from local GTFS zips; `--bucket` (or `TTC_MCP_STATIC_BUCKET`) pulls the bucket's store before the CKAN check and pushes the build into it after (`--from-zip` never pulls). `--from-zip --bucket` replaces the bucket's manifest with the local one and `--bucket` removes local feed files the bucket's manifest does not list, so point `--bucket` only at a bucket you mean to overwrite.
 
 Upgrading from phase 3 or earlier: a store built before phase 4 has an older schema and is skipped at load (stderr names it). Run `uv run ttc-mcp-build` once to rebuild it, or `ttc-mcp-build --from-zip` for a local feed.
 
@@ -98,7 +98,7 @@ ttc_mcp/server.py   FastMCP app + entry point (stdio or http; the gate and the b
 ttc_mcp/config.py   settings from TTC_MCP_* and the gate settings;  ttc_mcp/gate.py  the Google OAuth gate and email allowlist
 scripts/            ttc_transit_probe.py (the original investigation probe), make_fixture.py, smoke_static.py, smoke_realtime.py, smoke_advisories.py, smoke_derived.py, validate_connections.py, smoke_image.sh (the container smoke CI runs)
 tests/              unit suite on tests/fixtures/gtfs-mini.zip (routes 1, 5, 121, 300, 400, 504), captured BusTime XML and advisory fixtures; tests/integration boots the real server; tests/unit/conftest.py keeps the unit suite off the network
-.run/               PyCharm run configurations: Tests, Server (stdio), Build static
+.run/               PyCharm run configurations: Tests, Integration (live), Server (stdio), Build static
 Dockerfile          the Cloud Run image (one image: ttc-mcp serves, ttc-mcp-build is the Job);  docs/deploy.md  the phase 5b runbook
 ```
 

@@ -19,7 +19,7 @@
 | Allowlist | `ALLOWED_EMAILS=lunaparker33@gmail.com` |
 | Billing | the project's hard-cap budget and `billing-killswitch`; no new budget wiring; the service should bill nothing at this scale in us-east1 (spec 6.9, cost) |
 
-The spec names one service account. The runbook uses two so the role split the spec asks for holds: `roles/storage.objectAdmin` on the bucket for the Job's account only, `roles/storage.objectViewer` for the service's. The Job needs no secret and the service never writes the bucket.
+The two accounts match spec 6.9's Identity row and keep its role split: `roles/storage.objectAdmin` on the bucket for the Job's account only, `roles/storage.objectViewer` for the service's. The Job needs no secret and the service never writes the bucket.
 
 ## 1. Account, project, billing headroom
 
@@ -115,7 +115,7 @@ gcloud storage ls -l gs://ttc-mcp-static-$PROJECT_NUMBER/
 gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="ttc-mcp-static"' --freshness=1h --limit=80 --format='value(textPayload)'
 ```
 
-Expected, first execution (empty bucket): the log, newest first, holds the JSON report with `"reason": "built"`, `"pulled": []` and `"pushed": ["static-S<feed>.sqlite", "manifest.json"]`, above it `[bucket] pushed static-S<feed>.sqlite (...)`, the three `[check]` lines (spec 8 items 3 and 9), `[refresh] ttc.ca service levels: 235 of 235 routes`, the two download lines and, first of all, `[bucket] no manifest in the bucket; ...`; no `Traceback`. The bucket then lists `manifest.json` and one `static-S<feed>.sqlite` of about 116 MB. Second execution with nothing new on CKAN: `[bucket] pulled static-S<feed>.sqlite (...)` first, then `"reason": "etags unchanged"`, `"pulled": ["S<feed>"]`, `"pushed": ["manifest.json"]`, and the bucket's feed file is untouched. During a board-period overlap (the first is due about 2026-10-31): the pulled manifest keeps the outgoing feed, the build adds the incoming one, `pushed` lists the new feed file and the manifest, and the bucket holds both feeds until the old `feed_end_date` passes.
+Expected, first execution (empty bucket), in time order (the log prints newest first, so it reads bottom up): first `[bucket] no manifest in the bucket; ...`, then the two download lines, `[refresh] ttc.ca service levels: 235 of 235 routes`, the three `[check]` lines (spec 8 items 3 and 9) and `[bucket] pushed static-S<feed>.sqlite (...)`, last the JSON report with `"reason": "built"`, `"pulled": []` and `"pushed": ["static-S<feed>.sqlite", "manifest.json"]`; no `Traceback`. The bucket then lists `manifest.json` and one `static-S<feed>.sqlite` of about 116 MB. Second execution with nothing new on CKAN: `[bucket] pulled static-S<feed>.sqlite (...)` first, then `"reason": "etags unchanged"`, `"pulled": ["S<feed>"]`, `"pushed": ["manifest.json"]`, and the bucket's feed file is untouched. During a board-period overlap (the first is due about 2026-10-31): the pulled manifest keeps the outgoing feed, the build adds the incoming one and `pushed` lists the new feed file and the manifest. `push` never deletes, so the old feed object stays in the bucket indefinitely, and the manifest keeps listing it until the first rebuild after `Manifest.prune`'s cutoff (a feed that ended before yesterday; prune runs only inside `refresh._register`), so the service keeps pulling both feeds until then.
 
 ## 10. The service
 

@@ -1,4 +1,4 @@
-"""Spec 6.9: the static store lives in a bucket. The Job pushes a finished build; the service pulls at cold start and on a timer."""
+"""Spec 6.9: the static store lives in a bucket. The Job pulls it first, then builds on a CKAN change and pushes; the service pulls at boot and on a timer."""
 from __future__ import annotations
 
 import json

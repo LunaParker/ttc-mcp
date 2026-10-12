@@ -83,6 +83,7 @@ class FeedDb:
     @property
     def conn(self) -> sqlite3.Connection:
         """One read-only connection per thread: SQLite in multi-thread mode forbids sharing one across threads at once."""
+        # Reopening after close() is intended: a call in flight on a feed of the store runtime.get_store just replaced keeps working.
         held = getattr(self._local, "held", None)
         if held is None:
             held = self._local.held = _Held(open_ro(self.path))
@@ -97,7 +98,7 @@ class FeedDb:
     def close(self) -> None:
         with self._lock:
             opened = self._opened[:]
-            self._opened.clear()
+            self._opened.clear()  # in place, never rebound: the finalizers hold this list
         for c in opened:
             c.close()
         self._local = threading.local()
