@@ -5,7 +5,7 @@ description = "MCP server for the TTC network: stops, routes, arrivals, connecti
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-  "fastmcp>=3.4,<4",
+  "fastmcp>=3.4,<5",
   "httpx>=0.28",
   "gtfs-realtime-bindings>=3.0",
   "pydantic>=2",
