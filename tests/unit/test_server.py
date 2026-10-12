@@ -238,3 +238,25 @@ def test_http_mode_with_a_bucket_pulls_the_store_before_serving(tmp_path, monkey
     err = capsys.readouterr().err
     assert "[bucket] pulled static-S1000538.sqlite" in err and "[ttc-mcp] bucket pull: manifest S1000538" in err
     assert created["puller"] is not None and created["puller"]() == "manifest S1000538"
+
+
+GATE_ENV = {"GOOGLE_OAUTH_CLIENT_ID": "client-id-test", "GOOGLE_OAUTH_CLIENT_SECRET": "secret-test", "BASE_URL": "https://ttc.example",
+            "JWT_SIGNING_KEY": "jwt-test", "ALLOWED_EMAILS": "owner@example.com"}
+NO_GATE = "[ttc-mcp] http transport has no gate: set GOOGLE_OAUTH_CLIENT_ID to require Google sign-in"
+
+
+@pytest.mark.parametrize("gated", [False, True])
+def test_an_http_start_without_the_gate_says_so(tmp_path, monkeypatch, capsys, gated):
+    """Ungated http admits anyone who reaches the port (spec 6.9), so the start names the variable that turns the gate on."""
+    from fastmcp import FastMCP
+
+    from ttc_mcp import server
+    monkeypatch.setenv("TTC_MCP_CACHE", str(tmp_path))
+    monkeypatch.setenv("TTC_MCP_SKIP_REFRESH", "1")
+    for k in ("TTC_MCP_STATIC_BUCKET", "GOOGLE_CLOUD_PROJECT", "STORAGE_ENCRYPTION_KEY", *GATE_ENV):
+        monkeypatch.delenv(k, raising=False)
+    for k, v in (GATE_ENV.items() if gated else ()):
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(FastMCP, "run", lambda self, *a, **k: None)
+    assert server.main(["--transport", "http"]) == 0
+    assert (NO_GATE in capsys.readouterr().err) is not gated

@@ -108,6 +108,8 @@ def main(argv=None) -> int:
     if a.transport == "stdio":
         app.run(transport="stdio", show_banner=False)
     else:
+        if gate is None:
+            print("[ttc-mcp] http transport has no gate: set GOOGLE_OAUTH_CLIENT_ID to require Google sign-in", file=sys.stderr)
         app.run(transport="http", host=a.host, port=a.port, stateless_http=True, json_response=True, show_banner=False)
     return 0
 
