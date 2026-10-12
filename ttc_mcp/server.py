@@ -14,6 +14,7 @@ from ttc_mcp.adapters.ckan import make_client
 from ttc_mcp.config import Gate, gate_settings, settings
 from ttc_mcp.gate import EmailAllowlist, build_auth
 from ttc_mcp.static.bucket import GcsBlobs, pull
+from ttc_mcp.static.manifest import Manifest
 from ttc_mcp.static.refresh import ensure_static
 from ttc_mcp.tools import advisory_tools, derived_tools, realtime_tools, static_tools
 
@@ -39,6 +40,16 @@ def _recheck(cache_dir, user_agent: str) -> str:
     with make_client(user_agent) as client:
         rep = ensure_static(cache_dir, client)
     return f"{rep['reason']} ({rep.get('feed_version')})"
+
+
+def _startup_check(cache_dir, user_agent: str) -> str:
+    """The startup CKAN check: a portal that is unreachable or failing is logged, and the server starts on the store it has."""
+    try:
+        return f"static store: {_recheck(cache_dir, user_agent)}"
+    except Exception as e:
+        feeds = ", ".join(f.feed_version for f in Manifest.load(cache_dir).feeds)
+        held = f"serving the store on disk: {feeds}" if feeds else "no store on disk yet: tools answer 'not built yet' until ttc-mcp-build succeeds"
+        return f"static check failed ({type(e).__name__}: {e}); {held}"
 
 
 async def _loop(fn: Callable[[], str], seconds: float, label: str) -> None:
@@ -95,9 +106,7 @@ def main(argv=None) -> int:
     gate = gate_settings() if a.transport == "http" else None
     refresh = not (a.no_refresh or s.skip_refresh or (a.transport == "http" and s.static_bucket))  # a bucket is authoritative (spec 6.9)
     if refresh:
-        with make_client(s.user_agent) as client:
-            rep = ensure_static(s.cache_dir, client)
-            print(f"[ttc-mcp] static store: {rep['reason']} ({rep.get('feed_version')})", file=sys.stderr)
+        print(f"[ttc-mcp] {_startup_check(s.cache_dir, s.user_agent)}", file=sys.stderr)
     puller = None
     if a.transport == "http" and s.static_bucket:
         blobs = GcsBlobs(s.static_bucket)
