@@ -5,7 +5,7 @@ description = "MCP server for the TTC network: stops, routes, arrivals, connecti
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-  "fastmcp>=3.4,<5",
+  "fastmcp>=4.1,<5",
   "httpx>=0.28",
   "gtfs-realtime-bindings>=3.0",
   "pydantic>=2",
@@ -35,7 +35,7 @@ packages = ["ttc_mcp"]
 [tool.pytest.ini_options]
 testpaths = ["tests/unit"]
 addopts = "-q"
-# fastmcp 3.4.8 imports authlib's deprecated httpx client module when it loads GoogleProvider; the warning is upstream's, not ours.
+# fastmcp's GoogleProvider pulls in authlib's deprecated httpx client module; the warning is upstream's, not ours.
 filterwarnings = ["ignore:The httpx module is deprecated:authlib.deprecate.AuthlibDeprecationWarning"]
 
 [tool.ruff]
