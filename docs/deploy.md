@@ -23,7 +23,7 @@ The spec names one service account. The runbook uses two so the role split the s
 
 ## 1. Account, project, billing headroom
 
-The cap is project-wide, so other services' spend counts against it. Open the budget's spend in the console (Billing > Reports, this month, this project) and make sure there is room; the amounts below are what the budget allows, not what is spent.
+The cap is project-wide, so other services' spend counts against it. Open the budget's spend in the console (Billing > Reports, this month, this project) and make sure there is room; the amounts below are what the budget allows, not what is spent. `gcloud billing budgets list` may need the Billing Budget API (`billingbudgets.googleapis.com`) enabled on the project; if it refuses, the console check is enough.
 
 ```bash
 gcloud auth list
@@ -55,7 +55,7 @@ gcloud storage buckets add-iam-policy-binding gs://ttc-mcp-static-$PROJECT_NUMBE
 
 ## 5. The three secrets, two of them generated here
 
-The values are piped straight into Secret Manager and never print. Run this from the repository so `uv run` has `cryptography` (it is a FastMCP dependency, already in the lock).
+The values are piped straight into Secret Manager and never print. Run this from the repository so `uv run` has `cryptography` (a transitive dependency of FastMCP, already in the lock).
 
 ```bash
 gcloud secrets create ttc-mcp-jwt-signing-key --replication-policy=automatic
@@ -71,7 +71,7 @@ for s in ttc-mcp-jwt-signing-key ttc-mcp-storage-fernet-key ttc-mcp-oauth-client
 In the console, APIs & Services > Credentials > Create credentials > OAuth client ID: type **Web application**, name `ttc-mcp`, one authorised redirect URI `https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/auth/callback`, no authorised JavaScript origin. (If the console asks for an OAuth consent screen first, create it with your own account as the only test user.) The client secret is shown once: copy it with the dialog's copy button, run the first line below before anything else touches the clipboard, then clear the clipboard. Copy the client ID (not secret) into the shell variable the deploy step reads.
 
 ```bash
-pbpaste | gcloud secrets versions add ttc-mcp-oauth-client-secret --data-file=-
+pbpaste | tr -d '\n' | gcloud secrets versions add ttc-mcp-oauth-client-secret --data-file=-
 pbcopy </dev/null
 CLIENT_ID=PASTE-THE-CLIENT-ID.apps.googleusercontent.com
 ```
@@ -88,7 +88,7 @@ gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:ttc-m
 
 ## 8. Artifact Registry and the image
 
-`gcloud builds submit` uploads the repository minus `.gitignore` (there is no `.gcloudignore`, so gcloud derives one from it) and builds with the repository's `.dockerignore`, so the context is small. The base image pin is the multi-arch index (linux/amd64 and linux/arm64, checked 2026-10-11), so the amd64 build resolves it.
+`gcloud builds submit` uploads the repository minus `.gitignore` (there is no `.gcloudignore`, so gcloud generates one from it and writes it into the checkout; add `.gcloudignore` to `.gitignore` afterwards so it is not committed) and builds with the repository's `.dockerignore`, so the context is small. The base image pin is the multi-arch index (linux/amd64 and linux/arm64, checked 2026-10-11), so the amd64 build resolves it.
 
 ```bash
 gcloud artifacts repositories create ttc-mcp --repository-format=docker --location=us-east1 --description="ttc-mcp images"
@@ -106,7 +106,7 @@ docker buildx build --platform linux/amd64 --push -t us-east1-docker.pkg.dev/$PR
 
 ## 9. The Job, run once so the bucket has a store before the service starts
 
-The image's command is the server; the Job overrides it with the installed build script (never `python -m ttc_mcp.build`, which from `/app` imports the uncompiled source copy). `--bucket` makes the build push the feeds, then the manifest (`--set-env-vars TTC_MCP_STATIC_BUCKET=ttc-mcp-static-$PROJECT_NUMBER` with no `--args` is the same thing: the variable is the flag's default). The Job's filesystem is in memory: both zips (about 84 MB and 83 MB), the built store (about 116 MB per feed, two feeds during a board-period overlap) and the `.part` files count against `--memory`, so if the execution is killed for memory, redeploy it with `--memory 2Gi`. `--max-retries 1` keeps a broken build from hitting CKAN four times.
+The image's command is the server; the Job overrides it with the installed build script (never `python -m ttc_mcp.build`, which from `/app` imports the uncompiled source copy). With `--bucket` (or `TTC_MCP_STATIC_BUCKET`, the flag's default, so `--set-env-vars TTC_MCP_STATIC_BUCKET=ttc-mcp-static-$PROJECT_NUMBER` with no `--args` is the same thing) the build first pulls the bucket's manifest and the feeds it lists into `/data`, then compares CKAN's ETags with that manifest and rebuilds only on change, then pushes the feeds, then the manifest. A Job starts with an empty disk, so the pull is what lets the ETag skip and the overlap pruning see the bucket's state; a failed pull stops the Job. The report carries `pulled` (the feed versions the bucket had) beside `pushed`. The Job's filesystem is in memory: both zips (about 84 MB and 83 MB), the built store (about 116 MB per feed, two feeds during a board-period overlap) and the `.part` files count against `--memory`, so if the execution is killed for memory, redeploy it with `--memory 2Gi`. `--max-retries 1` keeps a broken build from hitting CKAN four times.
 
 ```bash
 gcloud run jobs deploy ttc-mcp-static --image us-east1-docker.pkg.dev/$PROJECT_ID/ttc-mcp/ttc-mcp:v1 --region us-east1 --service-account ttc-mcp-job-sa@$PROJECT_ID.iam.gserviceaccount.com --command /app/.venv/bin/ttc-mcp-build --args=--bucket,ttc-mcp-static-$PROJECT_NUMBER --memory 1Gi --cpu 1 --task-timeout 900 --max-retries 1
@@ -115,7 +115,7 @@ gcloud storage ls -l gs://ttc-mcp-static-$PROJECT_NUMBER/
 gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="ttc-mcp-static"' --freshness=1h --limit=80 --format='value(textPayload)'
 ```
 
-Expected: the bucket lists `manifest.json` and one `static-S<feed>.sqlite` of about 116 MB (two during an overlap); the log, newest first, holds the build's JSON report with `"pushed": [...]`, `[bucket] pushed ...` lines, the three `[check]` lines (spec 8 items 3 and 9), `[refresh] ttc.ca service levels: 235 of 235 routes` and no `Traceback`. A second execution the same day reports `"reason": "etags unchanged"` and pushes the manifest only.
+Expected, first execution (empty bucket): the log, newest first, holds the JSON report with `"reason": "built"`, `"pulled": []` and `"pushed": ["static-S<feed>.sqlite", "manifest.json"]`, above it `[bucket] pushed static-S<feed>.sqlite (...)`, the three `[check]` lines (spec 8 items 3 and 9), `[refresh] ttc.ca service levels: 235 of 235 routes`, the two download lines and, first of all, `[bucket] no manifest in the bucket; ...`; no `Traceback`. The bucket then lists `manifest.json` and one `static-S<feed>.sqlite` of about 116 MB. Second execution with nothing new on CKAN: `[bucket] pulled static-S<feed>.sqlite (...)` first, then `"reason": "etags unchanged"`, `"pulled": ["S<feed>"]`, `"pushed": ["manifest.json"]`, and the bucket's feed file is untouched. During a board-period overlap (the first is due about 2026-10-31): the pulled manifest keeps the outgoing feed, the build adds the incoming one, `pushed` lists the new feed file and the manifest, and the bucket holds both feeds until the old `feed_end_date` passes.
 
 ## 10. The service
 
