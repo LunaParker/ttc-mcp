@@ -90,7 +90,7 @@ def register(mcp: FastMCP) -> None:
     async def vehicles(route: str | None = None, vehicle_id: str | None = None) -> dict:
         """Live positions of the buses and streetcars on a route, or one vehicle by fleet number: coordinates, bearing, speed, current stop
         (public number), headsign and crowding. Rail lines (1, 2, 4, 5, 6) publish no positions and answer unavailable; use next_trains.
-        Answers are best effort, from the TTC's own site endpoint; historical occupancy is out of scope."""
+        Answers are best effort, from the TTC's BusTime GTFS-Realtime feed; historical occupancy is out of scope."""
         async def run(feed):
             if not (route or vehicle_id):
                 return {"error": "give a route or a vehicle_id"}, [], ""

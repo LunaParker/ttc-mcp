@@ -170,10 +170,13 @@ async def test_scheduled_departures_resolve_a_stop_code_and_reject_an_unknown_st
 
 
 def test_instructions_carry_the_licence_attribution_and_the_best_effort_wording():
+    """OGL-Toronto asks for its attribution and, where possible, a link; only the website endpoints lack published terms."""
     from ttc_mcp.server import INSTRUCTIONS
 
-    assert "Contains information licensed under the Open Government Licence – Toronto" in INSTRUCTIONS
-    assert "Real-time and advisory answers are best effort, read from the TTC's own site endpoints, none of which publish terms" in INSTRUCTIONS
+    assert "Contains information licensed under the Open Government Licence – Toronto (https://open.toronto.ca/open-data-licence/)" in INSTRUCTIONS
+    assert "Timetables and the GTFS-Realtime feeds are TTC open data on the City of Toronto's portal" in INSTRUCTIONS
+    assert "endpoints behind the TTC's website, which publishes no terms specific to them" in INSTRUCTIONS
+    assert "Real-time and advisory answers are best effort." in INSTRUCTIONS and "none of which publish terms" not in INSTRUCTIONS
 
 
 @pytest.mark.anyio
@@ -182,6 +185,7 @@ async def test_live_tool_descriptions_say_best_effort_and_the_occupancy_scope(ap
         desc = {t.name: t.description for t in await c.list_tools()}
     for name in ("arrivals", "next_trains", "vehicles", "alerts", "service_status", "detours", "service_changes", "connections"):
         assert "best effort" in desc[name], name
+    assert "BusTime GTFS-Realtime feed" in desc["vehicles"]
     for name in ("vehicles", "arrivals"):
         assert "historical occupancy" in desc[name] and "out of scope" in desc[name], name
     assert "best effort" not in desc["routes"]
