@@ -1,119 +1,358 @@
 # ttc-mcp
 
-An MCP server that lets Claude reason about the TTC network live: stops, stations, routes, arrivals, connections, detours, advisories and accessibility, fetched on demand from the TTC's and the City of Toronto's own endpoints.
+Live answers about Toronto's transit network, for Claude and other MCP clients.
 
-- Specification: [docs/spec.md](docs/spec.md) (decisions a to j; on-demand fetch model; Cloud Run hosting)
-- Deploy runbook (phase 5b, the first Cloud Run deploy): [docs/deploy.md](docs/deploy.md)
-- Architecture page: [docs/architecture.html](docs/architecture.html)
-- Source survey: [docs/investigation-2026-09-13.md](docs/investigation-2026-09-13.md)
-- Detour feed addendum: [docs/detours-addendum.md](docs/detours-addendum.md)
-- Phase plans: [docs/superpowers/plans/](docs/superpowers/plans/)
+ttc-mcp is a [Model Context Protocol](https://modelcontextprotocol.io) server for the Toronto Transit Commission (TTC). It lets an assistant answer the questions riders actually ask: when the next streetcar comes, whether a subway line is closed and where the shuttle buses run, how to get across town around a closure, whether a station is step-free today. It reads the TTC's timetables and live feeds when you ask, says how fresh each answer is, and attaches service disruptions to every answer they touch.
 
-## Status
+It is an independent, single-user project, not affiliated with or endorsed by the TTC or the City of Toronto.
 
-Phase 1 (static core) is implemented: a SQLite store built from the City of Toronto's merged GTFS and the eight static tools (`find_stops`, `nearest_stops`, `stop`, `station`, `routes`, `route_stops`, `service_hours`, `scheduled_departures`).
+**Status (12 October 2026):** runs locally over stdio and HTTP. The container image and the Cloud Run setup are built and tested; nothing is deployed yet, and the first deployment follows [docs/deploy.md](docs/deploy.md).
 
-Phase 2 (real-time core) is implemented: `arrivals`, `next_trains`, `vehicles` and `feed_status` fetch the TTC's per-stop BusTime XML, GTFS-RT vehicle feed and NTAS on demand through a TTL cache (single-flight, last-known-good) and fall back to the timetable with `basis: "schedule"` when a source has nothing. Phase 3 (advisory layer) is implemented: `alerts`, `service_status`, `detours` and `service_changes` read alerts.ttc.ca, the GTFS-RT alert feed, the TripModifications detour feed and ttc.ca's service changes on demand, and every stop, station, route and arrivals answer carries the disruptions that touch it (closures with nightly windows, detoured stops, reduced speed zones, elevator and escalator outages). Phase 4 (derived static) is implemented: `route_shape`, `accessibility` and `connections`, plus route service levels from ttc.ca; the static build now carries shapes, per-stop distances, pathways, levels, units, station membership and a 150 m transfer graph. Phases 1 to 4 passed a spec-correctness review on 2026-10-11 and its fixes landed: closure end stations are served on their open side, suspended platforms report no minutes, shuttle options rank honestly, failing sources back off, trip ids resolve against both loaded feeds, and the stdio server rechecks CKAN every 24 h (spec v0.7). A same-day follow-up moved bus bays out of a station's platforms, so the accessibility summary reads rail platforms only. Phase 5a (the container, 2026-10-11) is implemented: the Google OAuth gate and email allowlist on the http transport (`GOOGLE_OAUTH_CLIENT_ID` turns it on; OAuth state in Firestore or in memory), the store kept in a GCS bucket (`ttc-mcp-build --bucket` pulls it, checks CKAN and pushes a rebuild) and pulled by the http server at boot and every six hours, one read-only SQLite connection per thread with the `connections` planner in a worker thread, the Dockerfile with the image smoke CI runs, and a unit suite that never reaches the network. Phase 5b, the GCP provisioning and the first deploy, follows [docs/deploy.md](docs/deploy.md); nothing is deployed as of 2026-10-11.
+## Contents
 
-## Quick start
+- [What you can ask](#what-you-can-ask)
+- [An answer during a closure](#an-answer-during-a-closure)
+- [The tools](#the-tools)
+- [Design](#design)
+- [When service is degraded](#when-service-is-degraded)
+- [Running it](#running-it)
+- [Configuration](#configuration)
+- [Data sources and licences](#data-sources-and-licences)
+- [Licence](#licence)
+- [Development](#development)
 
-```bash
-uv sync --extra cloud                     # Python 3.14 venv with dev tools and the cloud extra (Firestore state, GCS); the unit suite's GCS wiring test imports google.api_core
-uv run ttc-mcp-build                      # fetch both CKAN packages, build ~/.cache/ttc-mcp/static-<feed>.sqlite (a few minutes)
-TTC_MCP_SKIP_REFRESH=1 uv run python scripts/smoke_static.py   # nine live checks against the store
-TTC_MCP_SKIP_REFRESH=1 uv run python scripts/smoke_realtime.py # eight live checks against the TTC's real-time endpoints
-TTC_MCP_SKIP_REFRESH=1 uv run python scripts/smoke_advisories.py # ten live checks of the advisory tools and propagation
-TTC_MCP_SKIP_REFRESH=1 uv run python scripts/smoke_derived.py    # eleven live checks of route_shape, accessibility, service levels and connections
-TTC_MCP_SKIP_REFRESH=1 uv run python scripts/validate_connections.py # twenty origin-destination pairs to compare with the TTC trip planner; an option with a shuttle leg prints as SHUTTLE with its known_min
-uv run pytest tests/integration -v           # boots the real server over HTTP against the live store and endpoints (needs network)
-uv run ttc-mcp --transport stdio          # MCP server over stdio (checks CKAN on startup and every 24 h unless --no-refresh)
-uv run pytest                             # unit suite on the committed mini feed, offline (see Tests)
-```
+## What you can ask
 
-Claude Code, in a project's `.mcp.json`:
+You ask in plain language and the client picks the tools. Some examples:
+
+| Ask | Tools | What comes back |
+|---|---|---|
+| How do I get from Spadina to Pape? | `connections` | Up to four ranked trips: walking, rides with typical minutes, transfers, the next departures of the first ride, and every disruption on the way with the legs it affects |
+| I'm at the Distillery District. How do I get to Union? | a maps tool to geocode, then `connections` | The same, starting from the address's coordinates |
+| When's the next 504 at King and Spadina? | `find_stops`, `arrivals` | Predicted minutes with crowding, or timetable minutes and a note when nothing is predicted |
+| When's the next train at Bloor-Yonge? | `next_trains` | Minutes for every platform, by line and direction |
+| Is anything wrong on the subway? | `service_status` | Closures with their hours and shuttles, reduced speed zones, suspended or detoured surface routes, elevators and escalators out of service |
+| Is Queen station step-free right now? | `accessibility` | Platform and entrance flags, each elevator's live status, and a yes, no or unknown verdict with its reason |
+| Why is my bus skipping my stop? | `detours`, `route_stops` | The skipped stops, where the bus leaves and rejoins its route, the detour's path and the TTC's reason when it gives one |
+| Where are the 505 streetcars? | `vehicles` | Positions, bearing, speed, current stop and crowding |
+| Does the 300 Blue Night run tonight, and when is the last bus? | `routes`, `service_hours` | Whether it runs that day, and its first and last trips |
+| What leaves stop 15461 after 6 pm? | `scheduled_departures` | Timetable departures, including trips that run past midnight |
+| Show me the 7 Bathurst on a map. | `route_shape` | The route's line as an encoded polyline or GeoJSON, with its stops |
+| What's changing on the 501 this board period? | `service_changes` | The TTC's route changes for the period, with their dates |
+| Is the transit data up to date? | `feed_status` | Each source's age, cache state and failures, and the timetable's dates |
+
+The server doesn't turn addresses into coordinates. Pair it with a maps MCP server, such as Google Maps, and the client geocodes first; `connections` and `nearest_stops` take `{lat, lon}`. The server's instructions tell the client to start trip questions with `connections` and "what's going on" questions with `service_status`.
+
+## An answer during a closure
+
+On Monday 12 October 2026, Line 2 had no service between St George and Broadview from 06:00 to 15:00 for structural maintenance, with shuttle buses running. Asked for the next trains at St George at 13:24, the server answered (abridged: keys removed, values unchanged):
 
 ```json
-{ "mcpServers": { "ttc": { "command": "uv", "args": ["run", "--project", "/absolute/path/to/ttc-mcp", "ttc-mcp", "--transport", "stdio"] } } }
+{
+  "station": {"id": "43269", "name": "St George"},
+  "platforms": [
+    {"platform": "13855", "line": "2", "direction_text": "Westbound to Kipling",
+     "next_min": [0], "basis": "realtime", "service": "normal"},
+    {"platform": "13856", "line": "2", "direction_text": "Eastbound to Kennedy",
+     "next_min": [], "ntas_min": [2, 6, 13], "service": "suspended",
+     "note": "NTAS keeps publishing predictions inside a closure; this platform is suspended"},
+    {"platform": "13857", "line": "1", "direction_text": "Southbound to Finch via Union",
+     "next_min": [2, 5, 10], "basis": "realtime", "service": "normal"},
+    {"platform": "13858", "line": "1", "direction_text": "Northbound to Vaughan Metropolitan Centre",
+     "next_min": [6, 8, 10], "basis": "realtime", "service": "normal"}
+  ],
+  "disruptions": [
+    {"type": "closure", "alert_id": "77820", "span": ["St George", "Broadview"], "active_now": true,
+     "period": ["2026-10-12T06:00-04:00", "2026-10-12T15:00-04:00"], "shuttle": "Running",
+     "role": "shuttle_terminus",
+     "text": "Line 2 Bloor-Danforth: No service between St George and Broadview stations due to structural maintenance. Shuttle buses are running."}
+  ],
+  "meta": {"source": "ntas", "fetched_at": "2026-10-12T13:24:52-04:00", "cache": "live",
+           "staleness": "fresh", "static_feed": "S1000542",
+           "advisories": {"cache": "live", "staleness": "fresh", "errors": null}}
+}
 ```
 
-Environment: `TTC_MCP_CACHE` (default `~/.cache/ttc-mcp`), `TTC_MCP_UA` (User-Agent; the TTC's hosts reject Python's default) and `TTC_MCP_SKIP_REFRESH=1` to skip the startup CKAN check are the local ones; the full table is under Cloud Run below. `ttc-mcp-build --no-ttcapi` skips the ttc.ca service-level fetch (one request per route at build time); `--from-zip`/`--surface-zip` build from local GTFS zips; `--bucket` (or `TTC_MCP_STATIC_BUCKET`) pulls the bucket's store before the CKAN check and pushes the build into it after (`--from-zip` never pulls). `--from-zip --bucket` replaces the bucket's manifest with the local one and `--bucket` removes local feed files the bucket's manifest does not list, so point `--bucket` only at a bucket you mean to overwrite.
+Three things to notice:
 
-Upgrading from phase 3 or earlier: a store built before phase 4 has an older schema and is skipped at load (stderr names it). Run `uv run ttc-mcp-build` once to rebuild it, or `ttc-mcp-build --from-zip` for a local feed.
+- The TTC's train-prediction service (NTAS) was still predicting eastbound trains in 2, 6 and 13 minutes. The closure decides instead: the platform is `suspended`, `next_min` is empty, and NTAS's numbers stay visible as `ntas_min`.
+- St George is the end of the closure, so the westbound platform, facing the open part of the line, kept real predictions. The closure is tagged `shuttle_terminus`: this is where the shuttle buses start.
+- `meta` says the predictions were fetched live and are fresh, and that the disruption feeds answered.
 
-## Docker
+The same afternoon, `connections` from Spadina to Pape answered: Line 2 to St George, shuttle bus to Broadview, Line 2 to Pape. Its `typical_min` was `null` because the TTC publishes no shuttle times, `known_min` was 4 for the two train rides, the shuttle counted as a transfer, and the closure listed the legs it affects: 1, 2 and 3.
 
-The image (`Dockerfile`) is the Cloud Run image, and it runs locally the same way: `ghcr.io/astral-sh/uv:python3.14-bookworm-slim` pinned by digest, `uv sync --frozen --no-dev --extra cloud` with the project installed as a wheel, `ENV TTC_MCP_TRANSPORT=http TTC_MCP_SKIP_REFRESH=1 TTC_MCP_CACHE=/data PORT=8080`, and `/app/.venv/bin/ttc-mcp` as the command: streamable HTTP on `:8080/mcp`, stateless JSON, no CKAN check, no gate unless `GOOGLE_OAUTH_CLIENT_ID` is set. The store lives under `/data`, so mount a volume there and build into it first:
+## The tools
+
+Nineteen tools in four groups. Station inputs take an id, a name or a common alias ("Dundas" finds TMU, "Bloor" finds Bloor-Yonge); stop inputs take the public stop number posted at the stop. The output shapes are specified in [docs/spec.md](docs/spec.md) section 4.4.
+
+**Timetable and network**, answered from the TTC's published GTFS on disk:
+
+| Tool | Takes | Answers with |
+|---|---|---|
+| `find_stops` | a name, stop number or station alias; optional route, direction, mode | Matching stops, platforms and stations, with the routes and headsigns each serves |
+| `nearest_stops` | `lat`, `lon`; optional radius (500 m), limit, kind | Nearby stops and stations with walking minutes, routes served and active disruptions |
+| `stop` | a stop number | One stop or platform: location, wheelchair flag, routes, station and disruptions |
+| `station` | a station id, name or alias | Rail platforms with open or closed status, bus bays and streetcar platforms, entrances, the accessibility summary and service per line |
+| `routes` | optional series, mode, `overnight` | Every route with its mode, series (Blue Night, express and community among them) and service hours |
+| `route_stops` | route, direction (0 or 1); optional pattern | Ordered stops per stop pattern, with typical minutes and each stop's status: open, closed or skipped by a detour |
+| `service_hours` | route; optional date | Whether the route runs that day, and its first and last trips |
+| `scheduled_departures` | stop; optional route, time, limit | Timetable departures from a time, including trips past midnight |
+
+**Live**, fetched from the TTC when asked:
+
+| Tool | Takes | Answers with |
+|---|---|---|
+| `arrivals` | a stop number or rail platform; optional route, limit | Next vehicles with minutes, crowding and detour flags, or timetable minutes with a note |
+| `next_trains` | a station or platform | Next trains on every platform, or why a platform has none |
+| `vehicles` | a route or fleet number | Bus and streetcar positions, bearing, speed, current stop and crowding |
+| `feed_status` | optional `probe` | The age and health of every source and of the timetable; `probe: true` checks each source now |
+
+**Disruptions**:
+
+| Tool | Takes | Answers with |
+|---|---|---|
+| `alerts` | optional route, station, stop, type | Current alerts in one shape: closures, suspensions, detours, reduced speed zones, delays, elevator and escalator outages |
+| `service_status` | nothing | The network picture, and the first call for "what's going on" |
+| `detours` | optional route | Active detours with skipped stops, the detour's path, trips affected and the reason |
+| `service_changes` | optional route, date | Route changes for the current board period |
+
+**Derived**:
+
+| Tool | Takes | Answers with |
+|---|---|---|
+| `route_shape` | route, direction; optional pattern, format, simplification, a stop-to-stop span | The route's geometry with its stops |
+| `accessibility` | a station or stop | Platform and entrance flags, elevators and escalators with live status, and a step-free verdict with its basis |
+| `connections` | origin and destination (a stop, a station or `{lat, lon}`); optional maximum transfers (0 or 1), walking distance, departure time, limit | Ranked direct and one-transfer trips, with next departures and the disruptions each one touches |
+
+Every answer carries `meta`:
+
+- `source`: the feeds that answered.
+- `fetched_at`, and `feed_timestamp` when the feed publishes one.
+- `cache`: `live` (just fetched), `ttl` (reused within the feed's refresh interval), `stale_fallback` (the source failed and this is its last good answer) or `static` (timetable only).
+- `staleness`: `fresh` or `stale` for live data, judged against the feed's own clock; `fresh`, `expiring` or `expired` for the timetable; `unavailable` when there is nothing to judge.
+- `static_feed`: the timetable version in use.
+- `advisories`: the same for the disruption feeds when the answer includes disruptions, with `errors` naming any feed that failed.
+
+Rows that give times also carry `basis`: `realtime` or `schedule`.
+
+## Design
+
+The [specification](docs/spec.md) records each decision with its evidence; section 7 is the summary. The ones that shape what you see:
+
+- **It fetches only when asked.** There is no background polling. A question triggers the requests it needs, each source is cached for its own refresh interval (from 10 seconds for train predictions to 10 minutes for service changes), and simultaneous questions share one request. An idle server sends nothing, which is light on the TTC's servers and lets a hosted copy scale to zero.
+- **It says how fresh every answer is**, and a fallback is never labelled fresh (see `meta` above).
+- **Disruptions travel with the answer.** Closures, detours, reduced speed zones, delays and elevator outages are attached to the stops, stations, arrivals and trips they affect, and the trip planner never routes you through a closed station or to a stop a detour skips.
+- **Closures follow how the TTC runs them.** Stations inside a closure have no trains. Each end station keeps running on the platform facing the open part of the line, and that is where the shuttle buses start. A train prediction for a closed platform is set aside, not trusted.
+- **It doesn't invent numbers.** A shuttle leg's minutes are unknown, so a trip with one reports `typical_min: null` and the minutes it does know. Crowding reads "No info" without data. A step-free verdict is `unknown` when a station's elevators aren't fully mapped. Timetable fallbacks say `basis: schedule`.
+- **Timetables come from the TTC's published GTFS**, built into a local SQLite file and rebuilt only when the City of Toronto's portal publishes a new one. During a board-period changeover both timetables stay loaded, so trips from either resolve.
+- **Live data comes from the TTC's own feeds**: BusTime for buses and streetcars, NTAS for the subway and LRT, and the TTC's alert and GTFS-Realtime feeds. Every request names the project in its User-Agent, and a failing source is backed off (see below).
+- **Lines 5 and 6 are rapid transit** everywhere: stations, platforms, closures and train predictions.
+- **Accessibility reads the rail platforms**, not the station's own flag (which the feed sets on every station) and not its bus bays, and takes elevator status from live alerts.
+- **No geocoding.** Addresses are a maps tool's job, so the server needs no maps API key.
+- **One person, gated when hosted.** A hosted copy sits behind Google sign-in with an email allowlist, and it speaks stateless HTTP so an idle connection never keeps an instance running.
+- **Built on [FastMCP](https://gofastmcp.com) 4 and Python 3.14.**
+
+## When service is degraded
+
+Two kinds of trouble: a data source failing, and the transit network itself being disrupted. Either way the server answers what it can and says what it couldn't.
+
+### A data source fails
+
+| Source | Fetched at most every | Last good answer kept for | Called stale after |
+|---|---|---|---|
+| Bus and streetcar predictions (BusTime) | 30 s | 10 min | 90 s |
+| Vehicle positions and trips (BusTime GTFS-Realtime) | 30 s | 10 min | 90 s |
+| Train predictions (NTAS) | 10 s | 5 min | 60 s |
+| alerts.ttc.ca | 25 s | 1 h | 10 min |
+| GTFS-Realtime alerts | 60 s | 1 h | 10 min |
+| Detours | 5 min | 1 h | 30 min |
+| ttc.ca service changes | 10 min | 1 h | 30 min |
+
+- **A request fails or times out** (after 10 seconds, or 5 for the alert, detour and service-change feeds): the source's last good answer is used, marked `cache: stale_fallback` and `staleness: stale`, for as long as the table allows.
+- **Past that window**, live answers fall back to the timetable: `arrivals` and `next_trains` give scheduled minutes with `basis: schedule` and a note naming the failure, and `vehicles` returns no vehicles with a note. A disruption feed that fails is named in `meta.advisories.errors`; the answer still comes, but read "no disruptions" there as unknown, not as all clear.
+- **A source that keeps failing is put on hold.** After each failure it isn't asked again for a pause that doubles with every consecutive failure, starting at twice its refresh interval and capped at a quarter of its stale window, so a struggling TTC server isn't hammered. `feed_status` shows each source's failures, when it will next be tried (`retry_after`) and how many HTTP 403 or 429 refusals it has seen; `feed_status` with `probe: true` asks every source once, hold or not.
+- **No prediction isn't no service.** An empty answer from NTAS (common on Line 6, and normal late at night) reads `service: no_prediction` with timetable minutes. BusTime's own messages are passed on in the note the same way.
+- **Rail lines publish no vehicle positions or crowding**, so `vehicles` answers that the rail lines (1, 2, 4, 5 and 6) are unavailable and points to `next_trains`.
+
+### The network is disrupted
+
+- **A subway or LRT closure.** Platforms inside the closed section are `suspended`: no minutes, with whatever NTAS still predicts set aside in `ntas_min`, as in the example above. The end stations keep real minutes on the platform facing the open line; their service reads `reduced` and the closure is tagged `shuttle_terminus`. A closure that ends at a terminal, or covers one station, closes both platforms there. Trips across the gap become ride, shuttle, ride: `typical_min: null`, `known_min` for the rest, the shuttle counted as a transfer, and complete trips ranked first. When the TTC runs no shuttle, `connections` routes around the closure on other lines or says why it found nothing.
+- **Planned and nightly closures** carry their windows, and `active_now` says whether one applies at this minute. `connections` with a future `depart_at` plans against the closures in force at that time.
+- **A surface detour.** Skipped stops show as `skipped_by_detour` in `route_stops`, arrival rows carry the detour's id, and `connections` never boards you at or drops you off at a skipped stop: it plans from the served stops nearby and says so.
+- **Reduced speed zones**, in their direction of travel, **and delays** are attached to the legs of a trip that they affect, and `affects` names those legs.
+- **An elevator out of service** shows in `accessibility` with its alert, and the step-free verdict turns to `no`, noting that another elevator may still give a step-free path. Outages announced for later are listed under `upcoming` and leave today's verdict alone.
+
+### The timetable is missing or old
+
+- **No timetable yet:** timetable-based tools answer with an error asking you to run `ttc-mcp-build`.
+- **A timetable built by an older version of the server** is skipped with a message naming it; `ttc-mcp-build` rebuilds it.
+- **An ageing timetable:** within three days of its end date, with no newer one loaded, `staleness` reads `expiring`; after the end date, `expired`. The TTC usually publishes each board period's timetable about a week ahead, and the daily check picks it up.
+- **The City's portal is unreachable:** the 24-hour check of a local server and the hosted daily Job log the failure and keep the timetable they have. A local server that checks the portal at startup, though, exits when it can't reach it; start it with `--no-refresh` (or `TTC_MCP_SKIP_REFRESH=1`) to serve the timetable already on disk. This is a known limitation.
+- **Hosted, the bucket can't be read:** a new instance exits at startup and Cloud Run reports the failed start; an empty bucket starts a server whose timetable tools say the timetable isn't built yet. A failed pull on the six-hour timer keeps the timetable already loaded.
+
+## Running it
+
+### What you need
+
+- [uv](https://docs.astral.sh/uv/), which installs Python 3.14 for you.
+- About 400 MB of disk: each timetable is a 116 MB SQLite file, two of them during a board-period changeover, plus the 170 MB of GTFS zips the last build downloaded.
+- Network access to the City of Toronto's open data portal, to build the timetable, and to the TTC's servers, for live answers.
+
+### Locally, with Claude Code or Claude Desktop
+
+```bash
+git clone https://github.com/LunaParker/ttc-mcp.git
+cd ttc-mcp
+uv sync
+uv run ttc-mcp-build
+```
+
+The build downloads the TTC's GTFS from the City's portal and builds the timetable into `~/.cache/ttc-mcp`, in about a minute on a fast connection. Then add the server to your client.
+
+Claude Code, for every project (`--scope user`) or only the current one (the default):
+
+```bash
+claude mcp add --scope user ttc -- uv run --project /absolute/path/to/ttc-mcp ttc-mcp --transport stdio
+```
+
+Claude Desktop, in `claude_desktop_config.json` (on macOS in `~/Library/Application Support/Claude/`, on Windows in `%APPDATA%\Claude\`). Give the full path to `uv` (from `which uv`), because the desktop app usually doesn't see your shell's `PATH`:
+
+```json
+{
+  "mcpServers": {
+    "ttc": {
+      "command": "/absolute/path/to/uv",
+      "args": ["run", "--project", "/absolute/path/to/ttc-mcp", "ttc-mcp", "--transport", "stdio"]
+    }
+  }
+}
+```
+
+A local stdio server checks the City's portal when it starts, builds a new timetable first if the TTC has published one (the start waits for it), and checks again every 24 hours while it runs. Building before you connect, as above, keeps the first start quick. Add `--no-refresh` to the arguments to skip the check, for example offline.
+
+### Locally, over HTTP
+
+```bash
+uv run ttc-mcp --transport http --host 127.0.0.1
+claude mcp add --transport http ttc http://127.0.0.1:8080/mcp
+```
+
+The server speaks streamable HTTP at `/mcp` with stateless JSON responses. Like the stdio server it checks the City's portal when it starts, but it doesn't recheck; run `uv run ttc-mcp-build` to refresh the timetable, and the running server picks it up on its next request. Without Google sign-in configured it is open to anyone who can reach it, and it says so when it starts: `--host 127.0.0.1` keeps it on your machine, while the default, `0.0.0.0`, listens on every network interface.
+
+### Docker
+
+The image is the one Cloud Run runs. It serves HTTP on port 8080 and keeps its timetable in `/data`, so give it a volume and build the timetable into it first:
 
 ```bash
 docker build -t ttc-mcp .
 docker volume create ttc-mcp-data
-docker run --rm -v ttc-mcp-data:/data ttc-mcp /app/.venv/bin/ttc-mcp-build                  # CKAN download and build into the volume (a few minutes)
-docker run --rm -p 8080:8080 -v ttc-mcp-data:/data ttc-mcp                                   # serve it: POST http://127.0.0.1:8080/mcp
-docker run --rm -p 8080:8080 -v ttc-mcp-data:/data -e TTC_MCP_NOW=2026-10-06T08:00 ttc-mcp   # the same server with its clock pinned to a day the store covers
-scripts/smoke_image.sh                                                                        # what CI runs: build, fixture store in a container, 19 tools, a routes answer from /data
+docker run --rm -v ttc-mcp-data:/data ttc-mcp /app/.venv/bin/ttc-mcp-build
+docker run --rm -p 127.0.0.1:8080:8080 -v ttc-mcp-data:/data ttc-mcp
 ```
 
-`TTC_MCP_NOW` (ISO 8601; a naive value is Toronto time) pins `runtime.now()`, which is read on every call: the smoke sets it so the fixture feed (2026-09-06 to 2026-10-31) answers on any real date, and it reproduces a past day against a store that still covers it. Run the installed scripts (`/app/.venv/bin/ttc-mcp`, `/app/.venv/bin/ttc-mcp-build`), never `python -m ttc_mcp...` from `/app`: the uncompiled source copy there shadows the installed wheel.
+The server is then at `http://127.0.0.1:8080/mcp`. The container never checks the City's portal by itself: run the build command again to refresh the timetable (it does nothing when the TTC hasn't published a new one), and the running server picks the new one up on its next request. Call the installed commands under `/app/.venv/bin`, not `python -m ttc_mcp...`, which inside `/app` would load the source copy instead of the installed package. `-e TTC_MCP_NOW=2026-10-06T08:00` pins the server's clock, which reproduces a past day against a timetable that covers it.
 
-## Cloud Run
+### Google Cloud Run
 
-The hosted shape is spec 6.9: Cloud Run service `ttc-mcp` in `us-east1` (project `$PROJECT_ID`; min 0, max 1, 1 GiB, stateless JSON at `https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/mcp`) with the Google OAuth gate and email allowlist in-process and its OAuth state in Firestore; the static store is built by the Cloud Run Job `ttc-mcp-static` (Cloud Scheduler `ttc-mcp-static-daily`, 04:30 Toronto) into `gs://ttc-mcp-static-$PROJECT_NUMBER` and pulled by the service at boot and every six hours. [docs/deploy.md](docs/deploy.md) is the paste-and-run runbook for the first deploy (phase 5b). Nothing is deployed as of 2026-10-11. Once it is, Claude Code's `.mcp.json` entry is `{ "mcpServers": { "ttc": { "type": "http", "url": "https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/mcp" } } }`, and the claude.ai connector takes the same URL with the advanced OAuth fields left empty.
+The hosted shape, specified in [docs/spec.md](docs/spec.md) section 6.9, uses the same image twice:
 
-Environment variables the code reads (`grep -rn os.environ ttc_mcp/`):
+- A **Cloud Run service** runs the server over HTTPS behind Google sign-in, scaling between zero and one instance. At startup and every six hours it pulls the timetable from a Cloud Storage bucket; it never contacts the City's portal itself.
+- A **Cloud Run Job**, started daily at 04:30 Toronto time by Cloud Scheduler, runs `ttc-mcp-build --bucket`: it pulls the bucket's timetable, checks the City's portal, and builds and pushes a new timetable only when the TTC has published one.
+- **Google sign-in** runs inside the server: FastMCP's Google OAuth provider with dynamic client registration, then an email allowlist checked on every request. The OAuth state is kept, encrypted, in Firestore so sign-ins survive scaling to zero, and its three secrets live in Secret Manager.
 
-| Variable | Read by | Default | Effect |
-|---|---|---|---|
-| `TTC_MCP_TRANSPORT` | `server.main` (the `--transport` default) | `stdio`; the image sets `http` | `http` serves streamable HTTP on `--host` and `PORT`; `stdio` never gates and never pulls |
-| `PORT` | `server.main` (the `--port` default) | `8080` (the image sets it too; Cloud Run sets it) | http only |
-| `TTC_MCP_CACHE` | `config.settings` | `~/.cache/ttc-mcp`; the image sets `/data` | where the store, `manifest.json` and the build's `downloads/` live |
-| `TTC_MCP_UA` | `config.settings` | `ttc-mcp/<version> (+https://github.com/LunaParker/ttc-mcp)` | the User-Agent on every request; four TTC hosts 403 Python's default |
-| `TTC_MCP_SKIP_REFRESH` | `config.settings` | off; `1`, `true` or `yes` turn it on; the image sets `1` | skips the startup CKAN check on both transports and the stdio 24 h recheck |
-| `TTC_MCP_STATIC_BUCKET` | `config.settings`; used by `server.main` (http only) and as the default of `ttc-mcp-build --bucket` | unset | http: pull the store from this bucket at boot and on the timer and never check CKAN; build: pull the bucket's store before the CKAN check, push the build after (`--from-zip` never pulls) |
-| `TTC_MCP_PULL_S` | `config.settings` | `21600` (6 h); under 60 refused at startup | the http pull interval |
-| `TTC_MCP_NOW` | `runtime.now`, on every call | unset: the Toronto wall clock | ISO 8601, naive means Toronto; pins the clock for the image smoke or to reproduce a day |
-| `GOOGLE_OAUTH_CLIENT_ID` | `config.gate_settings`, called from `server.main` for http only | unset: no gate | set: the gate is on and the next four variables are required; a half-configured gate refuses to start |
-| `GOOGLE_OAUTH_CLIENT_SECRET` | `config.gate_settings` | required with the gate | passed to `GoogleProvider` (Secret Manager on Cloud Run) |
-| `BASE_URL` | `config.gate_settings` | required with the gate | the service's origin without a path (a trailing `/` is stripped); the OAuth redirect URI is `BASE_URL/auth/callback` |
-| `JWT_SIGNING_KEY` | `config.gate_settings` | required with the gate | passed to `GoogleProvider` as `jwt_signing_key` (Secret Manager on Cloud Run) |
-| `ALLOWED_EMAILS` | `config.gate_settings` (`allowed_emails`) | required with the gate | comma-separated, case-insensitive; an empty list refuses to start |
-| `GOOGLE_CLOUD_PROJECT` | `config.gate_settings` | unset: OAuth state in memory | set: OAuth state in that project's default Firestore database, sanitized, collections prefixed `ttc`, Fernet-encrypted (`gate.client_storage` builds it from the `Gate` fields) |
-| `STORAGE_ENCRYPTION_KEY` | `config.gate_settings` | required with `GOOGLE_CLOUD_PROJECT` | the Fernet key for that state, used by `gate.client_storage` (Secret Manager on Cloud Run) |
+For one person this is sized to stay within Google Cloud's free tiers (the estimate is in spec 6.9); check your project's billing before you start.
 
-## Tests
+[docs/deploy.md](docs/deploy.md) is the complete runbook, one block of commands per step: billing headroom, APIs, service accounts, the bucket, the secrets, the OAuth client, Firestore, the image, the Job (run once so the bucket has a timetable), the service, the scheduler, then the connectors and the post-deploy checks. It is written with this project's own values (project, region, names and allowlist); substitute yours.
 
-`uv run pytest` is the unit suite on the committed mini feed, and it never reaches the network: `tests/unit/conftest.py` lets httpx talk to loopback only, and a test that reaches any other host fails at teardown naming the host (the fetch layer would otherwise swallow the refusal into `staleness: unavailable`). `uv run pytest tests/integration` boots the real server over HTTP and reaches the TTC's hosts, so it stays out of CI. CI runs four jobs: unit (`uv sync --frozen --extra cloud`, `pytest tests/unit`), lint (`ruff check`), build (sdist and wheel, both entry points called from a clean venv) and image (`scripts/smoke_image.sh`).
+Once it is deployed, connect a client to `https://<your-service-url>/mcp`:
 
-## Layout
+- **claude.ai:** Settings, Connectors, Add custom connector. Paste the URL, leave the advanced OAuth settings empty, and sign in with an allowlisted Google account; the Claude apps share the connector.
+- **Claude Code:** `claude mcp add --transport http ttc https://<your-service-url>/mcp`, then sign in from `/mcp`.
 
+## Configuration
+
+Both commands read these environment variables. [CLAUDE.md](CLAUDE.md) has the same table with the module that reads each one.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `TTC_MCP_TRANSPORT` | `stdio` (the image sets `http`) | The transport when `--transport` isn't given |
+| `PORT` | `8080` | The HTTP port when `--port` isn't given; Cloud Run sets it |
+| `TTC_MCP_CACHE` | `~/.cache/ttc-mcp` (the image sets `/data`) | Where the timetable files, their `manifest.json` and the build's downloads live |
+| `TTC_MCP_UA` | `ttc-mcp/<version> (+https://github.com/LunaParker/ttc-mcp)` | The User-Agent on every request; several TTC servers refuse Python's default |
+| `TTC_MCP_SKIP_REFRESH` | off (the image sets `1`) | `1`, `true` or `yes` skips the startup portal check and the 24-hour recheck |
+| `TTC_MCP_STATIC_BUCKET` | unset | HTTP server: pull the timetable from this Cloud Storage bucket at startup and every `TTC_MCP_PULL_S` seconds, and never check the portal. Build: pull the bucket's timetable first and push the result after |
+| `TTC_MCP_PULL_S` | `21600` (6 hours) | How often the HTTP server pulls the bucket; values under 60 are refused |
+| `TTC_MCP_NOW` | unset (the Toronto clock) | Pins the server's clock to an ISO 8601 time, read as Toronto time when it has no offset |
+| `GOOGLE_OAUTH_CLIENT_ID` | unset (no sign-in) | Turns on Google sign-in for the HTTP server; the next four become required, and a half-configured gate refuses to start |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | | The OAuth client's secret |
+| `BASE_URL` | | The service's public origin; the OAuth redirect URI is `BASE_URL/auth/callback` |
+| `JWT_SIGNING_KEY` | | Signs the tokens the server issues |
+| `ALLOWED_EMAILS` | | The Google accounts allowed in, comma-separated; an empty list refuses to start |
+| `GOOGLE_CLOUD_PROJECT` | unset (OAuth state in memory) | Keeps the OAuth state in this project's Firestore database |
+| `STORAGE_ENCRYPTION_KEY` | | The Fernet key that encrypts that state; required with `GOOGLE_CLOUD_PROJECT` |
+
+Command options:
+
+| Command | Option | Effect |
+|---|---|---|
+| `ttc-mcp` | `--transport stdio\|http` | stdio for a local client, HTTP for a network one |
+| | `--host`, `--port` | Where HTTP listens; defaults `0.0.0.0` and `PORT` or 8080 |
+| | `--no-refresh` | Don't check the City's portal at startup or every 24 hours |
+| `ttc-mcp-build` | `--force` | Rebuild even when the portal's files haven't changed |
+| | `--cache DIR` | Build somewhere other than `TTC_MCP_CACHE` |
+| | `--from-zip FILE`, `--surface-zip FILE` | Build from GTFS zips on disk instead of the portal |
+| | `--no-surface` | Skip the surface feed; vehicle positions then can't be matched to public stop numbers |
+| | `--no-ttcapi` | Skip ttc.ca's route service levels (one request per route) |
+| | `--no-checks` | Skip the data checks logged after each build |
+| | `--bucket NAME` | Pull this bucket's timetable before the portal check and push the result after, as the Job does. It overwrites the bucket's timetable list, so point it only at a bucket you mean to change |
+
+## Data sources and licences
+
+ttc-mcp reads two kinds of TTC data: open data the TTC publishes on the City of Toronto's portal, and endpoints behind the TTC's own website.
+
+| Data | Source | Kind |
+|---|---|---|
+| Timetables: routes, stops, schedules, shapes and station layouts | [Merged GTFS - TTC Routes and Schedules](https://open.toronto.ca/dataset/merged-gtfs-ttc-routes-and-schedules/) | Open data |
+| Bus and streetcar stop ids used by the live feeds | [Surface Routes and Schedules for BusTime](https://open.toronto.ca/dataset/surface-routes-and-schedules-for-bustime/) | Open data |
+| Vehicle positions, crowding and trips | `bustime.ttc.ca/gtfsrt`, listed as [TTC BusTime Real-Time Next Vehicle Arrival (NVAS)](https://open.toronto.ca/dataset/ttc-bustime-real-time-next-vehicle-arrival-nvas/) | Open data |
+| Service alerts, closure windows and detours | `gtfsrt.ttc.ca`, listed as [TTC GTFS-Realtime (GTFS-RT) Service Disruptions](https://open.toronto.ca/dataset/ttc-gtfs-realtime-gtfs-rt/) | Open data |
+| Bus and streetcar predictions at a stop | the BusTime web map, `bustime.ttc.ca` | Behind the TTC's website |
+| Subway and LRT predictions | NTAS, `ntas.ttc.ca` | Behind the TTC's website |
+| Alerts with reduced speed zones and elevator and escalator outages | `alerts.ttc.ca` | Behind the TTC's website |
+| Route service levels and service changes | `www.ttc.ca/ttcapi` | Behind the TTC's website |
+
+**Open data.** The TTC publishes the four portal datasets, and their pages on the portal give the [Open Government Licence – Toronto](https://open.toronto.ca/open-data-licence/); the portal's API leaves their licence field unspecified. The licence allows any use, commercial included, on a few conditions: credit the source with the attribution statement below and, where possible, link to the licence; don't suggest that the City or the TTC endorses you or your use; it grants no rights to personal information, third parties' rights, official names, crests, logos or trademarks; and the information comes as is, without warranty. ttc-mcp's attribution, which the server also sends to every client in its instructions, with the licence link:
+
+> Contains information licensed under the Open Government Licence – Toronto.
+
+**Endpoints behind the TTC's website.** Stop predictions, train predictions, alerts.ttc.ca and ttc.ca's route data aren't open data: they are what the TTC's own website and BusTime map call, and the TTC publishes no terms for them. Its [website terms of use](https://www.ttc.ca/transparency-and-accountability/policies/web-site-terms-and-conditions-of-use) let you view and copy material from its site for your own personal, non-commercial use, reserve selling, republishing or reproducing substantial parts of it to the TTC's written permission, and disclaim its accuracy; they don't say whether they reach these endpoints. ttc-mcp uses them the way the website does: on demand, cached, with a User-Agent naming the project, backing off when they fail, to answer one person's own trip questions. If you run a copy, keep it personal and non-commercial unless the TTC agrees otherwise. The TTC can change or withdraw these endpoints at any time, which is why the answers built on them are marked best effort.
+
+This section describes the terms as published on 12 October 2026, and it isn't legal advice.
+
+**Not affiliated.** ttc-mcp is an independent project. It is not affiliated with, endorsed by or supported by the Toronto Transit Commission or the City of Toronto, whose names and marks belong to them.
+
+## Licence
+
+ttc-mcp's code is released under the [MIT License](LICENSE.md). The licence covers the code only: the data it reads stays under its publishers' terms, described above, whoever runs it. The Python packages it depends on keep their own licences: MIT, BSD and Apache 2.0, and MPL 2.0 for the certifi certificate bundle.
+
+## Development
+
+Contributor documentation lives beside the code:
+
+- [CLAUDE.md](CLAUDE.md): the map of the codebase (architecture, identifiers, design decisions, environment, testing conventions) and how changes land.
+- [docs/spec.md](docs/spec.md): the normative specification; when the code and the spec disagree, one of them gets fixed. Section 11 is the dated log of live verifications.
+- [docs/data-quirks.md](docs/data-quirks.md): the quirks of the TTC's live data that the code encodes.
+- [docs/architecture.html](docs/architecture.html): the architecture page; open it in a browser.
+- [docs/deploy.md](docs/deploy.md): the Cloud Run runbook.
+- [docs/investigation-2026-09-13.md](docs/investigation-2026-09-13.md) and [docs/detours-addendum.md](docs/detours-addendum.md): the original survey of the TTC's data sources.
+
+```bash
+uv sync --extra cloud                  # dev tools, plus the cloud extra the unit suite needs
+uv run pytest                          # the unit suite: offline, on a small fixture timetable
+uv run ruff check .                    # lint
+uv run pytest tests/integration        # live: boots the server and asks the TTC
+TTC_MCP_SKIP_REFRESH=1 uv run python scripts/smoke_derived.py   # one of the live smoke scripts in scripts/
+scripts/smoke_image.sh                 # the container smoke test (needs Docker)
 ```
-ttc_mcp/adapters/   ckan, http (async client), bustime_web (per-stop XML), bustime_rt (vehicles, trips), ntas, ttc_alerts, gtfsrt_alerts, detour_feed, ttcapi
-ttc_mcp/sources.py  per-source TTL, stale-if-error window and staleness threshold
-ttc_mcp/cache.py    TTL cache with single-flight, conditional GET and last-known-good
-ttc_mcp/realtime.py the facade the tools call: client + cache, probe, per-source status
-ttc_mcp/advisory.py the per-answer disruptions snapshot (alerts + GTFS-RT alerts + detour feed, built once per feed state)
-ttc_mcp/static/     gtfs helpers, schema, streaming build, aliases, manifest, store (one read-only connection per thread), schedule, refresh, bucket (push and pull of the store)
-ttc_mcp/domain/     geo, network, crowding, freshness, arrivals, trains, vehicles, detours, service_changes, disruptions, shapes, accessibility, planner, live
-ttc_mcp/tools/      MCP tool registration (static_tools, realtime_tools, advisory_tools, derived_tools)
-ttc_mcp/server.py   FastMCP app + entry point (stdio or http; the gate and the bucket pull are wired here);  ttc_mcp/build.py  the daily build job (--bucket pulls, checks CKAN, pushes)
-ttc_mcp/config.py   settings from TTC_MCP_* and the gate settings;  ttc_mcp/gate.py  the Google OAuth gate and email allowlist
-scripts/            ttc_transit_probe.py (the original investigation probe), make_fixture.py, smoke_static.py, smoke_realtime.py, smoke_advisories.py, smoke_derived.py, validate_connections.py, smoke_image.sh (the container smoke CI runs)
-tests/              unit suite on tests/fixtures/gtfs-mini.zip (routes 1, 5, 121, 300, 400, 504), captured BusTime XML and advisory fixtures; tests/integration boots the real server; tests/unit/conftest.py keeps the unit suite off the network
-.run/               PyCharm run configurations: Tests, Integration (live), Server (stdio), Build static
-Dockerfile          the Cloud Run image (one image: ttc-mcp serves, ttc-mcp-build is the Job);  docs/deploy.md  the phase 5b runbook
-```
 
-## Gotchas the code encodes (verified live 2026-10-05 and 2026-10-11)
-
-- `alerts.ttc.ca` stamps Toronto local time with a `Z` suffix; `childAlerts` start times match the GTFS-RT per-night entity epochs only when read as local. Year 1 (`0001-01-01`) means open-ended.
-- `getallroutesandstopsalerts` no longer carries a `serviceChanges` key; the route changes are GTFS-RT `MODIFIED_SERVICE` entities, so `service_changes` reads those first and merges ttc.ca rows when they reappear.
-- Closures publish their nightly windows as `childAlerts`, whose ids are the GTFS-RT `NO_SERVICE` entities listing the closed platform ids. `active_now` and `suspended` come from those; the `REDUCED_SERVICE` umbrella spans whole days and is never read as "closed now".
-- `gtfsrt.ttc.ca/alerts/all` answers JSON unless `?format=binary`; `gtfsrt.ttc.ca/trips/detour` is JSON with no header timestamp (its signal is the HTTP `Date`).
-- BusTime's per-stop XML writes direction text with double spaces ("504A  King"); headsign matching collapses whitespace. The vehicle feed reports an explicit `EMPTY` on most vehicles, hence the low-confidence "Not busy".
-- Rail `shape_dist_traveled` is in kilometres with the first stop of each trip left blank (surface is in metres); the build picks the unit per shape against its measured length and starts every pattern at 0.
-- GTFS-RT `NO_SERVICE` entities list every platform of the affected stations, including other lines' platforms at interchanges (a Line 2 closure lists Line 1's St George and Spadina platforms), so a listing closes a platform only when the entity names no routes or one of the platform's own lines.
-- An active closure's `shuttleType` reads "Running" and a planned one "Will Operate"; any other value means no shuttle, and the planner then routes around the closed span or drops the trip.
-- NTAS keeps publishing predictions at closed platforms during a closure (Old Mill eastbound "1", Jane westbound "1, 4, 8" inside the Kipling to Jane closure), so a suspended platform is decided by the closure, never by NTAS: `next_min: []`, what NTAS said in `ntas_min`, and a note.
-- The TTC's closure station list is the shuttle span inclusive of its ends, and GTFS-RT lists every platform of every listed station; the end stations' open-side platforms are served (trains turn back there), so only the interior is closed and an end station is `reduced` with `role: shuttle_terminus`. A terminal end, or a one-station closure, is closed on both platforms.
-- `connections` reports an option with a shuttle leg as `typical_min: null` with `known_min` for its other legs; the shuttle counts as a transfer and the option ranks after complete options with the same transfers.
-- The merged feed lists bus bays and streetcar platforms as children of a station with `wheelchair` 0. A platform is a station child served by a subway or LRT route; the rest are the station's `surface_stops`, and the accessibility summary and step-free verdict read the platforms only (counting the bays had read 31 stations partially accessible).
-- Every build ends with three `[check]` lines (spec 8 items 3 and 9): surface-stop suffixes that attach to no station, alert station ids and names that resolve to nothing, and how many elevator and escalator codes in today's alerts match a coded pathway node (10 of 18 on 2026-10-11). `--no-checks` skips them; the daily Job's log is where they will be read.
+Every pull request runs four CI jobs: the unit suite, lint, a package build and the container smoke test.
