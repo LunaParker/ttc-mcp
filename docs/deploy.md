@@ -1,6 +1,6 @@
 # Deploying ttc-mcp to Cloud Run (the phase 5b runbook)
 
-**What is deployed:** nothing, as of 2026-10-11. Phase 5a built the container and everything the service needs in code (spec 6.9, "Implemented"); phase 5b is the GCP provisioning and the first deploy, and this document is its runbook. Each step is one code block to paste into a terminal, in order, from the repository root with `gcloud` signed in as the project owner. Nothing here has run yet, so the first run is also this document's test: fix the step that fails, then commit the fix. When the deploy is done, update the line above, close validation items 14 to 16 in spec 6.9 with a dated line in section 11, and update the README's status paragraph.
+**What is deployed:** nothing, as of 2026-10-11. Phase 5a built the container and everything the service needs in code (spec 6.9, "Implemented"); phase 5b is the GCP provisioning and the first deploy, and this document is its runbook. Each step is one code block to paste into a terminal, in order, from the repository root with `gcloud` signed in as the project owner. Nothing here has run yet, so the first run is also this document's test: fix the step that fails, then commit the fix. When the deploy is done, update the line above and close validation items 14 to 16 in spec 6.9 with a dated line in section 11.
 
 ## Values (spec 6.9)
 
