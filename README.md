@@ -6,8 +6,6 @@ ttc-mcp is a [Model Context Protocol](https://modelcontextprotocol.io) server fo
 
 It is an independent, single-user project, not affiliated with or endorsed by the TTC or the City of Toronto.
 
-**Status (12 October 2026):** runs locally over stdio and HTTP. The container image is built and smoke-tested, and the code the hosted setup needs (Google sign-in, the bucket pull, the daily build) is unit-tested. Nothing is deployed yet: the Cloud Run runbook, [docs/deploy.md](docs/deploy.md), hasn't been run end to end.
-
 ## Contents
 
 - [What you can ask](#what-you-can-ask)
