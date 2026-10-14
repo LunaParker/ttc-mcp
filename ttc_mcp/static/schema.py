@@ -1,4 +1,4 @@
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE feed_info (
@@ -66,4 +66,9 @@ CREATE INDEX units_station ON units(station_id);
 CREATE TABLE station_members (station_id TEXT NOT NULL, stop_id TEXT NOT NULL, how TEXT NOT NULL, dist_m INTEGER NOT NULL, PRIMARY KEY (station_id, stop_id));
 CREATE INDEX station_members_stop ON station_members(stop_id);
 CREATE TABLE transfers (stop_a TEXT NOT NULL, stop_b TEXT NOT NULL, dist_m INTEGER NOT NULL, PRIMARY KEY (stop_a, stop_b));
+CREATE TABLE raptor_groups (
+  pattern_id INTEGER NOT NULL, split INTEGER NOT NULL, service_id TEXT NOT NULL, n_trips INTEGER NOT NULL, n_stops INTEGER NOT NULL,
+  times BLOB NOT NULL, trip_ids BLOB NOT NULL, PRIMARY KEY (pattern_id, service_id, split)
+) WITHOUT ROWID;
+CREATE TABLE station_paths (stop_a TEXT NOT NULL, stop_b TEXT NOT NULL, secs INTEGER NOT NULL, PRIMARY KEY (stop_a, stop_b)) WITHOUT ROWID;
 """

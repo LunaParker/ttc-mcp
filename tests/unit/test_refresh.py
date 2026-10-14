@@ -69,9 +69,10 @@ def test_store_built_with_an_older_schema_is_rebuilt_even_when_etags_match(tmp_p
     rep = ensure_static(tmp_path, client(calls=calls), today=dt.date(2026, 10, 5), ttcapi=False)
     assert rep["changed"] is True and rep["reason"] == "schema changed"
     assert any(c[0] == "GET" and c[1].endswith("merged.zip") for c in calls)
+    from ttc_mcp.static.schema import SCHEMA_VERSION
     from ttc_mcp.static.store import schema_version
 
-    assert schema_version(store) == 2
+    assert schema_version(store) == SCHEMA_VERSION
     rep = ensure_static(tmp_path, client(), today=dt.date(2026, 10, 5), ttcapi=False)
     assert rep["changed"] is False and rep["reason"] == "etags unchanged"
 
