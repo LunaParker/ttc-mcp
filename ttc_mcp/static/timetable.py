@@ -1,6 +1,7 @@
 """Build side of the timetable index (spec 2.1, 6.10): trips packed as int32 columns per pattern, service and overtaking split."""
 from __future__ import annotations
 
+import heapq
 from array import array
 from collections import defaultdict
 
@@ -57,3 +58,47 @@ class GroupAccumulator:
                 times, ids = pack(b)
                 out.append((pid, i, sid, len(b), len(b[0][1]), times, ids))
         return out
+
+
+FARE_GATES = (6, 7)
+WALK_MPS, DEFAULT_EDGE_S = 1.0, 30
+
+
+def edge_seconds(length_m: float | None, traversal_s: int | None) -> float:
+    if traversal_s is not None:
+        return traversal_s
+    return length_m / WALK_MPS if length_m else DEFAULT_EDGE_S
+
+
+def dijkstra(adj: dict[str, list[tuple[str, float]]], src: str) -> dict[str, float]:
+    dist, heap = {src: 0.0}, [(0.0, src)]
+    while heap:
+        d, u = heapq.heappop(heap)
+        if d > dist.get(u, float("inf")):
+            continue
+        for v, w in adj.get(u, ()):
+            if d + w < dist.get(v, float("inf")):
+                dist[v] = d + w
+                heapq.heappush(heap, (d + w, v))
+    return dist
+
+
+def station_paths(conn) -> list[tuple[str, str, int]]:
+    """Seconds between the boarding stops of a station over its pathway edges; fare gates are skipped so a transfer stays paid."""
+    out = []
+    for (station,) in conn.execute("SELECT stop_id FROM stops WHERE location_type=1").fetchall():
+        adj: dict[str, list[tuple[str, float]]] = defaultdict(list)
+        for a, b, mode, bi, length, secs in conn.execute(
+                "SELECT p.from_stop, p.to_stop, p.mode, p.bidirectional, p.length_m, p.traversal_s FROM pathways p WHERE p.pathway_id IN ("
+                "SELECT p2.pathway_id FROM pathways p2 JOIN stops s ON s.stop_id IN (p2.from_stop, p2.to_stop) WHERE s.parent_station=?)", (station,)):
+            if mode in FARE_GATES:
+                continue
+            w = edge_seconds(length, secs)
+            adj[a].append((b, w))
+            if bi:
+                adj[b].append((a, w))
+        boarding = [r[0] for r in conn.execute("SELECT stop_id FROM stops WHERE parent_station=? AND location_type=0", (station,))]
+        for src in boarding:
+            dist = dijkstra(adj, src)
+            out += [(src, dst, round(dist[dst])) for dst in boarding if dst != src and dst in dist]
+    return out
