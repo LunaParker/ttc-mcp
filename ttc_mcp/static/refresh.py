@@ -88,7 +88,7 @@ def _register(cache_dir: Path, manifest: Manifest, merged_zip: Path, surface_zip
     manifest.prune(today)
     manifest.save(cache_dir)
     return {"changed": True, "feed_version": meta.feed_version, "reason": "built", "bytes": meta.bytes,
-            "start": meta.start, "end": meta.end, "manifest": manifest}
+            "start": meta.start, "end": meta.end, "splits": meta.splits, "unequal_times": meta.unequal_times, "manifest": manifest}
 
 
 def ensure_static(cache_dir: Path, client: httpx.Client, *, today: dt.date | None = None, force: bool = False,
