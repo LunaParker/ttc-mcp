@@ -46,7 +46,7 @@
   pre code { background: none; padding: 0; }
 
   /* phase bullets: a TTC line bullet per phase; hollow and dashed = not built yet */
-  .p1 { --c: var(--l1); } .p2 { --c: var(--l2); } .p3 { --c: var(--l3); } .p4 { --c: var(--l4); } .p5 { --c: var(--l5); } .p6 { --c: var(--l6); }
+  .p1 { --c: var(--l1); } .p2 { --c: var(--l2); } .p3 { --c: var(--l3); } .p4 { --c: var(--l4); } .p5 { --c: var(--l5); } .p6 { --c: var(--l6); } .p7 { --c: var(--ink-2); }
   span.pb { display: inline-grid; place-items: center; flex: none; width: 20px; height: 20px; border-radius: 50%; background: var(--c); color: #fff;
     font-family: "Archivo", "Helvetica Neue", Arial, sans-serif; font-weight: 900; font-size: 11.5px; line-height: 1; vertical-align: -5px; }
   span.pb.p1 { color: #1B1516; }
@@ -64,7 +64,7 @@
   .legend .note { color: var(--muted); }
 
   /* the phase line: built track solid, construction dashed */
-  ol.track { list-style: none; margin: 18px 0 14px; padding: 0; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 16px; }
+  ol.track { list-style: none; margin: 18px 0 14px; padding: 0; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 16px; }
   ol.track li { position: relative; display: grid; gap: 7px; align-content: start; justify-items: start; }
   ol.track li:not(:last-child)::after { content: ""; position: absolute; top: 16px; left: 36px; right: -16px; height: 4px; background: var(--ink-2); border-radius: 2px; }
   ol.track li.seg-plan::after { background: none; height: 0; border-top: 4px dashed var(--muted); }
@@ -118,7 +118,7 @@
   .note { border-left: 4px solid var(--accent); padding: 8px 14px; background: var(--panel); border-radius: 0 4px 4px 0; max-width: 72ch; margin: 12px 0; }
 
   @media (max-width: 820px) {
-    ol.track { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 22px; }
+    ol.track { grid-template-columns: repeat(4, minmax(0, 1fr)); row-gap: 22px; }
     ol.track li::after { display: none; }
   }
   @media (max-width: 520px) {
@@ -131,9 +131,9 @@
 
 <div class="wrap">
   <header class="plate">
-    <div class="eyebrow">Phases 1 to 4 in service · Cloud Run next</div>
+    <div class="eyebrow">Phases 1 to 4 in service · Cloud Run parked · timetable-exact connections next</div>
     <h1>ttc-mcp Architecture</h1>
-    <p>How the server is layered, what each layer stores, how a request moves through it, and which parts are running. Phases 1 to 4 answer today as a local process on this Mac; phase 5 puts them on Cloud Run and phase 6 hardens them. Everything here is fixed by spec v0.6 (decisions a to j).</p>
+    <p>How the server is layered, what each layer stores, how a request moves through it, and which parts are running. Phases 1 to 4 answer today as a local process on this Mac; phase 5 puts them on Cloud Run, phase 6 makes <code>connections</code> timetable-exact and phase 7 hardens them. The layers and the two requests are as of spec v0.6 (decisions a to j); the phase status follows spec v0.8 (decision k).</p>
   </header>
   <div class="meta"><span><b>Spec</b> docs/spec.md v0.6</span><span><b>Runtime</b> Python 3.14, FastMCP 3.4.8</span><span><b>Store</b> SQLite, 116 MB a feed</span><span><b>Tests</b> 296 unit · 20 live</span><span><b>Updated</b> 2026-10-06</span></div>
 
@@ -141,7 +141,7 @@
 
   <section id="status" data-line="1">
     <h2>Where the build stands</h2>
-    <p class="lede">Four of six phases are in service, and all 19 tools answer from this Mac over stdio. What remains is hosting (phase 5) and the parity suite with hardening (phase 6).</p>
+    <p class="lede">Four of seven phases are in service, and all 19 tools answer from this Mac over stdio. What remains is hosting (phase 5, built as a container and parked before its first deploy), timetable-exact connections (phase 6, next) and the parity suite with hardening (phase 7).</p>
     <div class="legend">
       <span><span class="pb p2">2</span>In service</span>
       <span><span class="pb p5 plan">5</span>Planned</span>
@@ -152,8 +152,9 @@
       <li class="p2"><span class="bullet">2</span><span class="name">Real-time core</span><span class="chip in">In service</span><p>BusTime, the vehicle feed and NTAS through the fetch cache, with a timetable fallback.</p><span class="n">4 tools · 135 tests at gate</span></li>
       <li class="p3"><span class="bullet">3</span><span class="name">Advisory layer</span><span class="chip in">In service</span><p>Alerts, detours and service changes, attached to every answer they touch.</p><span class="n">4 tools · 182 tests at gate</span></li>
       <li class="p4 seg-plan"><span class="bullet">4</span><span class="name">Derived static</span><span class="chip in">In service</span><p>Shapes, pathways and a transfer graph; trip planning around closures.</p><span class="n">3 tools · 296 tests at gate</span></li>
-      <li class="p5 plan seg-plan"><span class="bullet">5</span><span class="name">Cloud Run</span><span class="chip next">Next</span><p>HTTPS at /mcp behind Google OAuth, and a daily build Job into a bucket.</p><span class="n">spec: ~2 h with Claude</span></li>
-      <li class="p6 plan"><span class="bullet">6</span><span class="name">Parity and hardening</span><span class="chip plan">Planned</span><p>Nightly live parity, backoff, Line 6 sampling and the next board period.</p><span class="n">spec: ~2 h with Claude</span></li>
+      <li class="p5 plan seg-plan"><span class="bullet">5</span><span class="name">Cloud Run</span><span class="chip plan">Parked</span><p>HTTPS at /mcp behind Google OAuth, and a daily build Job into a bucket. The container and the gate are built (5a); the first deploy (5b) waits.</p><span class="n">spec: ~2 h with Claude</span></li>
+      <li class="p6 plan seg-plan"><span class="bullet">6</span><span class="name">Timetable-exact connections</span><span class="chip next">Next</span><p>RAPTOR over the trips, with real-time, closures, shuttles and detours inside the search. Decision k.</p><span class="n">spec: ~13 h with Claude</span></li>
+      <li class="p7 plan"><span class="bullet">7</span><span class="name">Parity and hardening</span><span class="chip plan">Planned</span><p>Nightly live parity, backoff, Line 6 sampling and the next board period.</p><span class="n">spec: ~2 h with Claude</span></li>
     </ol>
     <p class="aside">The September plan had seven phases. Building merged two of them: crowding, detours and service changes rode along with phases 2 and 3, and connections, geometry and accessibility shipped together as phase 4 because all three needed the same new static tables.</p>
   </section>
@@ -222,7 +223,7 @@ https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/mcp
         <g class="pb p3" transform="translate(40,360)"><circle r="7"/><text y="3.4">3</text></g>
         <g class="pb p3" transform="translate(40,378)"><circle r="7"/><text y="3.4">3</text></g>
         <g class="pb p6 plan" transform="translate(40,396)"><circle r="7"/><text y="3.4">6</text></g>
-        <g class="pb p6 plan" transform="translate(40,414)"><circle r="7"/><text y="3.4">6</text></g>
+        <g class="pb p7 plan" transform="translate(40,414)"><circle r="7"/><text y="3.4">7</text></g>
         <g class="pb p3" transform="translate(40,458)"><circle r="7"/><text y="3.4">3</text></g>
         <g class="pb p3" transform="translate(40,502)"><circle r="7"/><text y="3.4">3</text></g>
         <g class="pb p4" transform="translate(40,520)"><circle r="7"/><text y="3.4">4</text></g>
@@ -233,7 +234,7 @@ https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/mcp
           <text x="54" y="320">get-next-train-time · &lt;1 KB</text>
           <text x="54" y="364">alerts/all · 40 KB</text>
           <text x="54" y="382">trips/detour · 163 KB</text>
-          <text x="54" y="400" opacity=".65">trips/subway · parity only</text>
+          <text x="54" y="400" opacity=".65">trips/subway · 12 KB · phase 6</text>
           <text x="54" y="418" opacity=".65">modified_update · parity only</text>
           <text x="54" y="462">api/alerts/list · 51 KB · ETag</text>
           <text x="54" y="506">getallroutesandstopsalerts</text>
@@ -408,7 +409,7 @@ https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/mcp
         </g>
       </svg>
       </div>
-      <figcaption>Everything drawn solid runs today on this Mac. Phase 5 swaps "on this Mac" for a Cloud Run service, a daily Job and a bucket; phase 6 wires the two parity-only feeds into a nightly suite. Sizes and cadences are measured values from the September investigation and the phase gates.</figcaption>
+      <figcaption>Everything drawn solid runs today on this Mac. Phase 5 swaps "on this Mac" for a Cloud Run service, a daily Job and a bucket; phase 6 reads trips/subway for timetable-exact connections; phase 7 wires modified_update and the parity checks into a nightly suite. Sizes and cadences are measured values from the September investigation and the phase gates.</figcaption>
     </figure>
   </section>
 
@@ -438,6 +439,7 @@ https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/mcp
       <tr><td>7</td><td class="ph"><span class="pb p4">4</span></td><td>tools.connections</td><td>Rank by transfers, then minutes, then stops; return up to 4 options with legs, basis and disruptions.</td><td class="num">86 to 181 ms live</td></tr>
     </table></div>
     <p class="aside">A live run ranked the seasonal 202 Cherry Beach first at 14 minutes and the 121 second at 19, ahead of the 504 then Line 1 at 18, because options with fewer transfers rank first.</p>
+    <p class="aside"><span class="pb p6 plan">6</span> Phase 6 replaces steps 3 to 5 and 7: RAPTOR boards real trips from an in-memory timetable loaded once per feed (built into the store by <code>ttc-mcp-build</code>), reads it through a per-query overlay (closed positions, an estimated shuttle pseudo-route, detour variant patterns, surface and subway trip updates within an hour of now), and ranks the Pareto set by arrival with exact times on every leg; <code>window_min</code> and <code>arrive_by</code> arrive with it. Benchmarked 2026-10-14 at p50 6 ms a run on the live store (spec 6.10).</p>
   </section>
 
   <section id="layout" data-line="5">
@@ -466,18 +468,20 @@ https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/mcp
 <span class="pb p3">3</span>│   │   └── ttcapi.py         # service changes; route service levels added in phase 4
 <span class="pb p1">1</span>│   ├── static/               # gtfs, schema, streaming build, aliases, manifest, store, schedule, refresh
 <span class="pb p4">4</span>│   │                         # + shapes, pathways, units, station members, transfers (schema 2)
+<span class="pb p6 plan">6</span><span class="planned">│   │   └── timetable.py      # raptor_groups and station_paths built in the stop_times pass (schema 3)</span>
 <span class="pb none"></span>│   ├── domain/
 <span class="pb p1">1</span>│   │   ├── network.py, geo.py
 <span class="pb p2">2</span>│   │   ├── arrivals.py, trains.py, vehicles.py, crowding.py, freshness.py
 <span class="pb p3">3</span>│   │   ├── disruptions.py, detours.py, service_changes.py
 <span class="pb p4">4</span>│   │   └── planner.py, live.py, shapes.py, accessibility.py
+<span class="pb p6 plan">6</span><span class="planned">│   │   └── raptor.py             # the Timetable, the scan, windows and arrive-by; overlay.py at the package root</span>
 <span class="pb none"></span>│   └── tools/                # one module per phase: static, realtime, advisory, derived
 <span class="pb p5 plan">5</span><span class="planned">├── cloud/                    # Dockerfile and deploy.md: OAuth client, secrets, SA, bucket, Job, Scheduler</span>
 <span class="pb none"></span>├── scripts/                  # four smoke scripts, validate_connections.py, the original probe
 <span class="pb none"></span>├── tests/
 <span class="pb none"></span>│   ├── unit/                 # 296 tests on a mini feed and a mock TTC; no network
 <span class="pb none"></span>│   ├── integration/          # 20 live tests: the real server over HTTP against the TTC
-<span class="pb p6 plan">6</span><span class="planned">│   └── parity/               # the nightly live parity suite</span>
+<span class="pb p7 plan">7</span><span class="planned">│   └── parity/               # the nightly live parity suite</span>
 <span class="pb none"></span>├── .run/                     # PyCharm: Tests, Integration (live), Server (stdio), Build static
 <span class="pb none"></span>└── docs/                     # spec, runbook, data quirks, survey, this page</code></pre>
     </div>
@@ -513,7 +517,7 @@ https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/mcp
       <tr><td class="ph"><span class="pb p3">3</span></td><td>rt_alerts</td><td class="num">60 s</td><td class="num">1 h</td><td class="num">10 min</td></tr>
       <tr><td class="ph"><span class="pb p3">3</span></td><td>detours</td><td class="num">5 min</td><td class="num">1 h</td><td class="num">30 min</td></tr>
       <tr><td class="ph"><span class="pb p3">3</span></td><td>service_changes</td><td class="num">10 min</td><td class="num">1 h</td><td class="num">30 min</td></tr>
-      <tr class="planned"><td class="ph"><span class="pb p6 plan">6</span></td><td>subway_trips</td><td class="num">30 s</td><td class="num">10 min</td><td>parity suite only</td></tr>
+      <tr class="planned"><td class="ph"><span class="pb p6 plan">6</span></td><td>subway_trips</td><td class="num">30 s</td><td class="num">10 min</td><td class="num">60 s</td></tr>
     </table></div>
     <div class="note">Staleness verdicts are computed at answer time from the "stale after" column. Static is <em>expiring</em> within 3 days of the feed's end date, unless a newer feed is already loaded, and <em>expired</em> after it.</div>
   </section>
@@ -535,7 +539,14 @@ https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/mcp
           <li>Two carry-overs from phase 4: run the planner off the event loop, and keep the service-level fetch out of the server's loop.</li>
           <li>Checks from us-east1: every TTC host answers, cold start with the 116 MB store, and the connector on claude.ai, Claude Code and iOS.</li>
         </ul></div><div class="e"><span class="chip next">Next</span><span>~2 h with Claude</span></div></li>
-      <li class="p6 plan"><span class="bullet">6</span><div><div class="t">Parity and hardening</div><div class="s">After hosting:</div>
+      <li class="p6 plan"><span class="bullet">6</span><div><div class="t">Timetable-exact connections</div><div class="s">Spec decision k, designed 2026-10-14 (<code>docs/spec.md</code> 6.10):</div>
+        <ul class="tight">
+          <li>The index in the store: int32 departure columns per pattern, service and overtaking split, and platform-to-platform seconds from the pathways graph; schema 3, built by <code>ttc-mcp-build</code>, loaded once per feed in 0.1 s and 65 MB.</li>
+          <li>RAPTOR in the worker thread: real trips, timed transfers with a 2-minute change buffer, the Pareto set over arrival and transfers; a departure window and arrive-by through the same forward engine.</li>
+          <li>Overlays in front of the timetable: closed positions, an estimated shuttle pseudo-route, detour variant patterns, and surface plus subway trip updates within an hour of now.</li>
+          <li>The <code>connections</code> contract moves to exact times per leg, <code>basis</code> per ride and an <code>estimate</code> flag; a 250 ms p95 budget checked by a committed benchmark.</li>
+        </ul></div><div class="e"><span class="chip next">Next</span><span>~13 h with Claude</span></div></li>
+      <li class="p7 plan"><span class="bullet">7</span><div><div class="t">Parity and hardening</div><div class="s">After hosting:</div>
         <ul class="tight">
           <li>Nightly live parity: per-stop XML against the protobuf feed and modified_update, NTAS against trips/subway, detour skipped stops, Blue Night still 35 of 35.</li>
           <li>Logging and backoff for 403 and 429 answers.</li>
@@ -551,7 +562,7 @@ https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/mcp
     <ul class="tight">
       <li><b>No geocoding.</b> Addresses become coordinates in the Google Maps MCP; this server starts at <code>nearest_stops</code> or a <code>{lat, lon}</code> given to <code>connections</code>.</li>
       <li><b>No pollers, no public access.</b> Single user behind the email gate; an idle instance makes no requests and scales to zero. Polling would have cost about 14,000 requests and 4 GB a day for nobody.</li>
-      <li><b>No timetable-exact itineraries.</b> <code>connections</code> gives structural options with typical minutes and live first-leg departures; a RAPTOR planner over the timetable is a possible later addition.</li>
+      <li><b>No walking routes.</b> Walks are straight-line estimates at a fixed pace. Timetable-exact itineraries were a boundary until spec v0.8; phase 6 (decision k) brings them in, and <code>connections</code> gives structural options with typical minutes until it lands.</li>
       <li><b>No subway or LRT vehicle positions, no LRT trip updates.</b> The TTC does not publish them; rail answers come from NTAS with the timetable as the stated fallback.</li>
       <li><b>No invented reasons.</b> A detour with no matching service change is shown with <code>reason: null</code>; an empty NTAS list is "no prediction", never "no trains".</li>
     </ul>
