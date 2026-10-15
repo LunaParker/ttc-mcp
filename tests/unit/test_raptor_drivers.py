@@ -35,3 +35,41 @@ def test_rank_puts_estimates_last_and_dedupe_keeps_the_latest_when_asked(conn):
     assert raptor.rank([est, a]) == [a, est]
     b = raptor.plan(q, a.depart + 1)[0]
     assert raptor.dedupe(q, [a, b]) == [a] and raptor.dedupe(q, [a, b], latest=True) == [b]
+
+
+def test_arrive_by_steps_back_to_earlier_route_sequences_latest_departure_first(conn):
+    tt = raptor.Timetable.load(conn, "S1000538")
+    q = query(conn, tt, CHERRY_FRONT, "Union", NOW)
+    target = secs(9, 0)
+    js = raptor.plan_arrive_by(q, target, 30 * 60)
+    assert len(js) >= 2 and all(j.arrive <= target for j in js) and all(a.depart > b.depart for a, b in zip(js, js[1:], strict=False))
+    # The 08:30 bus and subway option only exists in the step-back; ranked by arrival it would lead, so this order is the departure order.
+    assert [(j.depart, j.arrive, j.transfers) for j in js] == [(secs(8, 38, 36), secs(8, 56, 30), 0), (secs(8, 32, 28), secs(8, 56, 30), 0), (secs(8, 30, 2), secs(8, 49, 47), 1)]
+    assert len({raptor.journey_key(q, j) for j in js}) == len(js)
+
+
+def synthetic(depart, arrive, rides=1, walk_m=0, basis="schedule"):
+    walk = [raptor.Leg("walk", None, "A", depart, depart, metres=walk_m)] if walk_m else []
+    return raptor.Journey(depart, arrive, tuple(walk + [raptor.Leg("ride", "A", "B", depart, arrive, basis=basis) for _ in range(rides)]))
+
+
+def test_rank_orders_by_arrival_then_transfers_then_walking_and_latest_by_departure():
+    early, far, near, change = synthetic(50, 800, rides=3, walk_m=900), synthetic(100, 900, walk_m=300), synthetic(200, 900, walk_m=100), synthetic(300, 900, rides=2)
+    assert raptor.rank([change, far, early, near]) == [early, near, far, change] == raptor.rank([near, early, change, far])
+    a, b, c, d, est = synthetic(500, 900), synthetic(400, 700), synthetic(450, 1000, rides=2), synthetic(500, 950, rides=2), synthetic(900, 950, basis="estimate")
+    assert raptor.rank([b, c, d, est, a], latest=True) == [a, d, c, b, est]
+    assert raptor.rank([synthetic(500, 900, walk_m=50), a], latest=True) == [a, synthetic(500, 900, walk_m=50)]
+
+
+def test_arrive_by_floor_never_runs_a_search_or_a_departure_before_it(conn, monkeypatch):
+    tt = raptor.Timetable.load(conn, "S1000538")
+    q = query(conn, tt, "Finch", "Union", NOW)
+    assert [(j.depart, j.arrive) for j in raptor.plan_arrive_by(q, secs(8, 10), 30 * 60)] == [(secs(7, 39, 42), secs(8, 9, 47))]
+    seen, real = [], raptor.plan
+    monkeypatch.setattr(raptor, "plan", lambda q, t=None: seen.append(t) or real(q, t))
+    assert raptor.plan_arrive_by(q, secs(8, 10), 30 * 60, floor=secs(8, 0)) == [] and seen == [secs(8, 0)]
+    seen.clear()
+    assert raptor.plan_arrive_by(q, secs(8, 10), 30 * 60, floor=secs(8, 10)) == [] and seen == []
+    seen.clear()
+    js = raptor.plan_arrive_by(query(conn, tt, CHERRY_FRONT, "Union", NOW), secs(9, 0), 30 * 60, floor=secs(8, 35))
+    assert min(seen) >= secs(8, 35) and [(j.depart, j.arrive) for j in js] == [(secs(8, 38, 36), secs(8, 56, 30))]

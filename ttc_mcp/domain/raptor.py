@@ -359,10 +359,12 @@ def _earliest(q: Query, t: int) -> int:
     return min(j.arrive for j in js) if js else INF
 
 
-def plan_arrive_by(q: Query, target: int, window_s: int, step_s: int = WINDOW_STEP_MIN * 60) -> list[Journey]:
-    """The latest departure whose earliest arrival is on time, by bisection to the minute, then a window stepping back from it."""
+def plan_arrive_by(q: Query, target: int, window_s: int, step_s: int = WINDOW_STEP_MIN * 60, floor: int | None = None) -> list[Journey]:
+    """The latest on-time departure by bisection to the minute, then a window stepping back from it; no run starts before floor."""
     lo, hi = target - ARRIVE_BY_SEARCH_H * 3600, target
-    if _earliest(q, lo) > target:
+    if floor is not None:
+        lo = max(lo, floor)
+    if lo >= target or _earliest(q, lo) > target:
         return []
     while hi - lo > 60:
         mid = (lo + hi) // 2
@@ -370,5 +372,6 @@ def plan_arrive_by(q: Query, target: int, window_s: int, step_s: int = WINDOW_ST
             lo = mid
         else:
             hi = mid
-    found = [j for t in range(lo, lo - window_s - 1, -step_s) for j in plan(q, t) if j.arrive <= target]
+    stop = lo - window_s if floor is None else max(lo - window_s, floor)
+    found = [j for t in range(lo, stop - 1, -step_s) for j in plan(q, t) if j.arrive <= target]
     return rank(dedupe(q, found, latest=True), latest=True)
