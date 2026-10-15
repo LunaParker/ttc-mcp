@@ -92,9 +92,9 @@ def _plan(feed, store, disr, o, d, when: dt.datetime, max_transfers: int, window
     """In a worker thread: the slices' overlays, decision h's mask for stops a detour with no variant skips (an endpoint gives way to the served
     stops around it), the engine, then the first limit options through this thread's connections; usable (or None) is a further predicate."""
     conn, day, stamp = feed.conn, when.date(), when.isoformat(timespec="minutes")
-    t = int((when - schedule.wall_clock(day, 0)).total_seconds())
+    t = schedule.service_secs(day, when)
     # Arrive-by never asks the rider to have left already: now, on the query day's clock, floors the search.
-    floor = int((runtime.now() - schedule.wall_clock(day, 0)).total_seconds())
+    floor = schedule.service_secs(day, runtime.now())
     if arrive_by and floor >= t:
         return [], f"arrive_by {stamp} is not after now"
     # Each slice reads its own service day's overlay: after midnight the trips running are yesterday's, and their updates match only on its clock.
@@ -216,7 +216,7 @@ def register(mcp: FastMCP) -> None:
             # The snapshot is evaluated at the clock; a given time re-evaluates its alerts at that time.
             disr = Disruptions.build(lambda: feed.conn, snap.alerts, snap.rt, snap.detours, when) if (depart_at or arrive_by) else snap.disruptions
             # Trip updates move the timetable only near now (spec 6.10): the feeds are fetched when the query instant is within the live window.
-            trips, subway, feed_hits = await _trip_feeds(rt, abs(when - runtime.now()) <= LIVE_WINDOW)
+            trips, subway, feed_hits = await _trip_feeds(rt, abs(when.timestamp() - runtime.now().timestamp()) <= LIVE_WINDOW.total_seconds())
             opts, note = await asyncio.to_thread(_plan, feed, runtime.get_store(), disr, o, d, when, max_transfers, window_min, bool(arrive_by), None, limit,
                                                  walk_m=walk_m, detour_feed=snap.detour_feed, trips=trips, subway=subway)
             for i, opt in enumerate(opts, 1):

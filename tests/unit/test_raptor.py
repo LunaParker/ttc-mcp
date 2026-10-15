@@ -95,7 +95,7 @@ def secs(h, m, s=0):
 
 def query(conn, tt, origin, dest, when, **kw):
     day = when.date()
-    t0 = int((when - schedule.wall_clock(day, 0)).total_seconds())
+    t0 = schedule.service_secs(day, when)
     yday = day - dt.timedelta(days=1)
     slices = [raptor.Slice(tt, frozenset(schedule.service_ids_on(conn, day))),
               raptor.Slice(tt, frozenset(schedule.service_ids_on(conn, yday)), raptor.day_offset(yday, day))]
@@ -130,7 +130,11 @@ def assert_timed(q, j):
 
 def test_day_offset_is_a_day_in_seconds_except_across_a_clock_change():
     assert raptor.day_offset(dt.date(2026, 10, 5), dt.date(2026, 10, 6)) == -86400
-    assert raptor.day_offset(dt.date(2026, 10, 31), dt.date(2026, 11, 1)) == -90000  # DST ends on 2026-11-01
+    # Fall-back day's origin (noon minus 12 h) is 01:00 EDT: the day before it starts 25 hours earlier, the day after 24 hours later.
+    assert raptor.day_offset(dt.date(2026, 10, 31), dt.date(2026, 11, 1)) == -90000
+    assert raptor.day_offset(dt.date(2026, 11, 1), dt.date(2026, 11, 2)) == -86400
+    assert raptor.day_offset(dt.date(2027, 3, 13), dt.date(2027, 3, 14)) == -82800
+    assert raptor.day_offset(dt.date(2027, 3, 14), dt.date(2027, 3, 15)) == -86400
 
 
 def test_closed_spans_block_the_interior_keep_the_ends_and_run_through_a_lone_station():

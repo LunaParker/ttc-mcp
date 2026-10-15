@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from ttc_mcp.domain.geo import haversine_m, walk_seconds
-from ttc_mcp.static.schedule import wall_clock
+from ttc_mcp.static.schedule import service_secs, wall_clock
 from ttc_mcp.static.timetable import unpack
 
 INF = 1 << 40
@@ -137,7 +137,8 @@ MAX_TRANSFERS = 3
 
 
 def day_offset(from_day: dt.date, to_day: dt.date) -> int:
-    return int((wall_clock(from_day, 0) - wall_clock(to_day, 0)).total_seconds())
+    """from_day's origin on to_day's clock, in elapsed seconds: the day after a clock change is 24 h on, not 23 or 25."""
+    return service_secs(to_day, wall_clock(from_day, 0))
 
 
 @dataclass(frozen=True)

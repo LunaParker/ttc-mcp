@@ -180,6 +180,58 @@ async def test_connections_plan_a_utc_time_on_the_toronto_date(app_env):
     assert r["depart_at"] == "2026-10-06T21:00-04:00" and r["options"] and r["options"][0]["depart_at"].startswith("2026-10-06T2")
 
 
+def wall(r):
+    return [(o["depart_at"][11:16], o["arrive_at"][11:16]) for o in r["options"]]
+
+
+@pytest.mark.anyio
+async def test_connections_plan_a_clock_change_day_on_its_own_wall_clock(dst_feed):
+    """Fall-back and spring-forward Sundays at 08:00 board what an ordinary Sunday boards at 08:00."""
+    args = {"origin": "Finch", "destination": "Union", "max_transfers": 0, "window_min": 0}
+    async with Client(make_app([])) as c:
+        ordinary = (await c.call_tool("connections", {**args, "depart_at": "2026-10-25T08:00-04:00"})).data
+        back = (await c.call_tool("connections", {**args, "depart_at": "2026-11-01T08:00-05:00"})).data
+        forward = (await c.call_tool("connections", {**args, "depart_at": "2027-03-14T08:00-04:00"})).data
+    assert ordinary["options"] and wall(back) == wall(ordinary) == wall(forward)
+    assert back["options"][0]["depart_at"].endswith("-05:00") and forward["options"][0]["depart_at"].endswith("-04:00")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("depart_at,first,trip", [("2026-11-01T01:10-05:00", "2026-11-01T01:17-05:00", "56399010"),
+                                                  ("2026-11-02T00:30-05:00", "2026-11-02T00:37-05:00", "113244010"),
+                                                  ("2027-03-15T00:30-04:00", "2027-03-15T00:37-04:00", "113244010")])
+async def test_connections_board_the_late_car_at_its_own_instant_around_a_clock_change(dst_feed, depart_at, first, trip):
+    """The second 01:10 boards Saturday's 26:17:51 King car, not its 25:17:51 an hour earlier; the night after each change boards Sunday's
+    24:37:51 at 00:37, not the 23:37:51 (fall-back) or the 25:37:51 (spring-forward), which the ten-minute headway prints at the same minute."""
+    async with Client(make_app([])) as c:
+        r = (await c.call_tool("connections", {"origin": "4582", "destination": "15461", "max_transfers": 0, "depart_at": depart_at})).data
+    asked = dt.datetime.fromisoformat(depart_at)
+    assert (r["options"][0]["depart_at"], rides(r["options"][0])[0]["trip_id"]) == (first, trip)
+    assert all(dt.datetime.fromisoformat(o["depart_at"]) >= asked for o in r["options"])
+
+
+@pytest.mark.anyio
+async def test_connections_arrive_by_on_fall_back_day_as_on_an_ordinary_sunday(dst_feed, monkeypatch):
+    """At 08:00 EST, arriving by 09:00 EST answers what an ordinary Sunday answers at those wall clocks: target 09:00, floor now."""
+    args = {"origin": "Finch", "destination": "Union", "max_transfers": 0}
+    async with Client(make_app([])) as c:
+        monkeypatch.setattr("ttc_mcp.runtime.now", lambda: dt.datetime(2026, 10, 25, 8, 0, tzinfo=TZ))
+        ordinary = (await c.call_tool("connections", {**args, "arrive_by": "2026-10-25T09:00"})).data
+        monkeypatch.setattr("ttc_mcp.runtime.now", lambda: dt.datetime(2026, 11, 1, 8, 0, tzinfo=TZ))
+        back = (await c.call_tool("connections", {**args, "arrive_by": "2026-11-01T09:00"})).data
+    assert ordinary["options"] and wall(back) == wall(ordinary)
+
+
+@pytest.mark.anyio
+async def test_connections_measure_the_live_window_in_elapsed_time_on_fall_back_day(dst_feed, monkeypatch):
+    """At 01:00 EDT a question for 01:50 EST is 110 minutes away, outside the live window, though the wall clocks are 50 minutes apart."""
+    calls = []
+    monkeypatch.setattr("ttc_mcp.runtime.now", lambda: dt.datetime(2026, 11, 1, 1, 0, tzinfo=TZ))
+    async with Client(make_app(calls)) as c:
+        r = (await c.call_tool("connections", {"origin": "4582", "destination": "15461", "max_transfers": 0, "depart_at": "2026-11-01T01:50-05:00"})).data
+    assert r["options"] and not any("/gtfsrt/trips" in u or "/trips/subway" in u for u in calls)
+
+
 @pytest.mark.anyio
 async def test_connections_write_only_the_options_they_return(app_env, monkeypatch):
     written, real = [], planner.materialize
