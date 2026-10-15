@@ -18,6 +18,7 @@ It is an independent, single-user project, not affiliated with or endorsed by th
 - [Data sources and licences](#data-sources-and-licences)
 - [Licence](#licence)
 - [Development](#development)
+- [Disclaimer](#disclaimer)
 
 ## What you can ask
 
@@ -359,3 +360,7 @@ scripts/smoke_image.sh                 # the container smoke test (needs Docker)
 ```
 
 Every pull request runs four CI jobs: the unit suite, lint, a package build and the container smoke test.
+
+## Disclaimer
+
+ttc-mcp comes with no warranty of any kind and makes no claim that its answers are accurate, complete or current. They are built from the TTC's timetables and live feeds, which can be wrong or late: a predicted arrival or train time (NTAS's included), a crowding level, a closure, a detour, an elevator's status or a planned trip may not match what is actually happening. Pay attention to what you see and hear at the stop or station, and to the TTC's own signs, announcements and staff. Don't rely on ttc-mcp in an emergency, or wherever a wrong or missed connection could cause harm. To the extent the law allows, its author accepts no liability for any loss or harm from using it, as the [MIT License](LICENSE.md) also says.
