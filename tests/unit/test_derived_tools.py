@@ -320,6 +320,17 @@ async def test_connections_explain_an_empty_answer(app_env, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_connections_say_how_far_back_an_empty_arrive_by_search_reached(app_env):
+    """No single route joins 15461 and Finch: from 08:00, arriving by 14:00 searched its four hours, arriving by 09:00 only from now."""
+    args = {"origin": "15461", "destination": "Finch", "max_transfers": 0}
+    async with Client(make_app([])) as c:
+        far = (await c.call_tool("connections", {**args, "arrive_by": "2026-10-06T14:00"})).data
+        near = (await c.call_tool("connections", {**args, "arrive_by": "2026-10-06T09:00"})).data
+    assert far["options"] == [] and far["note"] == "no journey arriving by 2026-10-06T14:00-04:00 within 4 hours before it"
+    assert near["options"] == [] and near["note"] == "no journey arriving by 2026-10-06T09:00-04:00 between now and it"
+
+
+@pytest.mark.anyio
 async def test_connections_replace_a_detour_skipped_stop_with_the_served_stops_around_it(app_env, monkeypatch):
     no_variants(monkeypatch)
     async with Client(make_app([])) as c:

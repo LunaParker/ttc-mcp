@@ -38,7 +38,8 @@ KINDS = ("arrive_by", "no service", "no journey", derived_tools.CLOSED)  # how _
 
 
 def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6
+    """Peak RSS in MB: ru_maxrss counts bytes on macOS and KiB on Linux (CI and the container)."""
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1024 if sys.platform.startswith("linux") else 1) / 1e6
 
 
 async def snapshot_and_overlay(feed):
@@ -92,6 +93,8 @@ def main() -> int:
             problems.append(f"{mode}: {why['arrive_by']} arrive-by targets were not after now, so they never planned")
         if why["other"]:
             problems.append(f"{mode}: {why['other']} answers came back empty without a planner note")
+        if not found:
+            problems.append(f"{(mode + ' ' + variant).strip()}: no answers at all, so its latency measures an empty search")
     verdict = "measured, no verdict" if a.live else "PASS" if worst <= a.budget_ms else "FAIL"
     print(f"RSS {r0:.0f} -> {rss_mb():.0f} MB; budget {a.budget_ms:.0f} ms p95: {verdict}; grid {day}{' from now, live' if a.live else ' and the night after'}")
     for label, kinds in empty.items():

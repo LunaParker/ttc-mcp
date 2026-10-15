@@ -161,13 +161,16 @@ async def test_accessibility_agrees_with_station_and_alerts(server_url):
 @pytest.mark.anyio
 async def test_connections_use_live_arrivals_and_the_advisory_snapshot(server_url):
     r = await call(server_url, "connections", origin=CHERRY_FRONT, destination="Union")
-    assert r["meta"]["advisories"]["errors"] is None and r["options"], r.get("note")
+    adv = r["meta"]["advisories"]
+    assert adv["errors"] is None and adv["fetched_at"] and adv["staleness"] != "unavailable" and r["options"], r.get("note")
     first = next(o for o in r["options"] if next(l for l in o["legs"] if l["mode"] in ("ride", "shuttle"))["mode"] == "ride")
     ride = next(l for l in first["legs"] if l["mode"] == "ride")
     assert ride["trip_id"] and ride["next"] and first["basis"] in ("realtime", "schedule", "estimate")
     arr = await call(server_url, "arrivals", stop=ride["board"]["number"], route=ride["route"], limit=10)
-    # The next rows start at the option's own departure, so the first live one is among the stop's cached predictions.
-    live_next = [n["eta_min"] for n in ride["next"] if n["basis"] == "realtime"]
-    assert live_next[:1] == [] or live_next[0] in [a["eta_min"] for a in arr["arrivals"]] or arr["meta"]["cache"] == "live"
+    # The next rows start at the option's own departure: a live first row is among the stop's cached predictions (unless arrivals refetched);
+    # a timetable first row comes with the note saying why, from that departure on.
+    nxt = ride["next"][0]
+    live = nxt["basis"] == "realtime" and (nxt["eta_min"] in [a["eta_min"] for a in arr["arrivals"]] or arr["meta"]["cache"] == "live")
+    assert live or (nxt["basis"] == "schedule" and ride["next_note"] and nxt["scheduled_at"] >= ride["depart"][:16]), (nxt, ride.get("next_note"))
     fs = await call(server_url, "feed_status")
     assert fs["static"]["feed_version"] == r["meta"]["static_feed"]

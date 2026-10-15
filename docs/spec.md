@@ -301,7 +301,8 @@ Request budget compared with v0.2 polling: polling cost about 14,000 requests an
 // stop. The full headway is charged inside the option, in the slack before the shuttle leaves; a shuttle-first journey leaves at the query instant and
 // waits at the stop after its walk. An empty options list carries a note, the first that applies: "no service at the origin stops on <day>; raise walk_m
 // or start from a stop" (or the destination stops; on a date no loaded feed covers the note stops at the day), "every journey needs a closed section
-// with no shuttle service", "no journey arriving by <stamp> within 4 hours before it", "no journey with up to <max_transfers> transfers from <stamp>";
+// with no shuttle service", "no journey arriving by <stamp> within 4 hours before it" (or
+// "between now and it" when now cut the search short), "no journey with up to <max_transfers> transfers from <stamp>";
 // "arrive_by <stamp> is not after now" comes before any search, and "every stop at the origin (destination) is skipped by a detour" when decision h's
 // mask leaves nothing. note is present only when there is something to say; the skipped-stop substitution note (decision h) stays. Closures are
 // evaluated at the query instant (6.10), so whatever the options, each closure on a rail line that starts or ends inside the search (depart_at to

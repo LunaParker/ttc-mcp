@@ -147,7 +147,9 @@ def _plan(feed, store, disr, o, d, when: dt.datetime, max_transfers: int, window
         elif run(dataclasses.replace(q, closed=lambda si, pid: raptor.Closed.NONE)):
             note = CLOSED
         elif arrive_by:
-            note = f"no journey arriving by {stamp} within {raptor.ARRIVE_BY_SEARCH_H} hours before it"
+            # Now floors the search (plan_arrive_by), so a near target was searched from now, not over the whole span.
+            reach = "between now and it" if floor > t - raptor.ARRIVE_BY_SEARCH_H * 3600 else f"within {raptor.ARRIVE_BY_SEARCH_H} hours before it"
+            note = f"no journey arriving by {stamp} {reach}"
         else:
             note = f"no journey with up to {max_transfers} transfers from {stamp}"
     at = when.timestamp()
