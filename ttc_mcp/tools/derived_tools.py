@@ -63,38 +63,43 @@ def _around_skipped(conn, disr: Disruptions, e: planner.Endpoint, which: str, wa
 
 
 def _slices(store, feed, day: dt.date) -> list[raptor.Slice]:
-    """Today's feed with today's service ids, then yesterday's with yesterday's on today's clock; a day no feed covers reads the feed in hand."""
+    """Today's feed with today's service ids, then yesterday's with yesterday's on today's clock; a day no feed covers reads the feed in hand.
+    Each slice carries its feed's connection on this (the planning) thread, since pattern ids are per feed."""
     out = []
     for d, off in ((day, 0), (day - dt.timedelta(days=1), raptor.day_offset(day - dt.timedelta(days=1), day))):
         f = store.for_date(d) or feed
-        out.append(raptor.Slice(raptor.timetable_for(f), frozenset(schedule.service_ids_on(f.conn, d)), off))
+        out.append(raptor.Slice(raptor.timetable_for(f), frozenset(schedule.service_ids_on(f.conn, d)), off, conn=f.conn))
     return out
 
 
-def _plan(feed, store, disr, o, d, when: dt.datetime, max_transfers: int, window_min: int, arrive_by: bool, usable) -> tuple[list[dict], str | None]:
-    """Runs in a worker thread: it builds the query, runs the engine, and writes options through that thread's own connection."""
-    conn, day = feed.conn, when.date()
+def _plan(feed, store, disr, o, d, when: dt.datetime, max_transfers: int, window_min: int, arrive_by: bool, usable,
+          limit: int | None = None) -> tuple[list[dict], str | None]:
+    """Runs in a worker thread: it builds the query, runs the engine, and writes the first limit options through that thread's own connections."""
+    conn, day, stamp = feed.conn, when.date(), when.isoformat(timespec="minutes")
     t = int((when - schedule.wall_clock(day, 0)).total_seconds())
-    ends = [{s: (geo.walk_seconds(m), m) for s, m in e.stops.items()} for e in (o, d)]
-    q = raptor.Query(ends[0], ends[1], t, _slices(store, feed, day), max_transfers=max_transfers, usable=usable, closed=planner.closed_for(conn, disr))
     # Arrive-by never asks the rider to have left already: now, on the query day's clock, floors the search.
     floor = int((runtime.now() - schedule.wall_clock(day, 0)).total_seconds())
+    if arrive_by and floor >= t:
+        return [], f"arrive_by {stamp} is not after now"
+    ends = [{s: (geo.walk_seconds(m), m) for s, m in e.stops.items()} for e in (o, d)]
+    slices = _slices(store, feed, day)
+    closers = [planner.closed_for(sl.conn, disr) for sl in slices]
+    q = raptor.Query(ends[0], ends[1], t, slices, max_transfers=max_transfers, usable=usable, closed=lambda si, pid: closers[si](pid))
     run = (lambda query: raptor.plan_arrive_by(query, t, window_min * 60, floor=floor)) if arrive_by else (lambda query: raptor.plan_window(query, window_min * 60))
-    journeys = run(q)
+    journeys = run(q)[:limit]
     note = None
     if not journeys:
-        stamp = when.isoformat(timespec="minutes")
         if not raptor.has_service(q, q.origin):
             note = f"no service at the origin stops on {day.isoformat()}"
         elif not raptor.has_service(q, q.dest):
             note = f"no service at the destination stops on {day.isoformat()}"
-        elif run(dataclasses.replace(q, closed=lambda p: raptor.Closed.NONE)):
+        elif run(dataclasses.replace(q, closed=lambda si, pid: raptor.Closed.NONE)):
             note = CLOSED
         elif arrive_by:
             note = f"no journey arriving by {stamp} within {raptor.ARRIVE_BY_SEARCH_H} hours before it"
         else:
-            note = f"no journey with up to {max_transfers} transfers departing within {window_min} minutes of {stamp}"
-    options = planner.annotate(conn, disr, [planner.materialize(conn, q, j, day) for j in journeys])
+            note = f"no journey with up to {max_transfers} transfers from {stamp}"
+    options = planner.annotate(q, disr, [planner.materialize(conn, q, j, day) for j in journeys])
     return options, note
 
 
@@ -163,6 +168,7 @@ def register(mcp: FastMCP) -> None:
             when = dt.datetime.fromisoformat(arrive_by or depart_at) if (arrive_by or depart_at) else runtime.now()
             if when.tzinfo is None:
                 when = when.replace(tzinfo=TZ)
+            when = when.astimezone(TZ)
             ends = {"origin": planner.resolve_endpoint(conn, origin, walk_m=walk_m), "destination": planner.resolve_endpoint(conn, destination, walk_m=walk_m)}
             for which, e in ends.items():
                 if e is None:
@@ -185,23 +191,24 @@ def register(mcp: FastMCP) -> None:
             for which, e in (("origin", o), ("destination", d)):
                 if not any(usable(s) for s in e.stops):
                     return {**head, "options": [], "note": "; ".join(notes + [f"every stop at the {which} is skipped by a detour"])}, [], "", snap
-            opts, note = await asyncio.to_thread(_plan, feed, runtime.get_store(), disr, o, d, when, max_transfers, window_min, bool(arrive_by), usable)
-            opts = opts[:limit]
+            opts, note = await asyncio.to_thread(_plan, feed, runtime.get_store(), disr, o, d, when, max_transfers, window_min, bool(arrive_by), usable, limit)
             for i, opt in enumerate(opts, 1):
                 opt["rank"] = i
-            use_live = abs(when - runtime.now()) <= LIVE_WINDOW
-            firsts = [(opt, leg) for opt in opts if (leg := next((l for l in opt["legs"] if l["mode"] in ("ride", "shuttle")), None)) and leg["mode"] == "ride"]
-            nexts = await asyncio.gather(*(live.next_for_leg(feed, rt, leg, now=when, use_live=use_live, clock=runtime.now()) for _, leg in firsts))
-            for (_, leg), (rows, _, nnote) in zip(firsts, nexts, strict=True):
+            firsts = [leg for opt in opts if (leg := next((l for l in opt["legs"] if l["mode"] in ("ride", "shuttle")), None)) and leg["mode"] == "ride"]
+            # Each first ride lists the departures from its own departure on, live when that is within an hour of now.
+            ats = [dt.datetime.fromisoformat(leg["depart"]) for leg in firsts]
+            lives = [abs(at - runtime.now()) <= LIVE_WINDOW for at in ats]
+            nexts = await asyncio.gather(*(live.next_for_leg(feed, rt, leg, now=at, use_live=li, clock=runtime.now()) for leg, at, li in zip(firsts, ats, lives, strict=True)))
+            for leg, (rows, _, nnote) in zip(firsts, nexts, strict=True):
                 leg["next"] = rows
                 if nnote:
                     leg["next_note"] = nnote
-            # Pattern positions index a private table; they served annotate and are not part of the answer.
+            # Pattern positions and the slice index are the planner's own; they served annotate and are not part of the answer.
             for opt in opts:
                 for leg in opt["legs"]:
-                    leg.pop("board_pos", None), leg.pop("alight_pos", None)
+                    leg.pop("board_pos", None), leg.pop("alight_pos", None), leg.pop("slice", None)
             if note:
                 notes.append(note)
             out = {**head, "options": opts, **({"note": "; ".join(notes)} if notes else {})}
-            return out, [h for _, hits, _ in nexts for h in hits], SOURCE if use_live and firsts else "", snap
+            return out, [h for _, hits, _ in nexts for h in hits], SOURCE if any(lives) else "", snap
         return await _aguard(run)

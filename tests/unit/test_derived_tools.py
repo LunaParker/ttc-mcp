@@ -59,7 +59,7 @@ async def test_connections_answer_the_contract_from_cherry_front_to_union(app_en
         assert set(o) == OPTION_KEYS and o["transfers"] == len([l for l in o["legs"] if l["mode"] in ("ride", "shuttle")]) - 1
         assert o["estimate"] is False and o["basis"] == "schedule" and o["duration_min"] == minutes_between(o["depart_at"], o["arrive_at"])
         assert all(l["depart"] <= l["arrive"] for l in o["legs"]) and all(a["arrive"] <= b["depart"] for a, b in zip(o["legs"], o["legs"][1:], strict=False))
-        assert all(RIDE_KEYS <= set(l) and "board_pos" not in l and "alight_pos" not in l for l in rides(o))
+        assert all(RIDE_KEYS <= set(l) and "board_pos" not in l and "alight_pos" not in l and "slice" not in l for l in rides(o))
         assert all({"mode", "distance_m", "min", "depart", "arrive"} <= set(l) for l in o["legs"] if l["mode"] == "walk")
     assert [o["arrive_at"] for o in r["options"]] == sorted(o["arrive_at"] for o in r["options"])
     direct = next(o for o in r["options"] if [l["route"] for l in rides(o)] == ["121"])
@@ -111,7 +111,8 @@ async def test_connections_keep_next_rows_in_the_leg_direction(app_env, monkeypa
             rows[0]["direction_id"] = None
             return rows, hits, source, note
         monkeypatch.setattr(live, "arrivals_at", unknown_first)
-        r = (await c.call_tool("connections", {"origin": "15461", "destination": "Union"})).data
+        # Next rows start at the ride's own departure, so plan from 07:45 (the westbound 504 leaves at 07:48) to keep 4617, due at 08:02.
+        r = (await c.call_tool("connections", {"origin": "15461", "destination": "Union", "depart_at": "2026-10-06T07:45"})).data
         ride = rides(next(o for o in r["options"] if rides(o)[0]["route"] == "504"))[0]
         assert [n["vehicle_id"] for n in ride["next"]] == ["4617"] and "next_note" not in ride and ride["next"][0]["basis"] == "realtime"
         assert ride["next"][0]["crowding"]["label"] == "Busy" and ride["next"][0]["headsign"] == "East - 504A King towards Distillery"
@@ -140,6 +141,63 @@ async def test_connections_answer_arrive_by_latest_departure_first(app_env):
     assert r["arrive_by"] == "2026-10-06T10:00-04:00" and "depart_at" not in r and "window_min" not in r and r["options"]
     assert all(o["arrive_at"] <= "2026-10-06T10:00" for o in r["options"]) and r["options"][0]["depart_at"] >= r["options"][-1]["depart_at"]
     assert [o["rank"] for o in r["options"]] == list(range(1, len(r["options"]) + 1)) and r["meta"]["cache"] == "static"
+    assert all(rides(o)[0]["next"][0]["scheduled_at"] >= rides(o)[0]["depart"][:16] for o in r["options"])
+
+
+@pytest.mark.anyio
+async def test_connections_arrive_by_go_live_on_the_options_departure_not_the_target(app_env):
+    async with Client(make_app([])) as c:
+        # 75 minutes away, but the latest train from Bloor-Yonge that arrives in time leaves at 08:51, inside the hour.
+        r = (await c.call_tool("connections", {"origin": "13863", "destination": "Finch", "arrive_by": "2026-10-06T09:15"})).data
+    ride = rides(r["options"][0])[0]
+    assert ride["depart"] == "2026-10-06T08:51-04:00" and r["meta"]["cache"] == "live" and r["meta"]["source"].startswith("static timetable")
+    assert ride["next"][0]["scheduled_at"] >= "2026-10-06T08:51" and ride["next_note"] == "no real-time prediction in this direction from depart_at on; times are from the timetable"
+
+
+@pytest.mark.anyio
+async def test_connections_wait_past_the_window_for_the_first_trip(app_env):
+    """The window steps the start, not the departures: at 02:00 the first 121 leaves at 06:23, and its next rows start there."""
+    async with Client(make_app([])) as c:
+        r = (await c.call_tool("connections", {"origin": "15246", "destination": "Union", "max_transfers": 0, "depart_at": "2026-10-06T02:00"})).data
+    ride = rides(r["options"][0])[0]
+    assert "note" not in r and (ride["route"], ride["depart"]) == ("121", "2026-10-06T06:23-04:00") and r["options"][0]["depart_at"] == "2026-10-06T06:23-04:00"
+    assert ride["next"][0]["scheduled_at"].startswith("2026-10-06T06:23") and "next_note" not in ride and r["meta"]["cache"] == "static"
+
+
+@pytest.mark.anyio
+async def test_connections_plan_a_utc_time_on_the_toronto_date(app_env):
+    async with Client(make_app([])) as c:
+        r = (await c.call_tool("connections", {"origin": CHERRY_FRONT, "destination": "Union", "depart_at": "2026-10-07T01:00Z"})).data
+    assert r["depart_at"] == "2026-10-06T21:00-04:00" and r["options"] and r["options"][0]["depart_at"].startswith("2026-10-06T2")
+
+
+@pytest.mark.anyio
+async def test_connections_write_only_the_options_they_return(app_env, monkeypatch):
+    written, real = [], planner.materialize
+    monkeypatch.setattr(planner, "materialize", lambda *a, **k: written.append(a[3]) or real(*a, **k))
+    async with Client(make_app([])) as c:
+        one = (await c.call_tool("connections", {"origin": CHERRY_FRONT, "destination": "Union", "limit": 1})).data
+        assert len(one["options"]) == len(written) == 1
+        written.clear()
+        assert len((await c.call_tool("connections", {"origin": CHERRY_FRONT, "destination": "Union"})).data["options"]) == len(written) >= 2
+
+
+@pytest.mark.anyio
+async def test_connections_read_each_slice_through_its_own_feed(two_feeds):
+    """Pattern ids are per feed: at 00:30 on 2026-09-30 today's slice is S1000542 and yesterday's S1000538, which here numbers Line 1 southbound 1054."""
+    import sqlite3
+
+    db = sqlite3.connect(two_feeds / "s38.sqlite")
+    for table in ("patterns", "pattern_stops", "trips", "raptor_groups"):
+        db.execute(f"UPDATE {table} SET pattern_id = 1054 WHERE pattern_id = 54")
+    db.commit()
+    db.close()
+    async with Client(make_app([])) as c:
+        night = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union", "max_transfers": 0, "depart_at": "2026-09-30T00:30"})).data
+        day = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union", "max_transfers": 0, "depart_at": "2026-09-30T08:00"})).data
+    late, early = rides(night["options"][0])[0], rides(day["options"][0])[0]
+    assert (late["pattern_id"], late["trip_id"], late["depart"]) == (1054, "134929451", "2026-09-30T00:33-04:00") and late["typical_min"] > 20
+    assert early["pattern_id"] == 54 and early["typical_min"] > 20 and "slice" not in late and "slice" not in early
 
 
 @pytest.mark.anyio
@@ -155,9 +213,14 @@ async def test_connections_window_zero_and_max_transfers_zero_narrow_the_answer(
 @pytest.mark.anyio
 async def test_connections_explain_an_empty_answer(app_env, monkeypatch):
     async with Client(make_app([])) as c:
-        # Only the 400 serves these two stops, and it runs Mondays, Wednesdays and Thursdays: this Tuesday has no trip left to board.
+        # The 504 at 15461 and Line 1 at Finch both run today, but no single route joins them.
+        r = (await c.call_tool("connections", {"origin": "15461", "destination": "Finch", "max_transfers": 0})).data
+        assert r["options"] == [] and r["note"] == "no journey with up to 0 transfers from 2026-10-06T08:00-04:00" and r["meta"]["cache"] == "static"
+        # Only the 400 serves these two stops, and it runs Mondays, Wednesdays and Thursdays: Monday's trips are over by Tuesday 02:00.
         r = (await c.call_tool("connections", {"origin": "15547", "destination": "15602", "max_transfers": 0, "depart_at": "2026-10-06T02:00"})).data
-        assert r["options"] == [] and r["note"] == "no journey with up to 0 transfers departing within 30 minutes of 2026-10-06T02:00-04:00" and r["meta"]["cache"] == "static"
+        assert r["options"] == [] and r["note"] == "no service at the origin stops on 2026-10-06"
+        r = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union", "arrive_by": "2026-10-06T07:30"})).data
+        assert r["options"] == [] and r["note"] == "arrive_by 2026-10-06T07:30-04:00 is not after now"
         monkeypatch.setattr("ttc_mcp.runtime.now", lambda: NIGHT)
         monkeypatch.setattr(planner, "_shuttle_runs", lambda el: False)
         r = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union", "max_transfers": 0})).data

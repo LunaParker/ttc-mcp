@@ -69,7 +69,7 @@ def test_annotate_attaches_zones_delays_and_route_alerts_with_the_legs_they_touc
     disr = build(conn, NOW)
     q = query(conn, tt, "Finch", "Union", NOW)
     o = planner.materialize(conn, q, raptor.plan(q)[0], NOW.date())
-    out = planner.annotate(conn, disr, [o])[0]
+    out = planner.annotate(q, disr, [o])[0]
     ids = {d["alert_id"]: d for d in out["disruptions"]}
     assert "77535" in ids and ids["77535"]["type"] == "rsz" and ids["77535"]["affects"] == [1]
     assert all("affects" in d for d in out["disruptions"]) and "77519" not in ids
@@ -105,12 +105,12 @@ def test_affects_numbers_the_leg_in_the_full_leg_list(conn):
     q = query(conn, tt, "Finch", "15461", NOW)
     o = planner.materialize(conn, q, next(j for j in raptor.plan(q) if j.transfers == 1), day)
     assert [l["mode"] for l in o["legs"]] == ["ride", "transfer", "ride"]
-    assert [(d["alert_id"], d["affects"]) for d in planner.annotate(conn, disr, [o])[0]["disruptions"]] == [("77535", [1])]
+    assert [(d["alert_id"], d["affects"]) for d in planner.annotate(q, disr, [o])[0]["disruptions"]] == [("77535", [1])]
     # From a point beside Finch the walk is leg 1, so the same zone sits on leg 2.
     q = query(conn, tt, {"lat": 43.7807, "lon": -79.4147}, "Union", NOW)
     o = planner.materialize(conn, q, raptor.plan(q)[0], day)
     assert [l["mode"] for l in o["legs"]] == ["walk", "ride"]
-    assert [(d["alert_id"], d["affects"]) for d in planner.annotate(conn, disr, [o])[0]["disruptions"]] == [("77535", [2])]
+    assert [(d["alert_id"], d["affects"]) for d in planner.annotate(q, disr, [o])[0]["disruptions"]] == [("77535", [2])]
     # A zone on the Line 1 ride that follows a streetcar and a transfer: walk, ride, transfer, ride, so leg 4 (a copy of the RSZ moved to King).
     q = query(conn, tt, CHERRY_FRONT, "Union", NOW)
     o = planner.materialize(conn, q, next(j for j in raptor.plan(q) if j.transfers == 1), day)
@@ -118,4 +118,4 @@ def test_affects_numbers_the_leg_in_the_full_leg_list(conn):
     rsz = next(e for e in disr.elements if e.get("alert_id") == "77535")
     king = conn.execute("SELECT parent_station FROM stops WHERE stop_id='13814'").fetchone()[0]
     moved = Disruptions(conn, [{**rsz, "alert_id": "T-KING", "stations": [king], "station_names": ["King"]}], {})
-    assert [(d["alert_id"], d["affects"]) for d in planner.annotate(conn, moved, [o])[0]["disruptions"]] == [("T-KING", [4])]
+    assert [(d["alert_id"], d["affects"]) for d in planner.annotate(q, moved, [o])[0]["disruptions"]] == [("T-KING", [4])]

@@ -207,14 +207,14 @@ def test_max_transfers_and_unusable_stops_bound_the_search(conn):
 def test_closed_spans_cut_the_scan_at_the_ends_of_a_closure(conn):
     tt = raptor.Timetable.load(conn, "S1000538")
     cut = raptor.Closed.from_spans([(3, 5)])  # Line 1 southbound: York Mills, Lawrence, Eglinton
-    closed = lambda pid: cut if pid == 54 else raptor.Closed.NONE  # noqa: E731
+    closed = lambda si, pid: cut if pid == 54 else raptor.Closed.NONE  # noqa: E731
     assert raptor.plan(query(conn, tt, "Finch", "Union", NOW, max_transfers=0, closed=closed)) == []
     to_york_mills = raptor.plan(query(conn, tt, "Finch", "York Mills", NOW, max_transfers=0, closed=closed))
     assert to_york_mills and to_york_mills[0].legs[-1].to == "13792"
     from_eglinton = raptor.plan(query(conn, tt, "Eglinton", "Union", NOW, max_transfers=0, closed=closed))
     assert from_eglinton and from_eglinton[0].rides[0].frm == "13795"
     assert raptor.plan(query(conn, tt, "Lawrence", "Union", NOW, max_transfers=0, closed=closed)) == []
-    lone = lambda pid: raptor.Closed.from_spans([(4, 4)]) if pid == 54 else raptor.Closed.NONE  # noqa: E731
+    lone = lambda si, pid: raptor.Closed.from_spans([(4, 4)]) if pid == 54 else raptor.Closed.NONE  # noqa: E731
     assert raptor.plan(query(conn, tt, "Finch", "Union", NOW, max_transfers=0, closed=lone)) and raptor.plan(query(conn, tt, "Finch", "Lawrence", NOW, max_transfers=0, closed=lone)) == []
 
 

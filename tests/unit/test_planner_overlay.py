@@ -17,9 +17,14 @@ def tt(conn):
 
 
 def options(conn, tt, origin, dest, *, window_s=0, **kw):
-    """Contract options at NOW_DAY as the tool hands them to annotate, before any disruption is attached."""
+    """The query and its contract options at NOW_DAY as the tool hands them to annotate, before any disruption is attached."""
     q = query(conn, tt, origin, dest, NOW_DAY, **kw)
-    return [planner.materialize(conn, q, j, NOW_DAY.date()) for j in raptor.plan_window(q, window_s)]
+    return q, [planner.materialize(conn, q, j, NOW_DAY.date()) for j in raptor.plan_window(q, window_s)]
+
+
+def annotated(conn, tt, disr, origin, dest, **kw):
+    q, opts = options(conn, tt, origin, dest, **kw)
+    return planner.annotate(q, disr, opts)
 
 
 def ids(opt):
@@ -39,9 +44,9 @@ def test_rsz_annotation_respects_the_zone_direction(conn, tt):
     zones = [dataclasses.replace(rsz, id=i, direction=d) for i, d in
              (("90001", "Southbound From Finch"), ("90002", "Northbound To Finch"), ("90003", "Both ways"), ("90004", None))]
     disr = Disruptions.build(conn, AlertList(None, None, zones), None, [], NOW_DAY)
-    south = planner.annotate(conn, disr, options(conn, tt, "Finch", "Union", max_transfers=0))
+    south = annotated(conn, tt, disr, "Finch", "Union", max_transfers=0)
     assert set(ids(south[0])) == {"90001", "90003", "90004"}
-    north = planner.annotate(conn, disr, options(conn, tt, "Union", "Finch", max_transfers=0))
+    north = annotated(conn, tt, disr, "Union", "Finch", max_transfers=0)
     assert set(ids(north[0])) == {"90002", "90003", "90004"}
 
 
@@ -53,18 +58,17 @@ def test_rsz_direction_matches_the_terminal_before_the_platform_name(conn, tt):
                                  stop_start="St George", stop_end="Spadina") for i, d in (("90011", "Southbound From Finch"), ("90012", "Northbound To Finch"))]
     disr = Disruptions.build(conn, AlertList(None, None, zones), None, [], NOW_DAY)
     assert [el["stations"] for el in disr.elements] == [["43269"], ["43269"]]
-    south = options(conn, tt, "Finch", "Dupont", max_transfers=0)
+    south = annotated(conn, tt, disr, "Finch", "Dupont", max_transfers=0)
     ride = next(l for l in south[0]["legs"] if l["mode"] == "ride")
     assert (ride["pattern_id"], ride["headsign"]) == (54, "Yonge-University Line towards Vaughan Metropolitan Centre Station")
-    assert set(ids(planner.annotate(conn, disr, south)[0])) == {"90011"}
-    north = options(conn, tt, "Dupont", "Finch", max_transfers=0)
-    assert set(ids(planner.annotate(conn, disr, north)[0])) == {"90012"}
+    assert set(ids(south[0])) == {"90011"}
+    assert set(ids(annotated(conn, tt, disr, "Dupont", "Finch", max_transfers=0)[0])) == {"90012"}
 
 
 def test_disruptions_name_the_legs_they_touch(conn, tt):
     """The zone touches the ride that passes through it, on a copy: the snapshot's elements are never mutated."""
     disr = build(conn, NOW_DAY)
-    out = planner.annotate(conn, disr, options(conn, tt, "Finch", "Union", max_transfers=0))
+    out = annotated(conn, tt, disr, "Finch", "Union", max_transfers=0)
     assert [l["mode"] for l in out[0]["legs"]] == ["ride"] and ids(out[0]) == {"77535": [1]}
     assert not any("affects" in el for el in disr.elements)
 
@@ -77,7 +81,7 @@ def test_route_level_alerts_annotate_every_ride_leg_of_their_route_once(conn, tt
     delay = dataclasses.replace(detour, id="90001", kind=kind, routes=("1",), header="Line 1: Delays of up to 10 minutes")
     later = dataclasses.replace(delay, id="90002", windows=(), start=NOW_DAY.replace(hour=20), end=None)
     disr = Disruptions.build(conn, AlertList(None, None, base + [delay, later, dataclasses.replace(detour, routes=("121",))]), rt(), groups(conn), NOW_DAY)
-    over = planner.annotate(conn, disr, options(conn, tt, CHERRY_FRONT, "Union", window_s=1800))
+    over = annotated(conn, tt, disr, CHERRY_FRONT, "Union", window_s=1800)
     found = {tuple(l["route"] for l in o["legs"] if l["mode"] == "ride"): [d.get("alert_id") or d.get("detour_id") for d in o["disruptions"]] for o in over}
     assert found[("121",)] == ["77530"] and found[("504", "1")].count("90001") == 1 and "90002" not in found[("504", "1")]
     assert not {"77513", "77535", "77530"} & set(found[("504", "1")])
@@ -88,16 +92,16 @@ def test_route_level_alerts_annotate_every_ride_leg_of_their_route_once(conn, tt
 
 def test_detoured_stops_are_never_used_and_rides_through_them_are_annotated(conn, tt):
     disr = build(conn, NOW_DAY)
-    opts = king_options(conn, tt, disr)
+    q, opts = king_options(conn, tt, disr)
     ride = next(l for l in opts[0]["legs"] if l["mode"] == "ride")
     assert ride["route"] == "504" and ride["board"]["number"] not in {"15039", "14994", "14993"}
-    assert "9001" in ids(planner.annotate(conn, disr, opts)[0])
+    assert "9001" in ids(planner.annotate(q, disr, opts)[0])
 
 
-@pytest.mark.parametrize("routes,annotated", [(["505"], False), ([], True)])
-def test_surface_annotation_needs_the_ride_route_or_no_route(conn, tt, routes, annotated):
+@pytest.mark.parametrize("routes,listed", [(["505"], False), ([], True)])
+def test_surface_annotation_needs_the_ride_route_or_no_route(conn, tt, routes, listed):
     disr = build(conn, NOW_DAY)
-    opts = king_options(conn, tt, disr)
+    q, opts = king_options(conn, tt, disr)
     detour = next(el for el in disr.elements if el.get("detour_id") == "9001")
-    over = planner.annotate(conn, Disruptions(conn, [detour | {"routes": routes}], {}), opts)
-    assert ("9001" in ids(over[0])) is annotated
+    over = planner.annotate(q, Disruptions(conn, [detour | {"routes": routes}], {}), opts)
+    assert ("9001" in ids(over[0])) is listed

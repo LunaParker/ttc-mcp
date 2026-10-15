@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import sqlite3
 import threading
 from array import array
 from bisect import bisect_left
@@ -139,11 +140,13 @@ Closed.NONE = Closed(frozenset(), frozenset(), frozenset())
 
 @dataclass(frozen=True)
 class Slice:
-    """One service day's view of a timetable on the query day's clock; the overlay (phase 6c) replaces what it sees."""
+    """One service day's view of a timetable on the query day's clock; the overlay (phase 6c) replaces what it sees.
+    conn reads this slice's own feed (pattern ids are per feed), on the planning thread."""
     tt: Timetable
     service_ids: frozenset[str]
     offset: int = 0
     overlay: object | None = None
+    conn: sqlite3.Connection | None = None
 
     def patterns_at(self, stop: str) -> Sequence[tuple[int, int]]:
         return self.tt.stop_patterns.get(stop, ())
@@ -207,13 +210,13 @@ class Query:
     slices: list[Slice]
     max_transfers: int = MAX_TRANSFERS
     usable: Callable[[str], bool] = field(default=lambda s: True)
-    closed: Callable[[int], Closed] = field(default=lambda p: Closed.NONE)
+    closed: Callable[[int, int], Closed] = field(default=lambda si, p: Closed.NONE)
 
 
 def _scan(q: Query, k: int, si: int, pid: int, pos0: int, prev: dict, cur: dict, best: dict, parent: dict, marked: set, target: list[int]) -> None:
     """One pattern in one slice for round k: ride every group from pos0, boarding the earliest trip the previous round allows."""
     sl = q.slices[si]
-    stops, closed = sl.stops_of(pid), q.closed(pid)
+    stops, closed = sl.stops_of(pid), q.closed(si, pid)
     for gi, g in enumerate(sl.groups_for(pid)):
         if g.service_id not in sl.service_ids:
             continue
@@ -378,5 +381,6 @@ def plan_arrive_by(q: Query, target: int, window_s: int, step_s: int = WINDOW_ST
 
 
 def has_service(q: Query, stops) -> bool:
-    """Any group at these stops that runs on one of the query's days."""
-    return any(g.service_id in sl.service_ids for s in stops for sl in q.slices for pid, _ in sl.patterns_at(s) for g in sl.groups_for(pid))
+    """Any group at these stops that runs on one of the query's days; an earlier day's group only while a trip of it can still be running."""
+    return any(g.service_id in sl.service_ids and (sl.offset >= 0 or g.cols[-1][-1] + sl.offset >= q.t0)
+               for s in stops for sl in q.slices for pid, _ in sl.patterns_at(s) for g in sl.groups_for(pid))

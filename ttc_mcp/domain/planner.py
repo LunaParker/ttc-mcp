@@ -184,7 +184,8 @@ def _span(a: int, b: int) -> int:
 
 
 def materialize(conn, q: raptor.Query, j: raptor.Journey, day: dt.date) -> dict:
-    """A journey as the spec 4.4 option, rank, next and disruptions left to the caller; rides keep base-pattern positions for annotate."""
+    """A journey as the spec 4.4 option, rank, next and disruptions left to the caller; rides keep base-pattern positions and their
+    slice for annotate, since pattern ids are per feed and the two day slices may come from different feeds."""
     def iso(s: int) -> str:
         return wall_clock(day, s).isoformat(timespec="minutes")
     names = stop_names(conn, [x for l in j.legs for x in (l.frm, l.to) if x])
@@ -213,25 +214,27 @@ def materialize(conn, q: raptor.Query, j: raptor.Journey, day: dt.date) -> dict:
             continue
         base, positions = meta.get("base_pattern", l.pattern), meta.get("positions")
         board_b, alight_b = (positions[l.board_pos], positions[l.alight_pos]) if positions else (l.board_pos, l.alight_pos)
-        rows = pattern_rows(conn, base)
+        rows = pattern_rows(sl.conn or conn, base)
         g = sl.groups_for(l.pattern)[l.group]
         legs.append({"mode": "ride", "route": meta["route"], "direction_id": meta["direction_id"], "headsign": meta["headsign"], "transit": meta["mode"],
                      "pattern_id": base, "trip_id": str(g.trip_ids[l.trip]), "board": _stop(l.frm, names), "alight": _stop(l.to, names),
                      "stops": l.alight_pos - l.board_pos, "depart": iso(l.depart), "arrive": iso(l.arrive), "min": _span(l.depart, l.arrive),
-                     "typical_min": _minutes(rows[board_b][2], rows[alight_b][2]), "basis": l.basis, "board_pos": board_b, "alight_pos": alight_b,
+                     "typical_min": _minutes(rows[board_b][2], rows[alight_b][2]), "basis": l.basis, "board_pos": board_b, "alight_pos": alight_b, "slice": l.slice_idx,
                      **({"detour_id": meta["detour_id"]} if meta.get("detour_id") else {})})
     rides = j.rides
     return {"transfers": j.transfers, "depart_at": iso(j.depart), "arrive_at": iso(j.arrive), "duration_min": _span(j.depart, j.arrive), "walk_m": j.walk_m,
             "stops": sum(l["stops"] for l in legs if l["mode"] == "ride"), "basis": rides[0].basis if rides else "schedule", "estimate": j.estimate, "legs": legs}
 
 
-def annotate(conn, disr: Disruptions, options: list[dict]) -> list[dict]:
-    """Decision h's annotations on contract options: zones, delays and route-level alerts on rides, the closure on a shuttle, the detour on a variant ride."""
+def annotate(q: raptor.Query, disr: Disruptions, options: list[dict]) -> list[dict]:
+    """Decision h's annotations on contract options: zones, delays and route-level alerts on rides, the closure on a shuttle, the detour on a variant ride.
+    A ride reads its patterns through its slice's feed, else the disruptions' connection (the feed in hand on this thread)."""
     for opt in options:
         found, affects = {}, {}
         touch = partial(_touch, found, affects)
         for n, leg in enumerate(opt["legs"], 1):
             if leg["mode"] == "ride":
+                conn = q.slices[leg["slice"]].conn or disr.conn
                 for el in _annotations(conn, disr, leg, pattern_rows(conn, leg["pattern_id"])):
                     touch(el, [n])
                 for el in disr.by_route.get(leg["route"], []):
