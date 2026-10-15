@@ -1,7 +1,9 @@
+import dataclasses
 import datetime as dt
 import threading
 
 from ttc_mcp.domain import geo, raptor
+from ttc_mcp.static.manifest import Manifest
 from ttc_mcp.static.schedule import TZ
 
 NOW = dt.datetime(2026, 10, 6, 8, 0, tzinfo=TZ)
@@ -31,11 +33,12 @@ def test_trip_slot_finds_the_trip_and_its_departure_in_the_column(conn):
 def test_footpaths_join_transfers_and_station_members_and_prefer_pathway_seconds(conn):
     tt = raptor.Timetable.load(conn, "S1000538")
     by = {to: (secs, m, via) for to, secs, m, via in tt.foot["15637"]}
-    assert by["13814"] == (35, 36, "walk") and by["13813"] == (35, 36, "walk") and by["15640"] == (geo.walk_seconds(93), 93, "walk")
-    bloor = {to: (secs, via) for to, secs, m, via in tt.foot["13863"]}
-    assert bloor["13864"][1] == "pathways" and 20 <= bloor["13864"][0] <= 600
+    assert by["13814"] == (96, 98, "walk") and by["13813"] == (geo.walk_seconds(76), 76, "walk") and by["15640"] == (geo.walk_seconds(93), 93, "walk")
+    bloor = {to: (secs, m, via) for to, secs, m, via in tt.foot["13863"]}
+    assert bloor["13864"] == (56, 119, "pathways")
     union = {to: (secs, m, via) for to, secs, m, via in tt.foot["13815"]}
-    assert union["16754"] == (geo.walk_seconds(171), 171, "walk") and union["13816"][2] in ("pathways", "walk")
+    assert union["16754"] == (geo.walk_seconds(304), 304, "walk") and union["13816"][2] in ("pathways", "walk")
+    assert all(secs > 0 and m > 0 for to, secs, m, via in tt.foot["13815"] if to != "13815")
 
 
 def test_timetable_for_caches_per_feed_and_reset_drops_it(app_env):
@@ -49,4 +52,15 @@ def test_timetable_for_caches_per_feed_and_reset_drops_it(app_env):
     raptor.reset()
     assert raptor.timetable_for(feed) is not a
     app_env.reset()
+    assert not raptor._cache
+
+
+def test_get_store_reopen_on_a_feed_change_drops_the_timetable_cache(app_env):
+    raptor.timetable_for(app_env.feed_for())
+    assert raptor._cache
+    cache = app_env.settings().cache_dir
+    m = Manifest.load(cache)
+    m.upsert(dataclasses.replace(m.feeds[0], etag='"republished"'))
+    m.save(cache)
+    app_env.get_store()
     assert not raptor._cache

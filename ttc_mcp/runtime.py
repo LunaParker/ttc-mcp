@@ -50,6 +50,7 @@ def get_store(cache_dir: Path | None = None) -> StaticStore:
     if _store is None or _store_key != key:
         if _store:
             _store.close()
+        raptor.reset()
         _store, _store_key = StaticStore.from_manifest(cache_dir), key
     _store.checked_at, _store.ckan_last_modified = m.checked_at, m.ckan_last_modified
     return _store

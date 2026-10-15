@@ -7,7 +7,7 @@ from array import array
 from dataclasses import dataclass
 from pathlib import Path
 
-from ttc_mcp.domain.geo import walk_seconds
+from ttc_mcp.domain.geo import haversine_m, walk_seconds
 from ttc_mcp.static.timetable import unpack
 
 
@@ -53,14 +53,17 @@ class Timetable:
         foot: dict[str, dict[str, tuple[int, int, str]]] = {}
         for a, b, m in conn.execute("SELECT stop_a, stop_b, dist_m FROM transfers"):
             foot.setdefault(a, {})[b] = (walk_seconds(m), m, "walk")
-        members: dict[str, list[tuple[str, int]]] = {}
-        for st, sid, m in conn.execute("SELECT station_id, stop_id, dist_m FROM station_members"):
-            members.setdefault(st, []).append((sid, m))
+        coords = {sid: (lat, lon) for sid, lat, lon in conn.execute("SELECT stop_id, lat, lon FROM stops WHERE lat IS NOT NULL AND lon IS NOT NULL")}
+        members: dict[str, list[str]] = {}
+        for st, sid in conn.execute("SELECT station_id, stop_id FROM station_members"):
+            members.setdefault(st, []).append(sid)
         for mem in members.values():
-            for a, da in mem:
-                for b, db in mem:
-                    if a != b and (b not in foot.get(a, {}) or walk_seconds(da + db) < foot[a][b][0]):
-                        foot.setdefault(a, {})[b] = (walk_seconds(da + db), da + db, "walk")
+            for a in mem:
+                for b in mem:
+                    if a != b and a in coords and b in coords:
+                        m = round(haversine_m(*coords[a], *coords[b]))
+                        if b not in foot.get(a, {}) or walk_seconds(m) < foot[a][b][0]:
+                            foot.setdefault(a, {})[b] = (walk_seconds(m), m, "walk")
         for a, b, secs in conn.execute("SELECT stop_a, stop_b, secs FROM station_paths"):
             metres = foot.get(a, {}).get(b, (0, 0, ""))[1]
             foot.setdefault(a, {})[b] = (secs, metres, "pathways")
