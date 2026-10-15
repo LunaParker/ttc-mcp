@@ -305,7 +305,7 @@ Request budget compared with v0.2 polling: polling cost about 14,000 requests an
 // "between now and it" when now cut the search short), "no journey with up to <max_transfers> transfers from <stamp>";
 // "arrive_by <stamp> is not after now" comes before any search, and "every stop at the origin (destination) is skipped by a detour" when decision h's
 // mask leaves nothing. note is present only when there is something to say; the skipped-stop substitution note (decision h) stays. Closures are
-// evaluated at the query instant (6.10), so whatever the options, each closure on a rail line that starts or ends inside the search (depart_at to
+// evaluated at the query instant (6.10), so each closure on a line one of the options rides that starts or ends inside the search (depart_at to
 // an hour past the window's end; arrive_by's four hours, from now when now is later) adds a note after the others, at its edge nearest that
 // instant: "closure <alert_id> on line <line> starts at <stamp> inside this search; options after it are planned as if it were not in force" (or
 // "ends at <stamp> ...; options after it are planned as if it were in force"); arrive_by is evaluated at its target, so there the note reads

@@ -71,12 +71,12 @@ def _around_skipped(conn, disr: Disruptions, e: planner.Endpoint, which: str, wa
     return planner.Endpoint(e.label, served)
 
 
-def _closure_notes(disr: Disruptions, lo: float, hi: float, arrive_by: bool) -> list[str]:
-    """Closures are evaluated once, at the query instant (hi for arrive-by, else lo): a closure that starts or ends in (lo, hi] is named at
-    the edge nearest that instant, with the state the options beyond the edge were planned in (spec 6.10)."""
+def _closure_notes(disr: Disruptions, lo: float, hi: float, arrive_by: bool, lines: set[str]) -> list[str]:
+    """Closures are evaluated once, at the query instant (hi for arrive-by, else lo): a closure on a line an option rides that starts or ends
+    in (lo, hi] is named at the edge nearest that instant, with the state the options beyond the edge were planned in (spec 6.10)."""
     out = []
     for el in disr.elements:
-        if el["type"] != "closure" or not el["routes"]:
+        if el["type"] != "closure" or not el["routes"] or el["route"] not in lines:
             continue
         edges = sorted((x, t, edge) for s, e in (el["windows"] or [el["period"]]) for t, edge in ((s, "starts"), (e, "ends"))
                        if t and lo < (x := dt.datetime.fromisoformat(t).timestamp()) <= hi)
@@ -154,8 +154,9 @@ def _plan(feed, store, disr, o, d, when: dt.datetime, max_transfers: int, window
             note = f"no journey with up to {max_transfers} transfers from {stamp}"
     at = when.timestamp()
     span = (max(at - raptor.ARRIVE_BY_SEARCH_H * 3600, now.timestamp()), at) if arrive_by else (at, at + window_min * 60 + SEARCH_TAIL_S)
-    notes += ([note] if note else []) + _closure_notes(disr, *span, arrive_by)
     options = planner.annotate(q, disr, [planner.materialize(conn, q, j, day) for j in journeys])
+    lines = {l["route"] if l["mode"] == "ride" else l["line"] for o in options for l in o["legs"] if l["mode"] in ("ride", "shuttle")}
+    notes += ([note] if note else []) + _closure_notes(disr, *span, arrive_by, lines)
     return options, "; ".join(notes) or None
 
 

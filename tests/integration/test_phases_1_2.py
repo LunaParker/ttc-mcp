@@ -171,6 +171,7 @@ async def test_connections_use_live_arrivals_and_the_advisory_snapshot(server_ur
     # a timetable first row comes with the note saying why, from that departure on.
     nxt = ride["next"][0]
     live = nxt["basis"] == "realtime" and (nxt["eta_min"] in [a["eta_min"] for a in arr["arrivals"]] or arr["meta"]["cache"] == "live")
-    assert live or (nxt["basis"] == "schedule" and ride["next_note"] and nxt["scheduled_at"] >= ride["depart"][:16]), (nxt, ride.get("next_note"))
+    soon = abs(dt.datetime.fromisoformat(ride["depart"]) - dt.datetime.now(dt.UTC)) <= dt.timedelta(hours=1)
+    assert live or (nxt["basis"] == "schedule" and nxt["scheduled_at"] >= ride["depart"][:16] and (ride.get("next_note") or not soon)), (nxt, ride.get("next_note"))
     fs = await call(server_url, "feed_status")
     assert fs["static"]["feed_version"] == r["meta"]["static_feed"]

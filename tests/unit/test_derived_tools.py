@@ -24,7 +24,6 @@ def minutes_between(a: str, b: str) -> int:
 
 
 # From 02:00 the search runs past the end of closure 77519's first night (spec 6.10's closure note).
-ENDS = "closure 77519 on line 1 ends at 2026-10-06T02:30-04:00 inside this search; options after it are planned as if it were in force"
 
 
 def no_variants(monkeypatch):
@@ -174,7 +173,7 @@ async def test_connections_wait_past_the_window_for_the_first_trip(app_env):
         r = (await c.call_tool("connections", {"origin": "15246", "destination": "Union", "max_transfers": 0, "depart_at": "2026-10-06T02:00"})).data
     ride = rides(r["options"][0])[0]
     assert (ride["route"], ride["depart"]) == ("121", "2026-10-06T06:23-04:00") and r["options"][0]["depart_at"] == "2026-10-06T06:23-04:00"
-    assert r["note"] == ENDS
+    assert "note" not in r  # the 02:30 end of Line 1's closure is inside the search, but no option rides Line 1
     assert ride["next"][0]["scheduled_at"].startswith("2026-10-06T06:23") and "next_note" not in ride and r["meta"]["cache"] == "static"
 
 
@@ -299,9 +298,9 @@ async def test_connections_explain_an_empty_answer(app_env, monkeypatch):
         assert r["options"] == [] and r["note"] == "no journey with up to 0 transfers from 2026-10-06T08:00-04:00" and "gtfsrt trips/subway" in r["meta"]["source"]
         # Only the 400 serves these two stops, and it runs Mondays, Wednesdays and Thursdays: Monday's trips are over by Tuesday 02:00.
         r = (await c.call_tool("connections", {"origin": "15547", "destination": "15602", "max_transfers": 0, "depart_at": "2026-10-06T02:00"})).data
-        assert r["options"] == [] and r["note"] == "no service at the origin stops on 2026-10-06; raise walk_m or start from a stop; " + ENDS
+        assert r["options"] == [] and r["note"] == "no service at the origin stops on 2026-10-06; raise walk_m or start from a stop"
         r = (await c.call_tool("connections", {"origin": "15461", "destination": "15547", "max_transfers": 0, "depart_at": "2026-10-06T02:00"})).data
-        assert r["options"] == [] and r["note"] == "no service at the destination stops on 2026-10-06; raise walk_m or start from a stop; " + ENDS
+        assert r["options"] == [] and r["note"] == "no service at the destination stops on 2026-10-06; raise walk_m or start from a stop"
         r = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union", "arrive_by": "2026-10-06T07:30"})).data
         assert r["options"] == [] and r["note"] == "arrive_by 2026-10-06T07:30-04:00 is not after now"
         monkeypatch.setattr("ttc_mcp.runtime.now", lambda: NIGHT)
