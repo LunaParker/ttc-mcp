@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
 from ttc_mcp.adapters.bustime_rt import TripUpdateRec
-from ttc_mcp.domain.raptor import Group, Timetable
+from ttc_mcp.domain.raptor import INF, Group, Timetable
 from ttc_mcp.static.timetable import split_overtaking
 
 MAX_DRIFT_S = 6 * 3600  # a prediction further than this from the scheduled time belongs to another day's instance of the trip
@@ -33,9 +33,15 @@ class Overlay:
         return self.extra_meta[pattern] if pattern < 0 else tt.pattern_meta[pattern]
 
 
-def position_of(stops: list[str], stop: str, after: int = 0) -> int | None:
-    """The first position at or after `after` serving the stop: a loop visits a stop twice, and the subway feed may list a platform
-    again for the next train under the same trip id (2026-10-14 capture), which this keeps out of the first train's row."""
+def position_of(stops: list[str], stop: str, after: int = 0, seqs: list[int] | None = None, seq: int | None = None) -> int | None:
+    """The update's stop_sequence when the pattern holds it at this stop (a loop's second visit), else the first position at or after
+    `after` serving the stop; a position before `after` is the next train's repeat under the same trip id (2026-10-14 capture)."""
+    if seq is not None and seqs:
+        i = seq - seqs[0]
+        if not (0 <= i < len(seqs) and seqs[i] == seq):
+            i = seqs.index(seq) if seq in seqs else -1
+        if i >= 0 and stops[i] == stop:
+            return i if i >= after else None
     try:
         return stops.index(stop, after)
     except ValueError:
@@ -55,8 +61,8 @@ def _resplit(pattern: int, service_id: str, trips: list[tuple[int, array]], skip
 
 def patch_groups(tt: Timetable, recs: Iterable[TripUpdateRec], stop_of: Callable[[str], str | None], origin_epoch: float,
                  slot: Callable[[str], tuple[int, int, int] | None]) -> dict[int, list[Group]]:
-    """Replacement group lists for every pattern a trip update touches: predicted times in place, the last delay carried to the
-    trip's later stops, SKIPPED stops masked, overtaking re-split. Trips without a static row and times from another day are ignored."""
+    """Replacement group lists for every pattern a trip update touches: predictions carried forward until NO_DATA restores the schedule,
+    SKIPPED stops and CANCELED trips masked, re-split only when a patched trip leaves its place. Unknown trips and other days are ignored."""
     touched: dict[tuple[int, int], dict[int, TripUpdateRec]] = {}
     for rec in recs:
         found = slot(rec.trip_id)
@@ -65,38 +71,61 @@ def patch_groups(tt: Timetable, recs: Iterable[TripUpdateRec], stop_of: Callable
             touched.setdefault((pid, gi), {})[ti] = rec
     out: dict[int, list[Group]] = {}
     for (pid, gi), by_trip in touched.items():
-        g, stops = tt.groups[pid][gi], tt.pattern_stops[pid]
-        times = {int(g.trip_ids[i]): [g.cols[p][i] for p in range(len(stops))] for i in range(g.n_trips)}
-        skip: dict[int, set[int]] = {}
+        g, stops, seqs = tt.groups[pid][gi], tt.pattern_stops[pid], tt.pattern_seqs.get(pid)
+        n_stops, n, sched = len(stops), g.n_trips, g.cols
+        moved: dict[int, dict[int, int]] = {}
+        skip: set[tuple[int, int]] = set()
         realtime: set[int] = set()
         for ti, rec in by_trip.items():
-            tid, row, after, changed = int(g.trip_ids[ti]), times[int(g.trip_ids[ti])], 0, {}
+            if rec.relationship == "CANCELED":
+                skip.update((ti, pos) for pos in range(n_stops))
+                realtime.add(ti)
+                continue
+            delays: dict[int, int] = {}
+            after, live = 0, False
             for u in rec.updates:
                 stop = stop_of(u.stop_id)
-                pos = position_of(stops, stop, after) if stop else None
+                pos = position_of(stops, stop, after, seqs, u.seq) if stop else None
                 if pos is None:
                     continue
                 after = pos + 1
                 if u.relationship == "SKIPPED":
-                    skip.setdefault(tid, set()).add(pos)
-                    changed[pos] = changed.get(pos, None)
-                elif u.relationship != "NO_DATA" and u.time is not None:
-                    secs = int(u.time - origin_epoch)
-                    if abs(secs - row[pos]) <= MAX_DRIFT_S:
-                        changed[pos] = secs - row[pos]
-            if not changed and tid not in skip:
-                continue
-            realtime.add(tid)
-            delay = 0
-            for pos in range(len(stops)):
-                if pos in changed and changed[pos] is not None:
-                    delay = changed[pos]
-                row[pos] += delay
-            for pos in range(1, len(stops)):
-                row[pos] = max(row[pos], row[pos - 1])  # a prediction never runs backwards along the trip; Group.last and the spent skip rely on it
+                    skip.add((ti, pos))
+                    live = True
+                elif u.relationship == "NO_DATA":
+                    delays[pos] = 0  # no prediction here: the schedule applies from this stop on
+                elif u.time is not None and -MAX_DRIFT_S <= (d := int(u.time - origin_epoch) - sched[pos][ti]) <= MAX_DRIFT_S:
+                    delays[pos], live = d, True
+            if live:
+                realtime.add(ti)
+                if any(delays.values()):
+                    moved[ti] = delays
         if not realtime:
             continue
-        rows = sorted(times.items(), key=lambda kv: kv[1][0])
-        new = _resplit(pid, g.service_id, [(t, array("i", r)) for t, r in rows], skip, realtime)
+        cols = [array("i", c) for c in sched]
+        first = {ti: min(delays) for ti, delays in moved.items()}
+        in_order = True
+        for ti in sorted(moved):
+            delays, d = moved[ti], 0
+            lo = cols[first[ti] - 1][ti] if first[ti] else -INF
+            # The next trip's columns before its own first change are final; from there on its left-hand check covers the pair.
+            right = first.get(ti + 1, n_stops) if ti + 1 < n else 0
+            for pos in range(first[ti], n_stops):
+                c = cols[pos]
+                d = delays.get(pos, d)
+                v = c[ti] + d
+                if v < lo:
+                    v = lo  # a ride never arrives before it boards, and has_service reads the last column as the trip's end
+                lo = c[ti] = v
+                if (ti and c[ti - 1] > v) or (pos < right and v > c[ti + 1]):
+                    in_order = False
+        if in_order:
+            new = [Group(pid, g.service_id, cols, g.trip_ids, frozenset(skip), frozenset(realtime))]
+        else:
+            ids = [int(t) for t in g.trip_ids]
+            by_id: dict[int, set[int]] = {}
+            for ti, pos in skip:
+                by_id.setdefault(ids[ti], set()).add(pos)
+            new = _resplit(pid, g.service_id, [(ids[i], array("i", (c[i] for c in cols))) for i in range(n)], by_id, {ids[ti] for ti in realtime})
         out[pid] = [x for i, x in enumerate(tt.groups[pid]) if i != gi] + new if pid not in out else [x for x in out[pid] if x is not g] + new
     return out

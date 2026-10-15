@@ -1,5 +1,6 @@
 import dataclasses
 import datetime as dt
+import json
 import threading
 
 from ttc_mcp.domain import geo, planner, raptor
@@ -22,6 +23,13 @@ def test_timetable_loads_every_group_with_sorted_columns_and_indexes_stops(conn)
     assert len(tt.pattern_stops[3]) == 17 and (tt.pattern_meta[3]["route"], tt.pattern_meta[3]["direction_id"], tt.pattern_meta[3]["mode"]) == ("121", "1", "bus")
     g = tt.groups[3][0]
     assert g.pattern == 3 and len(g.cols) == 17 and all(list(c) == sorted(c) for c in g.cols) and g.n_trips == len(g.trip_ids) and not g.skip and not g.realtime
+
+
+def test_timetable_carries_each_patterns_stop_sequences_by_position(conn):
+    tt = raptor.Timetable.load(conn, "S1000538")
+    pid, stops = conn.execute("SELECT pattern_id, stops FROM patterns WHERE pattern_id=3").fetchone()
+    assert tt.pattern_seqs[3] == [q for q, _ in json.loads(stops)] and [s for _, s in json.loads(stops)] == tt.pattern_stops[3]
+    assert all(len(tt.pattern_seqs[p]) == len(ss) and tt.pattern_seqs[p] == sorted(set(tt.pattern_seqs[p])) for p, ss in tt.pattern_stops.items())
 
 
 def test_trip_slot_finds_the_trip_and_its_departure_in_the_column(conn):

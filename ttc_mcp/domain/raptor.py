@@ -41,8 +41,9 @@ class Timetable:
     """Immutable after load, shared by every worker thread of one feed."""
 
     def __init__(self, version: str, pattern_stops: dict[int, list[str]], pattern_meta: dict[int, dict], groups: dict[int, list[Group]],
-                 foot: dict[str, list[tuple[str, int, int, str]]]):
+                 foot: dict[str, list[tuple[str, int, int, str]]], pattern_seqs: dict[int, list[int]] | None = None):
         self.version, self.pattern_stops, self.pattern_meta, self.groups, self.foot = version, pattern_stops, pattern_meta, groups, foot
+        self.pattern_seqs = pattern_seqs or {}  # GTFS stop_sequence per position, shared by every trip of the pattern
         self.stop_patterns: dict[str, list[tuple[int, int]]] = {}
         for pid, stops in pattern_stops.items():
             for pos, sid in enumerate(stops):
@@ -53,10 +54,11 @@ class Timetable:
         pattern_stops: dict[int, list[str]] = {}
         for pid, sid in conn.execute("SELECT pattern_id, stop_id FROM pattern_stops ORDER BY pattern_id, pos"):
             pattern_stops.setdefault(pid, []).append(sid)
-        meta = {}
-        for pid, route, d, hs, mode in conn.execute("SELECT p.pattern_id, p.route_id, p.direction_id, p.headsigns, r.mode FROM patterns p JOIN routes r ON r.route_id=p.route_id"):
+        meta, seqs = {}, {}
+        for pid, route, d, hs, mode, st in conn.execute("SELECT p.pattern_id, p.route_id, p.direction_id, p.headsigns, r.mode, p.stops FROM patterns p JOIN routes r ON r.route_id=p.route_id"):
             h = json.loads(hs)
             meta[pid] = {"route": route, "direction_id": str(d), "headsign": max(h, key=h.get) if h else None, "mode": mode}
+            seqs[pid] = [q for q, _ in json.loads(st)]
         groups: dict[int, list[Group]] = {}
         for pid, sid, n_stops, times, ids in conn.execute("SELECT pattern_id, service_id, n_stops, times, trip_ids FROM raptor_groups ORDER BY pattern_id, service_id, split"):
             cols, trip_ids = unpack(n_stops, times, ids)
@@ -78,7 +80,7 @@ class Timetable:
         for a, b, secs in conn.execute("SELECT stop_a, stop_b, secs FROM station_paths"):
             metres = foot.get(a, {}).get(b, (0, 0, ""))[1]
             foot.setdefault(a, {})[b] = (secs, metres, "pathways")
-        return cls(version, pattern_stops, meta, groups, {a: [(b, *v) for b, v in d.items()] for a, d in foot.items()})
+        return cls(version, pattern_stops, meta, groups, {a: [(b, *v) for b, v in d.items()] for a, d in foot.items()}, seqs)
 
     def trip_slot(self, conn, trip_id: str) -> tuple[int, int, int] | None:
         row = conn.execute("SELECT pattern_id FROM trips WHERE trip_id=?", (trip_id,)).fetchone()
