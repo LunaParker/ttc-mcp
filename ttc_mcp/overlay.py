@@ -152,13 +152,13 @@ def _without(g: Group, drop: set[int]) -> Group:
 
 
 def detour_variants(conn, tt: Timetable, entities: Iterable[DetourEntity], day: dt.date, base: dict[int, list[Group]] | None = None):
-    """Per entity active on `day` whose trips resolve: a pseudo pattern over the kept positions holding exactly its trips, with the
-    propagated delay added beyond each span; those trips leave their original groups (spec 6.10)."""
+    """Per entity active on `day` whose trips resolve: a pseudo pattern over the kept positions holding exactly its trips, the propagated
+    delay added beyond each span unless a patch predicted the trip, its masks and realtime mark kept; those trips leave their groups (spec 6.10)."""
     groups: dict[int, list[Group]] = dict(base or {})
     extra, extra_stops, extra_meta, extra_at = {}, {}, {}, {}
     key = day.strftime("%Y%m%d")
     for n, e in enumerate(x for x in entities if key in x.service_dates):
-        slots = [(t, s) for t in e.trip_ids if (s := tt.trip_slot(conn, t))]
+        slots = [(t, s) for t in dict.fromkeys(e.trip_ids) if (s := tt.trip_slot(conn, t))]
         if not slots or len({s[0] for _, s in slots}) != 1:
             continue
         pid = slots[0][1][0]
@@ -175,6 +175,7 @@ def detour_variants(conn, tt: Timetable, entities: Iterable[DetourEntity], day: 
         keep = [i for i in range(len(stops)) if i not in skipped]
         if not keep:
             continue
+        kept_at = {p: k for k, p in enumerate(keep)}
         vid = VARIANT_BASE - n
         by_group: dict[int, list[int]] = {}
         for gi, ti in located:
@@ -182,16 +183,22 @@ def detour_variants(conn, tt: Timetable, entities: Iterable[DetourEntity], day: 
         variant: list[Group] = []
         for gi, tis in by_group.items():
             g = current[gi]
-            rows = []
+            rows, masked, live, sel = [], {}, set(), set(tis)
+            for t, p in g.skip:
+                if t in sel and p in kept_at:
+                    masked.setdefault(int(g.trip_ids[t]), set()).add(kept_at[p])
             for ti in tis:
-                delay, times = 0, []
+                tid, predicted, delay, times = int(g.trip_ids[ti]), ti in g.realtime, 0, []
                 for pos in range(len(stops)):
-                    delay += delay_after.get(pos, 0)  # GTFS-RT: each span's delay adds to the earlier ones as the trip advances
+                    # GTFS-RT: each span's delay adds to the earlier ones as the trip advances; a patched trip's times already say when it runs.
+                    delay += 0 if predicted else delay_after.get(pos, 0)
                     if pos not in skipped:
                         times.append(g.cols[pos][ti] + delay)
-                rows.append((int(g.trip_ids[ti]), array("i", times)))
-            variant += _resplit(vid, g.service_id, rows, {}, set())
-            current = [(_without(x, set(tis)) if i == gi else x) for i, x in enumerate(current)]
+                rows.append((tid, array("i", times)))
+                if predicted:
+                    live.add(tid)
+            variant += _resplit(vid, g.service_id, rows, masked, live)
+            current = [(_without(x, sel) if i == gi else x) for i, x in enumerate(current)]
         groups[pid] = current
         extra[vid], extra_stops[vid] = variant, [stops[i] for i in keep]
         extra_meta[vid] = {**tt.pattern_meta[pid], "base_pattern": pid, "positions": keep, "detour_id": e.detour_id}

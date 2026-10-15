@@ -211,3 +211,28 @@ def test_the_delays_of_two_spans_accumulate_as_the_trip_advances(conn):
     i = list(g.trip_ids).index(100677020)
     assert meta[-1000]["positions"][:7] == [0, 1, 3, 4, 5, 7, 8]
     assert [c[i] for c in g.cols] == [sched[p] + (60 if 2 < p < 6 else 90 if p > 6 else 0) for p in meta[-1000]["positions"]]  # GTFS-RT: delays accumulate
+
+
+@pytest.mark.parametrize("canceled", [False, True])
+def test_a_variant_chained_on_a_patched_group_keeps_what_the_patch_established(conn, canceled):
+    tt = raptor.Timetable.load(conn, "S1000538")
+    origin = schedule.wall_clock(dt.date(2026, 10, 6), 0).timestamp()
+    r = TripUpdateRec("100677020", "504", None, "CANCELED", ()) if canceled else rec(100677020, ("4569", origin + 39518 + 120, "SCHEDULED"))
+    patched = overlay.patch_groups(tt, [r], lambda s: s, origin, lambda t: tt.trip_slot(conn, t))
+    e = dataclasses.replace(next(e for e in _entities() if e.detour_id == "9001"), spans=((3, 5, 300),))
+    _, extra, stops, _, _ = overlay.detour_variants(conn, tt, [e], dt.date(2026, 10, 6), base=patched)
+    at = stops[-1000].index
+    g, other = (next(g for g in extra[-1000] if t in g.trip_ids) for t in (100677020, 100895020))
+    i, j = list(g.trip_ids).index(100677020), list(other.trip_ids).index(100895020)
+    assert i in g.realtime and j not in other.realtime and other.cols[at("4573")][j] == 70457 + 300  # an unpredicted trip takes the detour delay
+    if canceled:
+        assert {p for t, p in g.skip if t == i} == set(range(35))
+    else:
+        assert (g.cols[at("4569")][i], g.cols[at("4573")][i]) == (39518 + 120, 39917 + 120) and not g.skip  # the prediction, no delay on top
+
+
+def test_a_trip_an_entity_lists_twice_rides_the_variant_once(conn):
+    tt = raptor.Timetable.load(conn, "S1000538")
+    e = dataclasses.replace(next(e for e in _entities() if e.detour_id == "9001"), trip_ids=("100677020", "100677020"))
+    groups, extra, *_ = overlay.detour_variants(conn, tt, [e], dt.date(2026, 10, 6))
+    assert [int(t) for g in extra[-1000] for t in g.trip_ids] == [100677020] and sum(g.n_trips for g in groups[6]) == sum(g.n_trips for g in tt.groups[6]) - 1
