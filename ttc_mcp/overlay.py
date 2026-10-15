@@ -16,8 +16,10 @@ from ttc_mcp.static.gtfs import RAIL
 from ttc_mcp.static.schedule import wall_clock
 from ttc_mcp.static.timetable import split_overtaking
 
-MAX_DRIFT_S = 2 * 3600  # surface feed: past this an update is another day's run of the trip, since no bus runs two hours late (drifts split after the 2026-10-14 capture)
-SUBWAY_DRIFT_S = 15 * 60  # subway feed: a train genuinely late or early; the 2026-10-14 capture's trip ids sat in their slot for 5 of 55 trips, the rest far off
+# Surface feed: past this an update is another day's run of the trip, since no bus runs two hours late (drifts split after the 2026-10-14 capture).
+MAX_DRIFT_S = 2 * 3600
+# Subway feed: a train genuinely late or early; the 2026-10-14 capture's trip ids sat in their slot for 5 of 55 trips, the rest far off.
+SUBWAY_DRIFT_S = 15 * 60
 
 
 @dataclass
@@ -117,7 +119,8 @@ def _resplit(pattern: int, service_id: str, trips: list[tuple[int, array]], skip
         ids = array("q", (t for t, _ in bucket))
         cols = [array("i", c) for c in zip(*(times for _, times in bucket), strict=True)]
         by = {t: i for i, t in enumerate(ids)}
-        out.append(Group(pattern, service_id, cols, ids, frozenset((by[t], p) for t, ps in skip.items() if t in by for p in ps), frozenset(by[t] for t in realtime if t in by)))
+        out.append(Group(pattern, service_id, cols, ids, frozenset((by[t], p) for t, ps in skip.items() if t in by for p in ps),
+                         frozenset(by[t] for t in realtime if t in by)))
     return out
 
 
@@ -300,8 +303,8 @@ def shuttle_routes(conn, tt: Timetable, disr: Disruptions):
             if len(chain) < 2:
                 continue
             km = (chain[-1][3] - chain[0][3]) / 1000
-            note = (f"assumed {SHUTTLE_HEADWAY_MIN}-minute headway and {SHUTTLE_KMH} km/h over {km:.1f} km of track with a {SHUTTLE_DWELL_MIN}-minute stop per station; "
-                    f"the TTC publishes no shuttle timetable (alert {el['alert_id']})")
+            note = (f"assumed {SHUTTLE_HEADWAY_MIN}-minute headway and {SHUTTLE_KMH} km/h over {km:.1f} km of track "
+                    f"with a {SHUTTLE_DWELL_MIN}-minute stop per station; the TTC publishes no shuttle timetable (alert {el['alert_id']})")
             for direction, order in (("0", chain), ("1", chain[::-1])):
                 cum, total = [0], 0
                 for a, b in zip(order, order[1:], strict=False):
@@ -311,8 +314,9 @@ def shuttle_routes(conn, tt: Timetable, disr: Disruptions):
                 n += 1
                 extra[vid] = [Headway(vid, SHUTTLE_HEADWAY_MIN * 60, tuple(cum))]
                 extra_stops[vid] = [p for _, _, p, _ in order]
-                extra_meta[vid] = {"route": line, "direction_id": direction, "headsign": f"shuttle bus {order[0][1]} to {order[-1][1]}", "mode": "shuttle", "line": line,
-                                   "alert_id": el["alert_id"], "note": note, "station_of": {p: {"station": sid, "name": name} for sid, name, p, _ in order}}
+                extra_meta[vid] = {"route": line, "direction_id": direction, "headsign": f"shuttle bus {order[0][1]} to {order[-1][1]}", "mode": "shuttle",
+                                   "line": line, "alert_id": el["alert_id"], "note": note,
+                                   "station_of": {p: {"station": sid, "name": name} for sid, name, p, _ in order}}
                 for pos, p in enumerate(extra_stops[vid]):
                     extra_at.setdefault(p, []).append((vid, pos))
     return extra, extra_stops, extra_meta, extra_at

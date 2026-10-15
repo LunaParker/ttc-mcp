@@ -429,7 +429,7 @@ Request budget compared with v0.2 polling: polling cost about 14,000 requests an
 
 ### 6.9 Transport and hosting (decision j, v0.6)
 
-**Decision:** the server is a FastMCP application (`fastmcp>=4.1,<5` since 2026-10-11) exposing **streamable HTTP** at `/mcp`, with authentication and authorization in-process rather than through a separate proxy: `GoogleProvider` (OAuth with dynamic client registration, `require_authorization_consent="remember"`) plus the `EmailAllowlist` middleware (`ALLOWED_EMAILS=lunaparker33@gmail.com`). The gate runs in-process, not as a proxy in front of a loopback server, because the tools are native Python and there is no third-party backend to wrap. A `--transport stdio` mode remains for local development and for any developer who wants to run it on their own machine.
+**Decision:** the server is a FastMCP application (`fastmcp>=4.1,<5` since 2026-10-11) exposing **streamable HTTP** at `/mcp`, with authentication and authorization in-process rather than through a separate proxy: `GoogleProvider` (OAuth with dynamic client registration, `require_authorization_consent="remember"`) plus the `EmailAllowlist` middleware (`ALLOWED_EMAILS=maintainer@example.com`, an example). The gate runs in-process, not as a proxy in front of a loopback server, because the tools are native Python and there is no third-party backend to wrap. A `--transport stdio` mode remains for local development and for any developer who wants to run it on their own machine.
 
 **Why:** a hosted connector reaches claude.ai, Claude Desktop, iOS and Claude Code through one URL; stdio would confine the server to one machine. The on-demand design (decision g) is what makes hosting cheap: an idle instance makes no requests and can scale to zero.
 

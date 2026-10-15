@@ -56,8 +56,10 @@ def _input_error(origin, destination, walk_m: int, limit: int, depart_at: str | 
     return None
 
 
-def _around_skipped(conn, disr: Disruptions, e: planner.Endpoint, which: str, walk_m: int, notes: list[str], modeled=frozenset()) -> planner.Endpoint:
-    """Spec decision h: a stop number skipped by a detour with no variant pattern (an entity not in modeled) is planned from the served stops within walk_m of it."""
+def _around_skipped(conn, disr: Disruptions, e: planner.Endpoint, which: str, walk_m: int, notes: list[str],
+                    modeled=frozenset()) -> planner.Endpoint:
+    """Spec decision h: a stop number skipped by a detour with no variant pattern (an entity not in modeled) is planned from the served
+    stops within walk_m of it."""
     el = disr.stop_skipped(e.label["stop"], modeled) if "stop" in e.label else None
     if el is None:
         return e
@@ -247,7 +249,8 @@ def register(mcp: FastMCP) -> None:
             # Each first ride lists the departures from its own departure on, live when that is within an hour of now.
             ats = [dt.datetime.fromisoformat(leg["depart"]) for leg in firsts]
             lives = [abs(at - runtime.now()) <= LIVE_WINDOW for at in ats]
-            nexts = await asyncio.gather(*(live.next_for_leg(feed, rt, leg, now=at, use_live=li, clock=runtime.now()) for leg, at, li in zip(firsts, ats, lives, strict=True)))
+            nexts = await asyncio.gather(*(live.next_for_leg(feed, rt, leg, now=at, use_live=li, clock=runtime.now())
+                                           for leg, at, li in zip(firsts, ats, lives, strict=True)))
             for leg, (rows, _, nnote) in zip(firsts, nexts, strict=True):
                 leg["next"] = rows
                 if nnote:

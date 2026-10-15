@@ -73,12 +73,14 @@ class Timetable:
         for pid, sid in conn.execute("SELECT pattern_id, stop_id FROM pattern_stops ORDER BY pattern_id, pos"):
             pattern_stops.setdefault(pid, []).append(sid)
         meta, seqs = {}, {}
-        for pid, route, d, hs, mode, st in conn.execute("SELECT p.pattern_id, p.route_id, p.direction_id, p.headsigns, r.mode, p.stops FROM patterns p JOIN routes r ON r.route_id=p.route_id"):
+        for pid, route, d, hs, mode, st in conn.execute("SELECT p.pattern_id, p.route_id, p.direction_id, p.headsigns, r.mode, p.stops "
+                                                        "FROM patterns p JOIN routes r ON r.route_id=p.route_id"):
             h = json.loads(hs)
             meta[pid] = {"route": route, "direction_id": str(d), "headsign": max(h, key=h.get) if h else None, "mode": mode}
             seqs[pid] = [q for q, _ in json.loads(st)]
         groups: dict[int, list[Group]] = {}
-        for pid, sid, n_stops, times, ids in conn.execute("SELECT pattern_id, service_id, n_stops, times, trip_ids FROM raptor_groups ORDER BY pattern_id, service_id, split"):
+        for pid, sid, n_stops, times, ids in conn.execute("SELECT pattern_id, service_id, n_stops, times, trip_ids FROM raptor_groups "
+                                                          "ORDER BY pattern_id, service_id, split"):
             cols, trip_ids = unpack(n_stops, times, ids)
             groups.setdefault(pid, []).append(Group(pid, sid, cols, trip_ids))
         foot: dict[str, dict[str, tuple[int, int, str]]] = {}

@@ -200,7 +200,8 @@ class Disruptions:
 
     def stop_skipped(self, number: str, modeled: Collection[str] = ()) -> dict | None:
         """The active detour-feed element skipping this stop; an entity in modeled runs on a variant pattern (spec 6.10), so it skips nothing here."""
-        return next((el for el in self.by_stop.get(number, []) if el["source"] == "detour feed" and el["active_now"] and el.get("entity_id") not in modeled), None)
+        return next((el for el in self.by_stop.get(number, [])
+                     if el["source"] == "detour feed" and el["active_now"] and el.get("entity_id") not in modeled), None)
 
     def suffix_station(self, name: str | None) -> str | None:
         m = SUFFIX.search(name or "")
