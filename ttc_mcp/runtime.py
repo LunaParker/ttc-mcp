@@ -7,7 +7,7 @@ from pathlib import Path
 from ttc_mcp.adapters.http import make_async_client
 from ttc_mcp.cache import Hit
 from ttc_mcp.config import settings
-from ttc_mcp.domain import freshness
+from ttc_mcp.domain import freshness, raptor
 from ttc_mcp.realtime import Realtime
 from ttc_mcp.static.manifest import Manifest
 from ttc_mcp.static.schedule import TZ
@@ -37,6 +37,7 @@ def reset() -> None:
     if _store:
         _store.close()
     _store, _store_key, _realtime = None, None, None
+    raptor.reset()
 
 
 def get_store(cache_dir: Path | None = None) -> StaticStore:
