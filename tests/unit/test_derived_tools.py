@@ -134,7 +134,7 @@ async def test_connections_take_live_rows_only_within_an_hour_of_the_clock(app_e
         assert near["depart_at"] == "2026-10-06T08:30-04:00" and near["meta"]["cache"] == "live" and near["meta"]["source"].startswith("static timetable")
         # NTAS has trains at 0, 4 and 5 minutes from the 08:00 clock, all before 08:30: the timetable fills in from 08:30.
         assert ride["next"][0]["scheduled_at"] >= "2026-10-06T08:30" and ride["depart"] >= "2026-10-06T08:30"
-        assert ride["next_note"] == "no real-time prediction in this direction from depart_at on; times are from the timetable"
+        assert ride["next_note"] == "no real-time prediction in this direction from the planned departure on; times are from the timetable"
         soon = (await c.call_tool("connections", {"origin": "13863", "destination": "Finch", "depart_at": "2026-10-06T08:03"})).data
         assert [n["eta_min"] for n in rides(soon["options"][0])[0]["next"]] == [4, 5] and rides(soon["options"][0])[0]["next"][0]["basis"] == "realtime"
         far = (await c.call_tool("connections", {"origin": "13863", "destination": "Finch", "depart_at": "2026-10-06T09:01"})).data
@@ -160,7 +160,7 @@ async def test_connections_arrive_by_go_live_on_the_options_departure_not_the_ta
         r = (await c.call_tool("connections", {"origin": "13863", "destination": "Finch", "arrive_by": "2026-10-06T09:15"})).data
     ride = rides(r["options"][0])[0]
     assert ride["depart"] == "2026-10-06T08:48-04:00" and r["meta"]["cache"] == "live" and r["meta"]["source"].startswith("static timetable")
-    assert ride["next"][0]["scheduled_at"] >= "2026-10-06T08:48" and ride["next_note"] == "no real-time prediction in this direction from depart_at on; times are from the timetable"
+    assert ride["next"][0]["scheduled_at"] >= "2026-10-06T08:48" and ride["next_note"] == "no real-time prediction in this direction from the planned departure on; times are from the timetable"
 
 
 @pytest.mark.anyio
@@ -242,7 +242,9 @@ async def test_connections_explain_an_empty_answer(app_env, monkeypatch):
         assert r["options"] == [] and r["note"] == "no journey with up to 0 transfers from 2026-10-06T08:00-04:00" and "gtfsrt trips/subway" in r["meta"]["source"]
         # Only the 400 serves these two stops, and it runs Mondays, Wednesdays and Thursdays: Monday's trips are over by Tuesday 02:00.
         r = (await c.call_tool("connections", {"origin": "15547", "destination": "15602", "max_transfers": 0, "depart_at": "2026-10-06T02:00"})).data
-        assert r["options"] == [] and r["note"] == "no service at the origin stops on 2026-10-06"
+        assert r["options"] == [] and r["note"] == "no service at the origin stops on 2026-10-06; raise walk_m or start from a stop"
+        r = (await c.call_tool("connections", {"origin": "15461", "destination": "15547", "max_transfers": 0, "depart_at": "2026-10-06T02:00"})).data
+        assert r["options"] == [] and r["note"] == "no service at the destination stops on 2026-10-06; raise walk_m or start from a stop"
         r = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union", "arrive_by": "2026-10-06T07:30"})).data
         assert r["options"] == [] and r["note"] == "arrive_by 2026-10-06T07:30-04:00 is not after now"
         monkeypatch.setattr("ttc_mcp.runtime.now", lambda: NIGHT)
@@ -257,7 +259,7 @@ async def test_connections_explain_an_empty_answer(app_env, monkeypatch):
         r = (await c.call_tool("connections", {"origin": "4582", "destination": "15039", "walk_m": 1})).data
         assert r["options"] == [] and r["note"] == "every stop at the destination is skipped by a detour"
         r = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union", "depart_at": "2026-11-15T08:00"})).data
-        assert r["options"] == [] and r["note"] == "no service at the origin stops on 2026-11-15"
+        assert r["options"] == [] and r["note"] == "no service at the origin stops on 2026-11-15; raise walk_m or start from a stop"
 
 
 @pytest.mark.anyio

@@ -26,6 +26,7 @@ SOURCE_LIVE = "static timetable + bustime trips + gtfsrt trips/subway + bustime 
 LIVE_WINDOW = dt.timedelta(minutes=60)
 WALK_MAX_M, LIMIT_MAX = 2000, 10
 CLOSED = "every journey needs a closed section with no shuttle service"
+WIDEN = "; raise walk_m or start from a stop"  # the High Park origin's only stops within 400 m are the seasonal 203's (spec 11, phase 6d)
 
 
 def _input_error(origin, destination, walk_m: int, limit: int, depart_at: str | None, arrive_by: str | None = None,
@@ -118,9 +119,9 @@ def _plan(feed, store, disr, o, d, when: dt.datetime, max_transfers: int, window
     note = None
     if not journeys:
         if not raptor.has_service(q, q.origin):
-            note = f"no service at the origin stops on {day.isoformat()}"
+            note = f"no service at the origin stops on {day.isoformat()}{WIDEN}"
         elif not raptor.has_service(q, q.dest):
-            note = f"no service at the destination stops on {day.isoformat()}"
+            note = f"no service at the destination stops on {day.isoformat()}{WIDEN}"
         elif run(dataclasses.replace(q, closed=lambda si, pid: raptor.Closed.NONE)):
             note = CLOSED
         elif arrive_by:

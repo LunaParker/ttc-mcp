@@ -89,6 +89,7 @@ def test_instructions_point_trip_questions_at_connections_and_name_the_derived_t
     from ttc_mcp.server import INSTRUCTIONS
 
     assert "connections" in INSTRUCTIONS and "route_shape" in INSTRUCTIONS and "accessibility" in INSTRUCTIONS and "trip" in INSTRUCTIONS
+    assert "timetable-exact" in INSTRUCTIONS and "arrival time" in INSTRUCTIONS and "one-transfer" not in INSTRUCTIONS
 
 
 @pytest.mark.anyio

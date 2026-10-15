@@ -26,7 +26,7 @@ You ask in plain language and the client picks the tools. Some examples:
 
 | Ask | Tools | What comes back |
 |---|---|---|
-| How do I get from Spadina to Pape? | `connections` | Up to four ranked trips: walking, rides with typical minutes, transfers, the next departures of the first ride, and every disruption on the way with the legs it affects |
+| How do I get from Spadina to Pape? | `connections` | Timetable-exact trips: real departures and arrivals on every leg, up to three transfers, a departure window or an arrival time, the next departures of the first ride, and every disruption on the way with the legs it affects |
 | I'm at the Distillery District. How do I get to Union? | a maps tool to geocode, then `connections` | The same, starting from the place's coordinates |
 | When's the next 504 at King and Spadina? | `find_stops`, `arrivals` | Predicted minutes with crowding, or timetable minutes and a note when nothing is predicted |
 | When's the next train at Bloor-Yonge? | `next_trains` | Minutes for every platform, by line and direction |
@@ -78,7 +78,42 @@ Three things to notice:
 - St George is the end of the closure, so the westbound platform, facing the open part of the line, kept real predictions. The closure is tagged `shuttle_terminus`: this is where the shuttle buses start.
 - `meta` says the predictions were fetched live and are fresh, and that the disruption feeds answered.
 
-The same afternoon, `connections` from Spadina to Pape answered: Line 2 to St George, shuttle bus to Broadview, Line 2 to Pape. Its `typical_min` was `null` because the TTC publishes no shuttle times, `known_min` was 4 for the two train rides, the shuttle counted as a transfer, and the closure listed the legs it affects: 1, 2 and 3.
+`connections` plans across a closure on the shuttle buses. The test timetable the unit suite runs on carries a nightly Line 1 closure between York Mills and Eglinton from 23:00, with shuttle buses (alert 77519). Asked at 23:30 for a trip from Finch to Union, the server answers (abridged the same way):
+
+```json
+{
+  "from": {"station": "43277", "name": "Finch"}, "to": {"station": "15772", "name": "Union"},
+  "depart_at": "2026-10-06T23:30-04:00", "window_min": 30,
+  "options": [
+    {"rank": 1, "transfers": 2, "depart_at": "2026-10-06T23:33-04:00", "arrive_at": "2026-10-07T00:27-04:00",
+     "duration_min": 54, "basis": "schedule", "estimate": true,
+     "legs": [
+       {"mode": "ride", "route": "1", "trip_id": "134929439",
+        "board": {"number": "14111", "name": "Finch Station - Southbound Platform"},
+        "alight": {"number": "13792", "name": "York Mills Station - Southbound Platform"},
+        "depart": "2026-10-06T23:33-04:00", "arrive": "2026-10-06T23:40-04:00", "min": 7, "basis": "schedule"},
+       {"mode": "transfer", "from": {"number": "13792"}, "to": {"number": "13791", "name": "York Mills Station - Northbound Platform"},
+        "distance_m": 134, "via": "pathways", "depart": "2026-10-06T23:40-04:00", "arrive": "2026-10-06T23:48-04:00", "min": 8},
+       {"mode": "shuttle", "line": "1", "from": {"station": "43276", "name": "York Mills"}, "to": {"station": "43274", "name": "Eglinton"},
+        "depart": "2026-10-06T23:48-04:00", "arrive": "2026-10-07T00:08-04:00", "min": 20, "basis": "estimate", "alert_id": "77519",
+        "note": "assumed 5-minute headway and 15 km/h over 4.4 km of track with a 1-minute stop per station; the TTC publishes no shuttle timetable (alert 77519)"},
+       {"mode": "transfer", "from": {"number": "13795"}, "to": {"number": "13795", "name": "Eglinton Station - Southbound Platform"},
+        "distance_m": 0, "via": "walk", "depart": "2026-10-07T00:08-04:00", "arrive": "2026-10-07T00:11-04:00", "min": 3},
+       {"mode": "ride", "route": "1", "trip_id": "134929444",
+        "board": {"number": "13795"}, "alight": {"number": "13815", "name": "Union Station - Northbound Platform Towards Vaughan Metropolitan Centre"},
+        "depart": "2026-10-07T00:11-04:00", "arrive": "2026-10-07T00:27-04:00", "min": 16, "basis": "schedule"}
+     ],
+     "disruptions": [
+       {"type": "rsz", "alert_id": "77535", "span": ["Sheppard-Yonge", "York Mills"], "affects": [1]},
+       {"type": "closure", "alert_id": "77519", "span": ["York Mills", "Eglinton"], "active_now": true, "shuttle": "Will Operate", "affects": [3]}
+     ]}
+  ]
+}
+```
+
+- The two train rides are real trips with their timetable times. The shuttle leg's 20 minutes are an estimate: its note says what it assumes, `basis: estimate` marks the leg, and `estimate: true` the trip, which would rank after any trip that needs no estimate.
+- The shuttle's stop is placed at a platform of each station, so the walk from the southbound to the northbound platform at York Mills stands for reaching the shuttle buses. The 8 minutes between its clocks cover the 104-second walk, the two-minute change buffer and a full five-minute wait for a bus.
+- The closure names the leg it affects, 3, the shuttle; the reduced speed zone between Sheppard-Yonge and York Mills names the first train ride.
 
 ## The tools
 
@@ -121,7 +156,7 @@ Nineteen tools in four groups. Station inputs take an id, a name or a common ali
 |---|---|---|
 | `route_shape` | route, direction; optional pattern, format, simplification, a stop-to-stop span | The route's geometry with its stops |
 | `accessibility` | a station or stop | Platform and entrance flags, elevators and escalators with live status, and a step-free verdict with its basis |
-| `connections` | origin and destination (a stop, a station or `{lat, lon}`); optional maximum transfers (0 or 1), walking distance, departure time, limit | Ranked direct and one-transfer trips, with next departures and the disruptions each one touches |
+| `connections` | origin and destination (a stop, a station or `{lat, lon}`); optional maximum transfers (0 to 3), walking distance, a departure time (`depart_at`) with a window (`window_min`, 30 minutes by default) or an arrival time (`arrive_by`), limit | Timetable-exact trips: real departures and arrivals on every leg, up to three transfers, a departure window or an arrival time, the next departures of the first ride, and every disruption on the way with the legs it affects |
 
 Every answer carries `meta`:
 
@@ -132,7 +167,7 @@ Every answer carries `meta`:
 - `static_feed`: the timetable version in use.
 - `advisories`: the same for the disruption feeds when the answer includes disruptions, with `errors` naming any feed that failed. The four disruption tools (`alerts`, `service_status`, `detours`, `service_changes`) describe those feeds in `meta` itself and name failed ones in `meta.errors`.
 
-Rows that give times also carry `basis`: `realtime` or `schedule`. `meta` describes the fetch, so a source that answered with no predictions reads `live` and `fresh` while its rows fall back to `basis: schedule`.
+Rows that give times also carry `basis`: `realtime` or `schedule`, and `estimate` on a `connections` shuttle leg. `meta` describes the fetch, so a source that answered with no predictions reads `live` and `fresh` while its rows fall back to `basis: schedule`.
 
 ## Design
 
@@ -140,9 +175,9 @@ The [specification](docs/spec.md) records each decision with its evidence; secti
 
 - **It fetches only when asked.** There is no background polling. A question triggers the requests it needs, each source is cached for its own refresh interval (from 10 seconds for train predictions to 10 minutes for service changes), and simultaneous questions share one request. An idle server sends nothing, which is light on the TTC's servers and lets a hosted copy scale to zero.
 - **It says how fresh every answer is.** A stale cached answer is never labelled fresh, and timetable minutes always carry `basis: schedule` (see `meta` above).
-- **Disruptions travel with the answer.** Closures, detours, reduced speed zones, delays and elevator outages are attached to the stops, stations, arrivals and trips they affect, and the trip planner never boards, drops off or transfers you at a closed station or at a stop a detour skips, and never puts you on a train across a closed section.
+- **Disruptions travel with the answer.** Closures, detours, reduced speed zones, delays and elevator outages are attached to the stops, stations, arrivals and trips they affect, and the trip planner never boards, drops off or transfers you at a closed station, never stops a detoured bus at a stop its detour skips, and never puts you on a train across a closed section.
 - **Closures follow how the TTC runs them.** Stations inside a closure have no trains. Each end station keeps running on the platform facing the open part of the line, and that is where the shuttle buses start. A train prediction for a closed platform is set aside, not trusted.
-- **It doesn't invent numbers.** A shuttle leg's minutes are unknown, so a trip with one reports `typical_min: null` and the minutes it does know. Crowding reads "No info" without data. A step-free verdict is `unknown` when a station's elevators aren't fully mapped. Timetable fallbacks say `basis: schedule`.
+- **It says which numbers are estimates:** a shuttle leg's minutes assume a headway and a bus speed, the note states them, and the trip is flagged `estimate`. Every ride is a real trip, at its timetable times or, near now, at the times the TTC's live trip updates predict. Crowding reads "No info" without data. A step-free verdict is `unknown` when a station's elevators aren't fully mapped. Timetable fallbacks say `basis: schedule`.
 - **Timetables come from the TTC's published GTFS**, built into a local SQLite file and rebuilt only when the City of Toronto's portal publishes a new one. During a board-period changeover both timetables stay loaded, so trips from either resolve.
 - **Live data comes from the TTC's own feeds**: BusTime for buses and streetcars, NTAS for the subway and LRT, and the TTC's alert and GTFS-Realtime feeds. Every request names the project in its User-Agent, and a failing source is backed off (see below).
 - **Lines 5 and 6 are rapid transit** everywhere: stations, platforms, closures and train predictions.
@@ -175,9 +210,9 @@ Two kinds of trouble: a data source failing, and the transit network itself bein
 
 ### The network is disrupted
 
-- **A subway or LRT closure.** Platforms inside the closed section, and each end station's platform facing into it, are `suspended`: no minutes, with whatever NTAS still predicts set aside in `ntas_min`, as in the example above. The end stations keep real minutes on the platform facing the open line (`service: normal` in `next_trains`, while `station` reads that line as `reduced`), and the closure is tagged `shuttle_terminus`. A closure that ends at a terminal, or covers one station, closes both platforms there. Trips across the gap become ride, shuttle, ride: `typical_min: null`, `known_min` for the rest, the shuttle counted as a transfer, and the trip ranked after complete trips with the same number of transfers. When the TTC runs no shuttle, `connections` routes around the closure on other lines or says why it found nothing.
-- **Planned and nightly closures** carry their windows, and `active_now` says whether one applies at this minute. `connections` with a future `depart_at` plans against the closures in force at that time.
-- **A surface detour.** Skipped stops show as `skipped_by_detour` in `route_stops`, arrival rows carry the detour's id, and `connections` never boards you at or drops you off at a skipped stop: it plans from the served stops nearby and says so.
+- **A subway or LRT closure.** Platforms inside the closed section, and each end station's platform facing into it, are `suspended`: no minutes, with whatever NTAS still predicts set aside in `ntas_min`, as in the example above. The end stations keep real minutes on the platform facing the open line (`service: normal` in `next_trains`, while `station` reads that line as `reduced`), and the closure is tagged `shuttle_terminus`. A closure that ends at a terminal, or covers one station, closes both platforms there. Trips across the gap become ride, shuttle, ride with the shuttle estimated and flagged: the shuttle leg's minutes come from an assumed headway and bus speed that its note states, the trip carries `estimate: true`, and it ranks after every trip that needs no estimate. The shuttle stop is placed at one platform of each station, so a trip can show a walk between two platforms of an end station: that walk stands for reaching the shuttle buses. When the TTC runs no shuttle, `connections` routes around the closure on other lines or says why it found nothing.
+- **Planned and nightly closures** carry their windows, and `active_now` says whether one applies at this minute. `connections` with a future `depart_at` or an `arrive_by` plans against the closures in force at that time.
+- **A surface detour.** Skipped stops show as `skipped_by_detour` in `route_stops` and arrival rows carry the detour's id. In `connections` the detoured route's trips skip them with the published delay; other routes keep serving the stop. When a detour can't be matched to its route's trips, `connections` avoids its skipped stops altogether: it plans from the served stops nearby and says so.
 - **Reduced speed zones**, in their direction of travel, **and delays** are attached to the legs of a trip that they affect, and `affects` names those legs.
 - **An elevator out of service** shows in `accessibility` with its alert, and the step-free verdict turns to `no`, noting that another elevator may still give a step-free path. Outages announced for later are listed under `upcoming` and leave today's verdict alone.
 
@@ -194,7 +229,7 @@ Two kinds of trouble: a data source failing, and the transit network itself bein
 ### What you need
 
 - [uv](https://docs.astral.sh/uv/), which installs Python 3.14 for you.
-- About 400 MB of disk: each timetable is a 116 MB SQLite file, two of them during a board-period changeover, plus the 170 MB of GTFS zips the last build downloaded. Ended timetables stay on disk after a build drops them from `manifest.json`; delete those `static-*.sqlite` files by hand.
+- About 450 MB of disk: each timetable is a 139 MB SQLite file, two of them during a board-period changeover, plus the 170 MB of GTFS zips the last build downloaded. Ended timetables stay on disk after a build drops them from `manifest.json`; delete those `static-*.sqlite` files by hand.
 - Network access to the City of Toronto's open data portal, to build the timetable, and to the TTC's servers, for live answers.
 
 ### Locally, with Claude Code or Claude Desktop
