@@ -64,7 +64,7 @@ def make_alert_feed(ts: int, alerts: list[dict]) -> bytes:
 
 
 def make_trip_feed(ts: int, trips: list[dict]) -> bytes:
-    """trips: dicts with trip, optional route, vehicle, relationship, stops [(stop_id, seq, arrival)], ts."""
+    """trips: dicts with trip, optional route, vehicle, relationship, stops [(stop_id, seq, arrival[, relationship])], ts; arrival None leaves the time out."""
     f = pb.FeedMessage()
     f.header.gtfs_realtime_version = "2.0"
     f.header.timestamp = ts
@@ -79,8 +79,13 @@ def make_trip_feed(ts: int, trips: list[dict]) -> bytes:
             tu.trip.schedule_relationship = pb.TripDescriptor.ScheduleRelationship.Value(t["relationship"])
         if t.get("vehicle"):
             tu.vehicle.id = t["vehicle"]
-        for sid, seq, arrival in t.get("stops", []):
+        for entry in t.get("stops", []):
+            sid, seq, arrival = entry[:3]
             s = tu.stop_time_update.add()
-            s.stop_id, s.stop_sequence, s.arrival.time = sid, seq, arrival
+            s.stop_id, s.stop_sequence = sid, seq
+            if arrival is not None:
+                s.arrival.time = arrival
+            if len(entry) > 3:
+                s.schedule_relationship = pb.TripUpdate.StopTimeUpdate.ScheduleRelationship.Value(entry[3])
         tu.timestamp = t.get("ts", ts)
     return f.SerializeToString()
