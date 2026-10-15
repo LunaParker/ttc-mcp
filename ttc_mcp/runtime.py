@@ -4,6 +4,7 @@ import datetime as dt
 import os
 from pathlib import Path
 
+from ttc_mcp import overlay
 from ttc_mcp.adapters.http import make_async_client
 from ttc_mcp.cache import Hit
 from ttc_mcp.config import settings
@@ -38,6 +39,7 @@ def reset() -> None:
         _store.close()
     _store, _store_key, _realtime = None, None, None
     raptor.reset()
+    overlay.reset()
 
 
 def get_store(cache_dir: Path | None = None) -> StaticStore:

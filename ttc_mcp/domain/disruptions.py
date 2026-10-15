@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 
 from ttc_mcp.adapters.gtfsrt_alerts import RtAlertFeed
 from ttc_mcp.adapters.ttc_alerts import Alert, AlertList
@@ -198,8 +198,9 @@ class Disruptions:
                 return None if self.platform_served(row["stop_id"], line, el) else self._at(el, station)
         return next((el for el in self.platform_closed.get(row["stop_id"], []) if not el["routes"] or set(el["routes"]) & set(lines)), None)
 
-    def stop_skipped(self, number: str) -> dict | None:
-        return next((el for el in self.by_stop.get(number, []) if el["source"] == "detour feed" and el["active_now"]), None)
+    def stop_skipped(self, number: str, modeled: Collection[str] = ()) -> dict | None:
+        """The active detour-feed element skipping this stop; an entity in modeled runs on a variant pattern (spec 6.10), so it skips nothing here."""
+        return next((el for el in self.by_stop.get(number, []) if el["source"] == "detour feed" and el["active_now"] and el.get("entity_id") not in modeled), None)
 
     def suffix_station(self, name: str | None) -> str | None:
         m = SUFFIX.search(name or "")

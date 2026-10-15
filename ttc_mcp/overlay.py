@@ -5,13 +5,15 @@ import datetime as dt
 from array import array
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from itertools import accumulate
 
-from ttc_mcp.adapters.bustime_rt import TripUpdateRec
-from ttc_mcp.adapters.detour_feed import DetourEntity
+from ttc_mcp.adapters.bustime_rt import StopUpdate, TripFeed, TripUpdateRec
+from ttc_mcp.adapters.detour_feed import DetourEntity, DetourFeed
+from ttc_mcp.domain import planner
 from ttc_mcp.domain.disruptions import LINE_PLATFORMS, Disruptions
-from ttc_mcp.domain.planner import _shuttle_runs
 from ttc_mcp.domain.raptor import INF, Group, Headway, Timetable
 from ttc_mcp.static.gtfs import RAIL
+from ttc_mcp.static.schedule import wall_clock
 from ttc_mcp.static.timetable import split_overtaking
 
 MAX_DRIFT_S = 2 * 3600  # surface feed: past this an update is another day's run of the trip, since no bus runs two hours late (drifts split after the 2026-10-14 capture)
@@ -25,9 +27,13 @@ class Overlay:
     extra_stops: dict[int, list[str]] = field(default_factory=dict)
     extra_meta: dict[int, dict] = field(default_factory=dict)
     extra_at: dict[str, list[tuple[int, int]]] = field(default_factory=dict)
+    variants: set[str] = field(default_factory=set)  # detour entity ids whose trips run on a variant pattern
 
     def groups_for(self, tt: Timetable, pattern: int) -> list:
-        return self.extra[pattern] if pattern < 0 else self.groups.get(pattern, tt.groups.get(pattern, []))
+        if pattern < 0:
+            return self.extra[pattern]
+        g = self.groups.get(pattern)
+        return tt.groups.get(pattern, []) if g is None else g
 
     def patterns_at(self, tt: Timetable, stop: str) -> list[tuple[int, int]]:
         return [*tt.stop_patterns.get(stop, ()), *self.extra_at.get(stop, ())]
@@ -38,14 +44,53 @@ class Overlay:
     def meta_of(self, tt: Timetable, pattern: int) -> dict:
         return self.extra_meta[pattern] if pattern < 0 else tt.pattern_meta[pattern]
 
-    def add_variants(self, groups, extra, extra_stops, extra_meta, extra_at) -> None:
+    def add_variants(self, groups, extra, extra_stops, extra_meta, extra_at, variants) -> None:
         self.groups.update(groups)
+        self.variants.update(variants)
         self.add_shuttles(extra, extra_stops, extra_meta, extra_at)
 
     def add_shuttles(self, extra, extra_stops, extra_meta, extra_at) -> None:
         self.extra.update(extra), self.extra_stops.update(extra_stops), self.extra_meta.update(extra_meta)
         for s, hits in extra_at.items():
             self.extra_at.setdefault(s, []).extend(hits)
+
+
+CHUNK = 900  # trip ids per IN list, under SQLite's old 999-parameter limit
+
+
+class Locator:
+    """Where trips sit: each trip's pattern and service from batched reads of trips, then its (group, trip) index in a group list through
+    one trip id -> index map per group of that service, built once per group object (a re-split or a variant's removal makes new groups)."""
+
+    def __init__(self, conn, tt: Timetable, trip_ids: Iterable[str]):
+        self.tt, self.where = tt, {}
+        ids = list(dict.fromkeys(trip_ids))
+        for i in range(0, len(ids), CHUNK):
+            part = ids[i:i + CHUNK]
+            for tid, pid, sid in conn.execute(f"SELECT trip_id, pattern_id, service_id FROM trips WHERE trip_id IN ({','.join('?' * len(part))})", part):
+                self.where[tid] = (pid, sid)
+        self._maps: dict[int, tuple[Group, dict[int, int]]] = {}
+
+    def find(self, trip_id: str, groups: list) -> tuple[int, int] | None:
+        """(group index, trip index) of a trip id given at construction in this group list."""
+        w = self.where.get(trip_id)
+        if w is None:
+            return None
+        tid, sid = int(trip_id), w[1]
+        for gi, g in enumerate(groups):
+            if g.service_id == sid:
+                hit = self._maps.get(id(g))
+                if hit is None:
+                    hit = self._maps[id(g)] = (g, dict(zip(g.trip_ids, range(len(g.trip_ids)), strict=True)))  # the group is held, so its id stays its own
+                if (ti := hit[1].get(tid)) is not None:
+                    return gi, ti
+        return None
+
+    def slot(self, trip_id: str) -> tuple[int, int, int] | None:
+        """Timetable.trip_slot's answer, without its query and scan."""
+        w = self.where.get(trip_id)
+        hit = self.find(trip_id, self.tt.groups.get(w[0], [])) if w else None
+        return (w[0], *hit) if hit else None
 
 
 def position_of(stops: list[str], stop: str, after: int = 0, seqs: list[int] | None = None, seq: int | None = None) -> int | None:
@@ -68,7 +113,7 @@ def _resplit(pattern: int, service_id: str, trips: list[tuple[int, array]], skip
     out = []
     for bucket in split_overtaking(trips):
         ids = array("q", (t for t, _ in bucket))
-        cols = [array("i", (times[pos] for _, times in bucket)) for pos in range(len(bucket[0][1]))]
+        cols = [array("i", c) for c in zip(*(times for _, times in bucket), strict=True)]
         by = {t: i for i, t in enumerate(ids)}
         out.append(Group(pattern, service_id, cols, ids, frozenset((by[t], p) for t, ps in skip.items() if t in by for p in ps), frozenset(by[t] for t in realtime if t in by)))
     return out
@@ -158,20 +203,26 @@ def _without(g: Group, drop: set[int]) -> Group:
                  frozenset((by[t], p) for t, p in g.skip if t in by), frozenset(by[t] for t in g.realtime if t in by))
 
 
-def detour_variants(conn, tt: Timetable, entities: Iterable[DetourEntity], day: dt.date, base: dict[int, list[Group]] | None = None):
+def detour_variants(conn, tt: Timetable, entities: Iterable[DetourEntity], day: dt.date, base: dict[int, list[Group]] | None = None, *,
+                    locate: Locator | None = None):
     """Per entity active on `day` whose trips resolve: a pseudo pattern over the kept positions holding exactly its trips, the propagated
-    delay added beyond each span unless a patch predicted the trip, its masks and realtime mark kept; those trips leave their groups (spec 6.10)."""
+    delay added beyond each span unless a patch predicted the trip, its masks and realtime mark kept; those trips leave their groups (spec 6.10).
+    The sixth item is the ids of the entities whose variant holds a trip. locate (built with the entities' trip ids) replaces the per-trip reads."""
     groups: dict[int, list[Group]] = dict(base or {})
-    extra, extra_stops, extra_meta, extra_at = {}, {}, {}, {}
+    extra, extra_stops, extra_meta, extra_at, variants = {}, {}, {}, {}, set()
     key = day.strftime("%Y%m%d")
+    find = locate.slot if locate else (lambda t: tt.trip_slot(conn, t))
     for n, e in enumerate(x for x in entities if key in x.service_dates):
-        slots = [(t, s) for t in dict.fromkeys(e.trip_ids) if (s := tt.trip_slot(conn, t))]
+        slots = [(t, s) for t in dict.fromkeys(e.trip_ids) if (s := find(t))]
         if not slots or len({s[0] for _, s in slots}) != 1:
             continue
         pid = slots[0][1][0]
         current = groups.get(pid, tt.groups[pid])
         # A real-time patch may have re-split this pattern's groups, so find each trip in the list in force, not by trip_slot's index.
-        located = [(i, list(g.trip_ids).index(int(t))) for t, _ in slots for i, g in enumerate(current) if int(t) in g.trip_ids]
+        if locate:
+            located = [hit for t, _ in slots if (hit := locate.find(t, current))]
+        else:
+            located = [(i, list(g.trip_ids).index(int(t))) for t, _ in slots for i, g in enumerate(current) if int(t) in g.trip_ids]
         seqs, stops = tt.pattern_seqs[pid], tt.pattern_stops[pid]
         skipped, delay_after = set(), {}
         for start, end, delay in e.spans:
@@ -183,6 +234,9 @@ def detour_variants(conn, tt: Timetable, entities: Iterable[DetourEntity], day: 
         if not keep:
             continue
         kept_at = {p: k for k, p in enumerate(keep)}
+        # GTFS-RT: each span's delay adds to the earlier ones as the trip advances; a patched trip's times already say when it runs.
+        added = list(accumulate(delay_after.get(pos, 0) for pos in range(len(stops))))
+        kept_added = [added[p] for p in keep]
         vid = VARIANT_BASE - n
         by_group: dict[int, list[int]] = {}
         for gi, ti in located:
@@ -190,28 +244,28 @@ def detour_variants(conn, tt: Timetable, entities: Iterable[DetourEntity], day: 
         variant: list[Group] = []
         for gi, tis in by_group.items():
             g = current[gi]
-            rows, masked, live, sel = [], {}, set(), set(tis)
+            rows, masked, live, sel, cols = [], {}, set(), set(tis), [g.cols[p] for p in keep]
             for t, p in g.skip:
                 if t in sel and p in kept_at:
                     masked.setdefault(int(g.trip_ids[t]), set()).add(kept_at[p])
             for ti in tis:
-                tid, predicted, delay, times = int(g.trip_ids[ti]), ti in g.realtime, 0, []
-                for pos in range(len(stops)):
-                    # GTFS-RT: each span's delay adds to the earlier ones as the trip advances; a patched trip's times already say when it runs.
-                    delay += 0 if predicted else delay_after.get(pos, 0)
-                    if pos not in skipped:
-                        times.append(g.cols[pos][ti] + delay)
-                rows.append((tid, array("i", times)))
-                if predicted:
+                tid = int(g.trip_ids[ti])
+                if ti in g.realtime:
+                    rows.append((tid, array("i", [c[ti] for c in cols])))
                     live.add(tid)
+                else:
+                    rows.append((tid, array("i", [c[ti] + a for c, a in zip(cols, kept_added, strict=True)])))
             variant += _resplit(vid, g.service_id, rows, masked, live)
             current = [(_without(x, sel) if i == gi else x) for i, x in enumerate(current)]
-        groups[pid] = current
+        # A group the detour took every trip of goes: has_service reads a group's last column.
+        groups[pid] = [x for x in current if x.n_trips]
         extra[vid], extra_stops[vid] = variant, [stops[i] for i in keep]
         extra_meta[vid] = {**tt.pattern_meta[pid], "base_pattern": pid, "positions": keep, "detour_id": e.detour_id}
         for pos, s in enumerate(extra_stops[vid]):
             extra_at.setdefault(s, []).append((vid, pos))
-    return groups, extra, extra_stops, extra_meta, extra_at
+        if variant:
+            variants.add(e.id)
+    return groups, extra, extra_stops, extra_meta, extra_at, variants
 
 
 SHUTTLE_BASE = -2000
@@ -240,7 +294,7 @@ def shuttle_routes(conn, tt: Timetable, disr: Disruptions):
     extra, extra_stops, extra_meta, extra_at = {}, {}, {}, {}
     n = 0
     for el in disr.elements:
-        if el["type"] != "closure" or not el["active_now"] or not _shuttle_runs(el) or len(el["stations"]) < 2:
+        if el["type"] != "closure" or not el["active_now"] or not planner._shuttle_runs(el) or len(el["stations"]) < 2:
             continue
         for line in (r for r in el["routes"] if r in RAIL):
             chain = _line_stations(conn, line, el["stations"])
@@ -263,3 +317,48 @@ def shuttle_routes(conn, tt: Timetable, disr: Disruptions):
                 for pos, p in enumerate(extra_stops[vid]):
                     extra_at.setdefault(p, []).append((vid, pos))
     return extra, extra_stops, extra_meta, extra_at
+
+
+_memo: dict[str, tuple] = {}
+
+
+def reset() -> None:
+    _memo.clear()
+
+
+def public_updates(conn, trips: TripFeed | None) -> list[TripUpdateRec]:
+    """Surface trip updates with their stop ids read as public numbers through the crosswalk; updates at unmapped stops are dropped,
+    and a record left with none goes unless it had none to begin with (a CANCELED trip)."""
+    if trips is None:
+        return []
+    to_public = dict(conn.execute("SELECT surface_stop_id, stop_code FROM crosswalk"))
+    out = []
+    for rec in trips.trips.values():
+        ups = tuple(StopUpdate(to_public[u.stop_id], u.seq, u.time, u.relationship) for u in rec.updates if u.stop_id in to_public)
+        if ups or not rec.updates:
+            out.append(TripUpdateRec(rec.trip_id, rec.route, rec.vehicle_id, rec.relationship, ups))
+    return out
+
+
+def build(feed, tt: Timetable, disr: Disruptions, detour_feed: DetourFeed | None, trips: TripFeed | None, subway: TripFeed | None, day: dt.date) -> Overlay:
+    """One overlay per feed, day and set of inputs; the memo holds the latest per feed version, so the two slices of one query (both read
+    the query day's overlay) and the next query inside the same minute and fetch share it. It holds its inputs, so their ids stay theirs."""
+    held = (tt, disr, trips, subway, detour_feed)
+    key = (day, *map(id, held))
+    hit = _memo.get(feed.version)
+    if hit and hit[0] == key:
+        return hit[2]
+    conn, stamp = feed.conn, day.strftime("%Y%m%d")
+    surface, under = public_updates(conn, trips), list(subway.trips.values()) if subway else []
+    entities = [e for e in (detour_feed.entities if detour_feed else []) if stamp in e.service_dates]
+    loc = Locator(conn, tt, [*(r.trip_id for r in surface), *(r.trip_id for r in under), *(t for e in entities for t in e.trip_ids)])
+    origin = wall_clock(day, 0).timestamp()
+    # Each feed has its own drift (Task 13's ruling), and the feeds' patterns are disjoint, so the subway chains on the surface patches.
+    patched = patch_groups(tt, surface, lambda s: s, origin, loc.slot, tt.pattern_seqs.get) if surface else {}
+    if under:
+        patched = patch_groups(tt, under, lambda s: s, origin, loc.slot, tt.pattern_seqs.get, drift=SUBWAY_DRIFT_S, base=patched)
+    ov = Overlay()
+    ov.add_variants(*detour_variants(conn, tt, entities, day, base=patched, locate=loc))  # its groups start from the patched ones
+    ov.add_shuttles(*shuttle_routes(conn, tt, disr))
+    _memo[feed.version] = (key, held, ov)
+    return ov

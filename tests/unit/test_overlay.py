@@ -162,8 +162,9 @@ def _entities():
 
 def test_detour_9001_becomes_a_variant_pattern_without_its_skipped_stops(conn):
     tt = raptor.Timetable.load(conn, "S1000538")
-    groups, extra, stops, meta, at = overlay.detour_variants(conn, tt, _entities(), dt.date(2026, 10, 6))
+    groups, extra, stops, meta, at, variants = overlay.detour_variants(conn, tt, _entities(), dt.date(2026, 10, 6))
     (pid, variant), = extra.items()
+    assert variants == {"detour_0_9001:0_0_6_504_Distillery"}
     assert pid == -1000 and stops[pid] == [s for s in tt.pattern_stops[6] if s not in ("15039", "14994", "14993")]
     assert meta[pid]["base_pattern"] == 6 and meta[pid]["route"] == "504" and meta[pid]["detour_id"] == "9001" and meta[pid]["positions"][:3] == [0, 1, 5]
     assert sorted(int(t) for g in variant for t in g.trip_ids) == [100677020, 100895020, 101100020] and all(len(g.cols) == 35 for g in variant)
@@ -173,7 +174,7 @@ def test_detour_9001_becomes_a_variant_pattern_without_its_skipped_stops(conn):
 
 def test_a_variant_keeps_its_trips_times_beyond_the_span_and_adds_the_published_delay(conn):
     tt = raptor.Timetable.load(conn, "S1000538")
-    _, extra, stops, _, _ = overlay.detour_variants(conn, tt, _entities(), dt.date(2026, 10, 6))
+    _, extra, stops, _, _, _ = overlay.detour_variants(conn, tt, _entities(), dt.date(2026, 10, 6))
     g = next(g for g in extra[-1000] if 100677020 in g.trip_ids)
     i = list(g.trip_ids).index(100677020)
     assert g.cols[stops[-1000].index("4569")][i] == 39518 and g.cols[stops[-1000].index("4573")][i] == 39917  # 10:58:38 and 11:05:17, the delay is 0
@@ -184,7 +185,7 @@ def test_a_detour_outside_its_service_dates_or_with_unknown_trips_makes_no_varia
     groups, extra, *_ = overlay.detour_variants(conn, tt, _entities(), dt.date(2026, 10, 9))
     assert groups == {} and extra == {}
     only_9002 = [e for e in _entities() if e.detour_id == "9002"]
-    assert overlay.detour_variants(conn, tt, only_9002, dt.date(2026, 10, 6))[1] == {}
+    assert overlay.detour_variants(conn, tt, only_9002, dt.date(2026, 10, 6))[1] == {} and overlay.detour_variants(conn, tt, only_9002, dt.date(2026, 10, 6))[5] == set()
 
 
 def test_the_planner_boards_the_next_undetoured_trip_to_a_skipped_stop(conn):
@@ -192,6 +193,7 @@ def test_the_planner_boards_the_next_undetoured_trip_to_a_skipped_stop(conn):
     tt = raptor.Timetable.load(conn, "S1000538")
     ov = overlay.Overlay()
     ov.add_variants(*overlay.detour_variants(conn, tt, _entities(), dt.date(2026, 10, 6)))
+    assert ov.variants == {"detour_0_9001:0_0_6_504_Distillery"}
     q = query(conn, tt, "4569", "14994", TEN_FIFTY)
     plain = raptor.plan(q)[0].legs[0]
     q.slices = [raptor.Slice(s.tt, s.service_ids, s.offset, ov, s.conn) for s in q.slices]
@@ -208,7 +210,7 @@ def test_the_planner_boards_the_next_undetoured_trip_to_a_skipped_stop(conn):
 def test_the_delays_of_two_spans_accumulate_as_the_trip_advances(conn):
     tt = raptor.Timetable.load(conn, "S1000538")
     e = dataclasses.replace(next(e for e in _entities() if e.detour_id == "9001"), spans=((3, 3, 60), (7, 7, 30)))
-    _, extra, _, meta, _ = overlay.detour_variants(conn, tt, [e], dt.date(2026, 10, 6))
+    _, extra, _, meta, _, _ = overlay.detour_variants(conn, tt, [e], dt.date(2026, 10, 6))
     _, gi, ti = tt.trip_slot(conn, "100677020")
     sched, g = [c[ti] for c in tt.groups[6][gi].cols], next(g for g in extra[-1000] if 100677020 in g.trip_ids)
     i = list(g.trip_ids).index(100677020)
@@ -223,7 +225,7 @@ def test_a_variant_chained_on_a_patched_group_keeps_what_the_patch_established(c
     r = TripUpdateRec("100677020", "504", None, "CANCELED", ()) if canceled else rec(100677020, ("4569", origin + 39518 + 120, "SCHEDULED"))
     patched = overlay.patch_groups(tt, [r], lambda s: s, origin, lambda t: tt.trip_slot(conn, t))
     e = dataclasses.replace(next(e for e in _entities() if e.detour_id == "9001"), spans=((3, 5, 300),))
-    _, extra, stops, _, _ = overlay.detour_variants(conn, tt, [e], dt.date(2026, 10, 6), base=patched)
+    _, extra, stops, _, _, _ = overlay.detour_variants(conn, tt, [e], dt.date(2026, 10, 6), base=patched)
     at = stops[-1000].index
     g, other = (next(g for g in extra[-1000] if t in g.trip_ids) for t in (100677020, 100895020))
     i, j = list(g.trip_ids).index(100677020), list(other.trip_ids).index(100895020)
@@ -239,6 +241,14 @@ def test_a_trip_an_entity_lists_twice_rides_the_variant_once(conn):
     e = dataclasses.replace(next(e for e in _entities() if e.detour_id == "9001"), trip_ids=("100677020", "100677020"))
     groups, extra, *_ = overlay.detour_variants(conn, tt, [e], dt.date(2026, 10, 6))
     assert [int(t) for g in extra[-1000] for t in g.trip_ids] == [100677020] and sum(g.n_trips for g in groups[6]) == sum(g.n_trips for g in tt.groups[6]) - 1
+
+
+def test_a_group_the_detour_takes_every_trip_of_leaves_the_pattern(conn):
+    tt = raptor.Timetable.load(conn, "S1000538")
+    small = min(tt.groups[6], key=lambda g: g.n_trips)
+    e = dataclasses.replace(next(e for e in _entities() if e.detour_id == "9001"), trip_ids=tuple(str(t) for t in small.trip_ids))
+    groups, extra, *_ = overlay.detour_variants(conn, tt, [e], dt.date(2026, 10, 6))
+    assert len(groups[6]) == len(tt.groups[6]) - 1 and all(g.n_trips for g in groups[6]) and sum(g.n_trips for g in extra[-1000]) == small.n_trips
 
 
 def test_the_night_closure_becomes_two_shuttle_pseudo_routes_over_its_stations_in_line_order(conn):
@@ -300,3 +310,58 @@ def test_the_reverse_shuttle_carries_a_northbound_journey_on_its_own_cumulative_
     shuttle, ride = j.rides
     assert (shuttle.pattern, shuttle.frm, shuttle.to, shuttle.depart, shuttle.arrive - shuttle.depart) == (-2001, "13795", "13791", q.t0 + 300, 1166)
     assert ride.frm == "13791" and ride.depart >= shuttle.arrive + raptor.CHANGE_S and j.depart == q.t0
+
+
+def test_build_memoises_per_feed_day_and_inputs_and_reset_clears_it(app_env, conn):
+    from tests.unit.test_disruptions import build as disr_at
+    feed = app_env.feed_for()
+    tt = raptor.timetable_for(feed)
+    disr = disr_at(conn, NOW_NIGHT)
+    a = overlay.build(feed, tt, disr, None, None, None, dt.date(2026, 10, 6))
+    assert overlay.build(feed, tt, disr, None, None, None, dt.date(2026, 10, 6)) is a and set(a.extra) == {-2000, -2001} and a.groups == {}
+    b = overlay.build(feed, tt, disr, None, None, None, dt.date(2026, 10, 5))
+    assert b is not a
+    overlay.reset()
+    assert overlay.build(feed, tt, disr, None, None, None, dt.date(2026, 10, 6)) is not a
+
+
+def test_public_updates_map_surface_stop_ids_through_the_crosswalk(conn):
+    from tests.rtfeeds import make_trip_feed
+    from ttc_mcp.adapters.bustime_rt import parse_trips
+    surface = conn.execute("SELECT surface_stop_id FROM crosswalk WHERE stop_code='15637'").fetchone()[0]
+    feed = parse_trips(make_trip_feed(1, [{"trip": "107845020", "route": "504", "stops": [(surface, 10, 1000), ("nope", 11, 2000)]}]), {}).value
+    recs = overlay.public_updates(conn, feed)
+    assert [(u.stop_id, u.time) for u in recs[0].updates] == [("15637", 1000)] and overlay.public_updates(conn, None) == []
+
+
+def test_the_locator_answers_what_trip_slot_and_the_list_scan_answer(conn):
+    tt = raptor.Timetable.load(conn, "S1000538")
+    ids = ["100677020", "22650020", "134929152", "999999999", "nope"]
+    loc = overlay.Locator(conn, tt, [*ids, *(t for e in _entities() for t in e.trip_ids)])
+    assert [loc.slot(t) for t in ids] == [tt.trip_slot(conn, t) for t in ids] and loc.slot("100677020") is not None
+    day = dt.date(2026, 10, 6)
+    origin = schedule.wall_clock(day, 0).timestamp()
+    patched = overlay.patch_groups(tt, [TripUpdateRec("100895020", "504", None, "CANCELED", ())], lambda s: s, origin, loc.slot)
+    assert patched == overlay.patch_groups(tt, [TripUpdateRec("100895020", "504", None, "CANCELED", ())], lambda s: s, origin, lambda t: tt.trip_slot(conn, t))
+    assert overlay.detour_variants(conn, tt, _entities(), day, base=patched, locate=loc) == overlay.detour_variants(conn, tt, _entities(), day, base=patched)
+
+
+def test_build_chains_surface_and_subway_patches_and_puts_a_predicted_detoured_trip_on_its_variant(app_env, conn):
+    from tests.rtfeeds import make_trip_feed
+    from tests.unit.test_disruptions import build as disr_at
+    from ttc_mcp.adapters.bustime_rt import parse_trips
+    feed, day = app_env.feed_for(), dt.date(2026, 10, 6)
+    tt, origin = raptor.timetable_for(feed), int(schedule.wall_clock(day, 0).timestamp())
+    at_4569 = conn.execute("SELECT surface_stop_id FROM crosswalk WHERE stop_code='4569'").fetchone()[0]
+    surface = parse_trips(make_trip_feed(1, [{"trip": "100677020", "route": "504", "stops": [(at_4569, 2, origin + 39518 + 120)]}]), {}).value
+    subway = parse_trips(make_trip_feed(1, [{"trip": "134929152", "route": "1", "stops": [("13814", 16, origin + 8 * 3600 + 19 * 60)]}]), {}).value
+    detours = parse_detours((FIX / "detour.json").read_bytes(), {}).value
+    ov = overlay.build(feed, tt, disr_at(conn, NOW_DAY), detours, surface, subway, day)
+    g = next(g for g in ov.extra[-1000] if 100677020 in g.trip_ids)
+    i = list(g.trip_ids).index(100677020)
+    assert i in g.realtime and g.cols[ov.extra_stops[-1000].index("4569")][i] == 39518 + 120 and ov.variants == {"detour_0_9001:0_0_6_504_Distillery"}
+    assert not any(100677020 in x.trip_ids for x in ov.groups[6])
+    pid = tt.trip_slot(conn, "134929152")[0]
+    sub = next(x for x in ov.groups[pid] if 134929152 in x.trip_ids)
+    j = list(sub.trip_ids).index(134929152)
+    assert j in sub.realtime and sub.cols[tt.pattern_stops[pid].index("13814")][j] == 8 * 3600 + 19 * 60 and set(ov.extra) == {-1000}
