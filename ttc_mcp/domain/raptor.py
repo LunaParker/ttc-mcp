@@ -154,16 +154,16 @@ class Slice:
     conn: sqlite3.Connection | None = None
 
     def patterns_at(self, stop: str) -> Sequence[tuple[int, int]]:
-        return self.tt.stop_patterns.get(stop, ())
+        return self.overlay.patterns_at(self.tt, stop) if self.overlay else self.tt.stop_patterns.get(stop, ())
 
     def stops_of(self, pattern: int) -> list[str]:
-        return self.tt.pattern_stops[pattern]
+        return self.overlay.stops_of(self.tt, pattern) if self.overlay else self.tt.pattern_stops[pattern]
 
     def groups_for(self, pattern: int) -> Sequence[Group]:
-        return self.tt.groups.get(pattern, ())
+        return self.overlay.groups_for(self.tt, pattern) if self.overlay else self.tt.groups.get(pattern, ())
 
     def meta_of(self, pattern: int) -> dict:
-        return self.tt.pattern_meta[pattern]
+        return self.overlay.meta_of(self.tt, pattern) if self.overlay else self.tt.pattern_meta[pattern]
 
     def spent(self, t: int) -> frozenset[int]:
         """The timetable's patterns with no group on this slice's services departing at or after t on the query day's clock; a pattern the
