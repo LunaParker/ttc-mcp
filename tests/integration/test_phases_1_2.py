@@ -131,7 +131,7 @@ async def test_realtime_answers_carry_advisories(server_url):
     t = await call(server_url, "next_trains", query="York Mills")
     assert all(p["service"] in ("normal", "no_prediction", "suspended") for p in t["platforms"]) and "disruptions" in t
     fs = await call(server_url, "feed_status")
-    assert len(fs["sources"]) == 8 and {s["name"]: s["verdict"] for s in fs["sources"]}["alerts.ttc.ca"] == "fresh"
+    assert len(fs["sources"]) == 9 and {s["name"]: s["verdict"] for s in fs["sources"]}["alerts.ttc.ca"] == "fresh"
 
 
 @pytest.mark.anyio

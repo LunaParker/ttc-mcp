@@ -6,11 +6,11 @@ from collections.abc import Callable
 
 import httpx
 
-from ttc_mcp.adapters import bustime_rt, bustime_web, detour_feed, gtfsrt_alerts, http, ntas, ttc_alerts, ttcapi
+from ttc_mcp.adapters import bustime_rt, bustime_web, detour_feed, gtfsrt_alerts, gtfsrt_trips, http, ntas, ttc_alerts, ttcapi
 from ttc_mcp.adapters.http import Fetched, Validators
 from ttc_mcp.cache import Cache, Hit, SourceUnavailable
 from ttc_mcp.domain.freshness import iso
-from ttc_mcp.sources import ALERTS, DETOURS, NTAS, RT_ALERTS, SERVICE_CHANGES, SOURCES, STOP_XML, TRIPS, VEHICLES
+from ttc_mcp.sources import ALERTS, DETOURS, NTAS, RT_ALERTS, SERVICE_CHANGES, SOURCES, STOP_XML, SUBWAY_TRIPS, TRIPS, VEHICLES
 
 PROBE_STOP, PROBE_PLATFORM = "15461", "13863"
 STATUS_FIELDS = ("age_s", "cache", "feed_timestamp", "signal", "lag_s", "entities", "last_error", "verdict", "hits", "failures")
@@ -63,10 +63,14 @@ class Realtime:
     async def trips(self, *, force: bool = False) -> Hit:
         return await self.cache.get(TRIPS, TRIPS.key, self._fetch(TRIPS, TRIPS.url), bustime_rt.parse_trips, force=force)
 
+    async def subway_trips(self, *, force: bool = False) -> Hit:
+        return await self.cache.get(SUBWAY_TRIPS, SUBWAY_TRIPS.key, self._fetch(SUBWAY_TRIPS, SUBWAY_TRIPS.url), gtfsrt_trips.parse_subway_trips, force=force)
+
     async def probe(self) -> dict[str, str | None]:
         """One live request per source in SOURCES order, bypassing TTLs; errors are reported, never raised."""
         jobs = [self.stop_predictions(PROBE_STOP, force=True), self.vehicles(force=True), self.next_trains(PROBE_PLATFORM, force=True),
-                self.alerts(force=True), self.rt_alerts(force=True), self.detours(force=True), self.service_changes(force=True), self.trips(force=True)]
+                self.alerts(force=True), self.rt_alerts(force=True), self.detours(force=True), self.service_changes(force=True), self.trips(force=True),
+                self.subway_trips(force=True)]
         results = await asyncio.gather(*jobs, return_exceptions=True)
         return {s.name: (str(r) if isinstance(r, Exception) else None) for s, r in zip(SOURCES, results, strict=True)}
 

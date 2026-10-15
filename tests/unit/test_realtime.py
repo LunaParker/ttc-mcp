@@ -42,7 +42,7 @@ async def test_status_lists_every_source_unused_then_filled():
     calls = []
     rt = make(calls)
     before = {r["name"]: r for r in rt.status()}
-    assert len(before) == 8 and {"bustime getStopPredictions.jsp", "bustime vehicles", "ntas"} <= set(before)
+    assert len(before) == 9 and {"bustime getStopPredictions.jsp", "bustime vehicles", "ntas"} <= set(before)
     assert before["ntas"] == {"name": "ntas", "url": "https://ntas.ttc.ca/api/ntas/get-next-train-time/{platform}", "ttl_s": 10,
                               "keys": 0, "last_fetch": None, "cache": None, "verdict": "unused"}
     v = await rt.vehicles()
@@ -58,8 +58,8 @@ async def test_probe_makes_one_live_request_per_source_and_reports_errors():
     rt = make(calls, ntas_status=403)
     result = await rt.probe()
     assert (result["bustime getStopPredictions.jsp"], result["bustime vehicles"], result["ntas"]) == (None, None, "ntas:13863: HTTP 403")
-    assert result["alerts.ttc.ca"] == "alerts: HTTP 404" and len(result) == 8
-    assert len(calls) == 8 and any("13863" in c for c in calls) and any("15461" in c for c in calls)
+    assert result["alerts.ttc.ca"] == "alerts: HTTP 404" and len(result) == 9
+    assert len(calls) == 9 and any("13863" in c for c in calls) and any("15461" in c for c in calls)
     assert {r["name"]: r["verdict"] for r in rt.status()}["ntas"] == "unavailable"
     await rt.aclose()
 
@@ -99,4 +99,18 @@ async def test_status_rows_carry_the_hold_and_the_per_host_status_counts():
     row = {r["name"]: r for r in rt.status()}["ntas"]
     assert (row["failures"], row["status_counts"], row["last_error"]) == (1, {"403": 2}, "HTTP 403")
     assert row["retry_after"].startswith("20") and len([c for c in calls if "ntas" in c]) == 2
+    await rt.aclose()
+
+
+@pytest.mark.anyio
+async def test_subway_trips_are_fetched_cached_and_probed():
+    from tests.mockttc import handler_factory
+
+    calls = []
+    rt = Realtime(httpx.AsyncClient(transport=httpx.MockTransport(handler_factory(calls))))
+    hit = await rt.subway_trips()
+    assert hit.cache == "live" and "134929152" in hit.parsed.trips and (await rt.subway_trips()).cache == "ttl"
+    assert calls.count("https://gtfsrt.ttc.ca/trips/subway?format=binary") == 1
+    probe = await rt.probe()
+    assert probe["gtfsrt trips/subway"] is None and [r["name"] for r in rt.status()][-1] == "gtfsrt trips/subway"
     await rt.aclose()

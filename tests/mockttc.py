@@ -1,4 +1,5 @@
 """One MockTransport handler serving every TTC endpoint from fixtures, for tool-level tests."""
+import datetime as dt
 import time
 from email.utils import formatdate
 from pathlib import Path
@@ -6,6 +7,7 @@ from pathlib import Path
 import httpx
 
 from tests.rtfeeds import make_alert_feed, make_trip_feed, make_vehicle_feed
+from ttc_mcp.static.schedule import TZ
 
 FIX = Path(__file__).resolve().parent / "fixtures"
 NTAS = {"13863": b'[{"line":"1","direction":"1","nextTrains":"0, 4, 5","directionText":"Northbound to Finch","stopCode":"13863"}]',
@@ -14,6 +16,9 @@ NTAS = {"13863": b'[{"line":"1","direction":"1","nextTrains":"0, 4, 5","directio
         "13793": b'[{"line":"1","direction":"0","nextTrains":"1, 4, 8","directionText":"Southbound to Vaughan Metropolitan Centre","stopCode":"13793"}]'}
 LINE1_PLATFORMS = [("1", p) for p in ("16073", "13796", "13794", "13793", "13791", "13792")]
 NIGHTS = {"77537": (1791255600, 1791268200), "77538": (1791342000, 1791354600), "77539": (1791428400, 1791441000)}
+PINNED = int(dt.datetime(2026, 10, 6, 8, 0, tzinfo=TZ).timestamp())  # the app_env clock
+SUBWAY_TRIPS = [{"trip": "134929152", "route": "1", "stops": [("13814", 16, PINNED + 19 * 60), ("13815", 17, PINNED + 21 * 60)]}]
+EXTRA_TRIPS: list[dict] = []
 CLOSURE_TEXT = "Line 1 Yonge-University: There is no subway service between York Mills and Eglinton stations due to planned maintenance work. Shuttle buses are running."
 
 
@@ -39,7 +44,11 @@ def vehicles_body(ts: int) -> bytes:
 
 def trips_body(ts: int) -> bytes:
     return make_trip_feed(ts, [{"trip": "100677020", "route": "504", "vehicle": "4617", "stops": [("4282", 12, ts + 120)]},
-                              {"trip": "x", "route": "121", "vehicle": "8520"}])
+                              {"trip": "x", "route": "121", "vehicle": "8520"}, *EXTRA_TRIPS])
+
+
+def subway_trips_body(ts: int) -> bytes:
+    return make_trip_feed(ts, SUBWAY_TRIPS)
 
 
 def handler_factory(calls: list, *, fail=()):
@@ -64,6 +73,8 @@ def handler_factory(calls: list, *, fail=()):
                                   headers={"ETag": 'W/"fixture"', "Last-Modified": http_now, "Date": http_now})
         if host == "gtfsrt.ttc.ca" and path == "/alerts/all":
             return httpx.Response(200, content=rt_alerts_body(now - 10))
+        if host == "gtfsrt.ttc.ca" and path == "/trips/subway":
+            return httpx.Response(200, content=subway_trips_body(now - 5))
         if host == "gtfsrt.ttc.ca" and path == "/trips/detour":
             return httpx.Response(200, content=(FIX / "advisories" / "detour.json").read_bytes(), headers={"Date": http_now})
         if host == "www.ttc.ca":
