@@ -69,7 +69,7 @@ Set on the service:
 | Variable | Value |
 |---|---|
 | `BASE_URL` | `https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app` (origin, no path) |
-| `ALLOWED_EMAILS` | the Google account allowed in; the runbook shows `maintainer@example.com` |
+| `ALLOWED_EMAILS` | the Google account allowed in, `lunaparker33@gmail.com` |
 | `GOOGLE_OAUTH_CLIENT_ID` | the OAuth client's id; setting it turns the gate on |
 | `GOOGLE_CLOUD_PROJECT` | `$PROJECT_ID`, so OAuth state goes to Firestore |
 | `TTC_MCP_STATIC_BUCKET` | `ttc-mcp-static-$PROJECT_NUMBER` |

@@ -306,7 +306,7 @@ The hosted shape, specified in [docs/spec.md](docs/spec.md) section 6.9, uses th
 
 For one person this is sized to stay within Google Cloud's free tiers (the estimate is in spec 6.9); check your project's billing before you start. [docs/cloud-run.md](docs/cloud-run.md) is the build specification for the hosted copy: what gets provisioned, how it is sized now that the trip planner keeps its index in memory, the order deploys must follow when the timetable format changes, and the checks that say it works.
 
-[docs/deploy.md](docs/deploy.md) is the complete runbook, one block of commands per step: billing headroom, APIs, service accounts, the bucket, the secrets, the OAuth client, Firestore, the image, the Job (run once so the bucket has a timetable), the service, the scheduler, then the connectors and the post-deploy checks. It hasn't been run end to end yet. It is written with this project's names and region and an example allowlist address, uses `pbpaste` (macOS) to keep secrets out of the terminal, and assumes the project already has an OAuth consent screen; substitute yours.
+[docs/deploy.md](docs/deploy.md) is the complete runbook, one block of commands per step: billing headroom, APIs, service accounts, the bucket, the secrets, the OAuth client, Firestore, the image, the Job (run once so the bucket has a timetable), the service, the scheduler, then the connectors and the post-deploy checks. It hasn't been run end to end yet. It is written with this project's names, region and allowlist address, uses `pbpaste` (macOS) to keep secrets out of the terminal, and assumes the project already has an OAuth consent screen; substitute yours.
 
 Once it is deployed, connect a client to `https://<your-service-url>/mcp`:
 

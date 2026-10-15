@@ -16,7 +16,7 @@
 | Image | Artifact Registry repo `ttc-mcp` (docker, us-east1): `us-east1-docker.pkg.dev/$PROJECT_ID/ttc-mcp/ttc-mcp:v1` |
 | Job | Cloud Run Job `ttc-mcp-static`, the same image, 2 GiB, 1 CPU, command `/app/.venv/bin/ttc-mcp-build --bucket ttc-mcp-static-$PROJECT_NUMBER` |
 | Scheduler | `ttc-mcp-static-daily`, `30 4 * * *` in `America/Toronto`, calling the Job's run endpoint |
-| Allowlist | `ALLOWED_EMAILS=maintainer@example.com`, an example: put the Google account that may sign in |
+| Allowlist | `ALLOWED_EMAILS=lunaparker33@gmail.com` |
 | Billing | the project's hard-cap budget and `billing-killswitch`; no new budget wiring; the service should bill nothing at this scale in us-east1 (spec 6.9, cost) |
 
 The two accounts match spec 6.9's Identity row and keep its role split: `roles/storage.objectAdmin` on the bucket for the Job's account only, `roles/storage.objectViewer` for the service's. The Job needs no secret and the service never writes the bucket.
@@ -124,7 +124,7 @@ Expected, first execution (empty bucket), in time order (the log prints newest f
 `BASE_URL` is the origin, no path. `$CLIENT_ID` comes from step 6 (set it again if this is a new shell). One email is one value; to allow a second, `--set-env-vars` needs gcloud's delimiter syntax (`--set-env-vars '^;^ALLOWED_EMAILS=a@x,b@y;BASE_URL=...'`) because it splits on commas.
 
 ```bash
-gcloud run deploy ttc-mcp --image us-east1-docker.pkg.dev/$PROJECT_ID/ttc-mcp/ttc-mcp:v1 --region us-east1 --allow-unauthenticated --min-instances 0 --max-instances 1 --memory 1Gi --cpu 1 --cpu-boost --timeout 300 --execution-environment gen2 --service-account ttc-mcp-sa@$PROJECT_ID.iam.gserviceaccount.com --set-env-vars BASE_URL=https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app,ALLOWED_EMAILS=maintainer@example.com,GOOGLE_OAUTH_CLIENT_ID=$CLIENT_ID,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,TTC_MCP_STATIC_BUCKET=ttc-mcp-static-$PROJECT_NUMBER --set-secrets GOOGLE_OAUTH_CLIENT_SECRET=ttc-mcp-oauth-client-secret:latest,JWT_SIGNING_KEY=ttc-mcp-jwt-signing-key:latest,STORAGE_ENCRYPTION_KEY=ttc-mcp-storage-fernet-key:latest
+gcloud run deploy ttc-mcp --image us-east1-docker.pkg.dev/$PROJECT_ID/ttc-mcp/ttc-mcp:v1 --region us-east1 --allow-unauthenticated --min-instances 0 --max-instances 1 --memory 1Gi --cpu 1 --cpu-boost --timeout 300 --execution-environment gen2 --service-account ttc-mcp-sa@$PROJECT_ID.iam.gserviceaccount.com --set-env-vars BASE_URL=https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app,ALLOWED_EMAILS=lunaparker33@gmail.com,GOOGLE_OAUTH_CLIENT_ID=$CLIENT_ID,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,TTC_MCP_STATIC_BUCKET=ttc-mcp-static-$PROJECT_NUMBER --set-secrets GOOGLE_OAUTH_CLIENT_SECRET=ttc-mcp-oauth-client-secret:latest,JWT_SIGNING_KEY=ttc-mcp-jwt-signing-key:latest,STORAGE_ENCRYPTION_KEY=ttc-mcp-storage-fernet-key:latest
 gcloud run services describe ttc-mcp --region us-east1 --format='value(status.url)'
 curl -s https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/.well-known/oauth-protected-resource/mcp; echo
 curl -s -o /dev/null -w '%{http_code}\n' -X POST https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
@@ -146,7 +146,7 @@ gcloud run jobs executions list --job ttc-mcp-static --region us-east1
 
 ## 12. The connectors (validation item 16)
 
-- **claude.ai:** Settings > Connectors > Add custom connector: name `TTC`, URL `https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/mcp`, the advanced OAuth client ID and secret fields left empty (the gate registers clients dynamically). Connect, sign in with the account in `ALLOWED_EMAILS`, accept the consent once (`require_authorization_consent="remember"`). Ask "What is the TTC service status right now?" and expect `service_status` to answer. Then connect with another Google account from a second browser profile and expect "This server is restricted; ... is not authorized."
+- **claude.ai:** Settings > Connectors > Add custom connector: name `TTC`, URL `https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/mcp`, the advanced OAuth client ID and secret fields left empty (the gate registers clients dynamically). Connect, sign in with lunaparker33@gmail.com, accept the consent once (`require_authorization_consent="remember"`). Ask "What is the TTC service status right now?" and expect `service_status` to answer. Then connect with another Google account from a second browser profile and expect "This server is restricted; ... is not authorized."
 - **Claude Code:** in a project's `.mcp.json`, then `claude` and `/mcp` to authenticate in the browser:
 
 ```json
