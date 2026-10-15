@@ -5,12 +5,22 @@ from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
 from tests.mockttc import make_app
-from ttc_mcp.domain import live
+from ttc_mcp.domain import live, planner, raptor
 from ttc_mcp.static.schedule import TZ
 
 CHERRY_FRONT = {"lat": 43.6527, "lon": -79.3581}
 NIGHT = dt.datetime(2026, 10, 6, 23, 30, tzinfo=TZ)
 TOOLS = {"route_shape", "accessibility", "connections"}
+OPTION_KEYS = {"rank", "transfers", "depart_at", "arrive_at", "duration_min", "walk_m", "stops", "basis", "estimate", "disruptions", "legs"}
+RIDE_KEYS = {"route", "direction_id", "headsign", "transit", "pattern_id", "trip_id", "board", "alight", "stops", "depart", "arrive", "min", "typical_min", "basis"}
+
+
+def rides(o):
+    return [l for l in o["legs"] if l["mode"] == "ride"]
+
+
+def minutes_between(a: str, b: str) -> int:
+    return int((dt.datetime.fromisoformat(b) - dt.datetime.fromisoformat(a)).total_seconds() // 60)
 
 
 @pytest.mark.anyio
@@ -39,44 +49,39 @@ async def test_route_shape_and_accessibility_tools(app_env):
 
 
 @pytest.mark.anyio
-async def test_connections_from_cherry_front_to_union_with_live_first_leg(app_env):
+async def test_connections_answer_the_contract_from_cherry_front_to_union(app_env):
     calls = []
     async with Client(make_app(calls)) as c:
         r = (await c.call_tool("connections", {"origin": CHERRY_FRONT, "destination": "Union"})).data
-        assert r["from"] == CHERRY_FRONT and r["to"] == {"station": "15772", "name": "Union"} and r["depart_at"].startswith("2026-10-06T08:00")
-        first = r["options"][0]
-        ride = next(l for l in first["legs"] if l["mode"] == "ride")
-        assert ride["route"] == "121" and ride["next"] and all({"eta_min", "basis", "crowding", "headsign"} <= set(n) for n in ride["next"])
-        assert first["basis"] == "schedule" and ride["next"][0]["scheduled_at"] >= "2026-10-06T08:00"
-        assert ride["next_note"] == "BusTime: Stop not found; times are from the timetable" and all("basis" in o for o in r["options"])
-        assert first["disruptions"] == [] and r["meta"]["advisories"]["cache"] == "live" and r["meta"]["source"].startswith("static patterns")
-        xfer = next(o for o in r["options"] if o["transfers"] == 1)
-        rides = [l for l in xfer["legs"] if l["mode"] == "ride"]
-        assert [x["route"] for x in rides] == ["504", "1"] and "next" in rides[0] and "next" not in rides[1]
-        stop = (await c.call_tool("connections", {"origin": "15461", "destination": "Union", "max_transfers": 1, "limit": 2})).data
-        assert len(stop["options"]) <= 2 and all(o["legs"][0]["mode"] != "walk" for o in stop["options"])
-        assert "error" in (await c.call_tool("connections", {"origin": "nowhere", "destination": "Union"})).data
+    assert r["from"] == CHERRY_FRONT and r["to"] == {"station": "15772", "name": "Union"} and r["depart_at"] == "2026-10-06T08:00-04:00" and r["window_min"] == 30
+    assert [o["rank"] for o in r["options"]] == list(range(1, len(r["options"]) + 1)) and 2 <= len(r["options"]) <= 4 and "note" not in r
+    for o in r["options"]:
+        assert set(o) == OPTION_KEYS and o["transfers"] == len([l for l in o["legs"] if l["mode"] in ("ride", "shuttle")]) - 1
+        assert o["estimate"] is False and o["basis"] == "schedule" and o["duration_min"] == minutes_between(o["depart_at"], o["arrive_at"])
+        assert all(l["depart"] <= l["arrive"] for l in o["legs"]) and all(a["arrive"] <= b["depart"] for a, b in zip(o["legs"], o["legs"][1:], strict=False))
+        assert all(RIDE_KEYS <= set(l) and "board_pos" not in l and "alight_pos" not in l for l in rides(o))
+        assert all({"mode", "distance_m", "min", "depart", "arrive"} <= set(l) for l in o["legs"] if l["mode"] == "walk")
+    assert [o["arrive_at"] for o in r["options"]] == sorted(o["arrive_at"] for o in r["options"])
+    direct = next(o for o in r["options"] if [l["route"] for l in rides(o)] == ["121"])
+    assert direct["transfers"] == 0 and direct["legs"][0]["mode"] == "walk" and rides(direct)[0]["transit"] == "bus"
+    two = next(o for o in r["options"] if [l["route"] for l in rides(o)] == ["504", "1"])
+    first, second = rides(two)
+    assert (first["board"]["number"], first["trip_id"], first["depart"], first["arrive"], first["stops"]) == ("4144", "107845020", "2026-10-06T08:06-04:00", "2026-10-06T08:16-04:00", 6)
+    assert "next" in first and first["next_note"] == "BusTime: Stop not found; times are from the timetable" and "next" not in second
+    xfer = next(l for l in two["legs"] if l["mode"] == "transfer")
+    assert set(xfer) == {"mode", "from", "to", "distance_m", "walk_min", "via", "depart", "arrive", "min"}
+    assert (xfer["from"]["number"], xfer["to"]["number"], xfer["distance_m"], xfer["walk_min"], xfer["via"]) == ("15637", "13814", 98, 2, "walk") and xfer["min"] >= 3
+    assert (second["board"]["number"], second["alight"]["number"], second["stops"], second["transit"]) == ("13814", "13815", 1, "subway")
+    assert r["meta"]["cache"] == "live" and r["meta"]["source"].startswith("static timetable") and r["meta"]["advisories"]["cache"] == "live"
     assert any("getStopPredictions" in u for u in calls)
 
 
 @pytest.mark.anyio
-async def test_connections_apply_the_closure_overlay_at_night(app_env, monkeypatch):
-    monkeypatch.setattr("ttc_mcp.runtime.now", lambda: NIGHT)
+async def test_connections_from_a_stop_start_with_a_ride_and_honour_limit(app_env):
     async with Client(make_app([])) as c:
-        r = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union", "max_transfers": 0})).data
-        legs = [l["mode"] for l in r["options"][0]["legs"] if l["mode"] != "walk"]
-        assert legs == ["ride", "shuttle", "ride"] and {d["alert_id"] for d in r["options"][0]["disruptions"]} >= {"77519"}
-        assert r["options"][0]["typical_min_note"] == "excludes the shuttle leg" and r["options"][0]["typical_min"] is None
-        assert r["options"][0]["transfers"] == 2 and r["options"][0]["known_min"] > 0
-        assert next(d for d in r["options"][0]["disruptions"] if d["alert_id"] == "77519")["affects"] == [1, 2, 3]
-        day = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union", "max_transfers": 0, "depart_at": "2026-10-06T08:00"})).data
-        assert [l["mode"] for l in day["options"][0]["legs"] if l["mode"] != "walk"] == ["ride"]
-        ride = next(l for l in day["options"][0]["legs"] if l["mode"] == "ride")
-        assert day["options"][0]["basis"] == "schedule" and ride["next"] and ride["next"][0]["scheduled_at"] >= "2026-10-06T08:00"
-        assert all(n["basis"] == "schedule" for n in ride["next"]) and day["meta"]["cache"] == "static" and day["meta"]["advisories"]["source"]
-        shuttle_first = (await c.call_tool("connections", {"origin": "Lawrence", "destination": "Union", "max_transfers": 0})).data["options"][0]
-        assert [l["mode"] for l in shuttle_first["legs"]][0] == "shuttle" and shuttle_first["basis"] == "schedule"
-        assert not any("next" in l for l in shuttle_first["legs"]) and shuttle_first["first_departure"] is None
+        r = (await c.call_tool("connections", {"origin": "15461", "destination": "Union", "limit": 2})).data
+    assert 1 <= len(r["options"]) <= 2 and all(o["legs"][0]["mode"] == "ride" and o["walk_m"] >= 0 for o in r["options"])
+    assert r["from"] == {"stop": "15461", "name": "Cherry St at Front St East"}
 
 
 @pytest.mark.anyio
@@ -94,8 +99,9 @@ async def test_connections_keep_next_rows_in_the_leg_direction(app_env, monkeypa
     async with Client(make_app([])) as c:
         # The 504 leg from 15461 runs GTFS direction 1; BusTime's East 504A rows there map to direction 0.
         r = (await c.call_tool("connections", {"origin": "15461", "destination": "Union"})).data
-        ride = r["options"][0]["legs"][0]
-        assert (ride["route"], ride["direction_id"], r["options"][0]["basis"]) == ("504", "1", "schedule")
+        opt = next(o for o in r["options"] if rides(o)[0]["route"] == "504")
+        ride = rides(opt)[0]
+        assert (ride["direction_id"], ride["basis"], opt["basis"]) == ("1", "schedule", "schedule")
         assert [(n["basis"], n["headsign"]) for n in ride["next"]] == [("schedule", "West - 504 King towards Distillery")]
         assert ride["next"][0]["scheduled_at"].startswith("2026-10-06T08:04") and ride["next_note"].startswith("no real-time prediction in this direction")
         real = live.arrivals_at
@@ -106,8 +112,8 @@ async def test_connections_keep_next_rows_in_the_leg_direction(app_env, monkeypa
             return rows, hits, source, note
         monkeypatch.setattr(live, "arrivals_at", unknown_first)
         r = (await c.call_tool("connections", {"origin": "15461", "destination": "Union"})).data
-        ride = r["options"][0]["legs"][0]
-        assert [n["vehicle_id"] for n in ride["next"]] == ["4617"] and "next_note" not in ride and r["options"][0]["basis"] == "realtime"
+        ride = rides(next(o for o in r["options"] if rides(o)[0]["route"] == "504"))[0]
+        assert [n["vehicle_id"] for n in ride["next"]] == ["4617"] and "next_note" not in ride and ride["next"][0]["basis"] == "realtime"
         assert ride["next"][0]["crowding"]["label"] == "Busy" and ride["next"][0]["headsign"] == "East - 504A King towards Distillery"
 
 
@@ -115,34 +121,55 @@ async def test_connections_keep_next_rows_in_the_leg_direction(app_env, monkeypa
 async def test_connections_take_live_rows_only_within_an_hour_of_the_clock(app_env):
     async with Client(make_app([])) as c:
         near = (await c.call_tool("connections", {"origin": "13863", "destination": "Finch", "depart_at": "2026-10-06T08:30"})).data
-        ride = near["options"][0]["legs"][0]
-        assert near["depart_at"] == "2026-10-06T08:30-04:00" and near["meta"]["cache"] == "live" and near["meta"]["source"].startswith("static patterns")
+        ride = rides(near["options"][0])[0]
+        assert near["depart_at"] == "2026-10-06T08:30-04:00" and near["meta"]["cache"] == "live" and near["meta"]["source"].startswith("static timetable")
         # NTAS has trains at 0, 4 and 5 minutes from the 08:00 clock, all before 08:30: the timetable fills in from 08:30.
-        assert near["options"][0]["basis"] == "schedule" and ride["next"][0]["scheduled_at"] >= "2026-10-06T08:30"
+        assert ride["next"][0]["scheduled_at"] >= "2026-10-06T08:30" and ride["depart"] >= "2026-10-06T08:30"
         assert ride["next_note"] == "no real-time prediction in this direction from depart_at on; times are from the timetable"
         soon = (await c.call_tool("connections", {"origin": "13863", "destination": "Finch", "depart_at": "2026-10-06T08:03"})).data
-        assert soon["options"][0]["basis"] == "realtime" and [n["eta_min"] for n in soon["options"][0]["legs"][0]["next"]] == [4, 5]
+        assert [n["eta_min"] for n in rides(soon["options"][0])[0]["next"]] == [4, 5] and rides(soon["options"][0])[0]["next"][0]["basis"] == "realtime"
         far = (await c.call_tool("connections", {"origin": "13863", "destination": "Finch", "depart_at": "2026-10-06T09:01"})).data
-        ride = far["options"][0]["legs"][0]
-        assert far["options"][0]["basis"] == "schedule" and ride["next"][0]["scheduled_at"] >= "2026-10-06T09:01"
-        assert far["meta"]["cache"] == "static" and far["meta"]["advisories"]["source"]
+        ride = rides(far["options"][0])[0]
+        assert ride["next"][0]["scheduled_at"] >= "2026-10-06T09:01" and far["meta"]["cache"] == "static" and far["meta"]["advisories"]["source"]
+
+
+@pytest.mark.anyio
+async def test_connections_answer_arrive_by_latest_departure_first(app_env):
+    async with Client(make_app([])) as c:
+        r = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union", "arrive_by": "2026-10-06T10:00"})).data
+    assert r["arrive_by"] == "2026-10-06T10:00-04:00" and "depart_at" not in r and "window_min" not in r and r["options"]
+    assert all(o["arrive_at"] <= "2026-10-06T10:00" for o in r["options"]) and r["options"][0]["depart_at"] >= r["options"][-1]["depart_at"]
+    assert [o["rank"] for o in r["options"]] == list(range(1, len(r["options"]) + 1)) and r["meta"]["cache"] == "static"
+
+
+@pytest.mark.anyio
+async def test_connections_window_zero_and_max_transfers_zero_narrow_the_answer(app_env):
+    async with Client(make_app([])) as c:
+        instant = (await c.call_tool("connections", {"origin": CHERRY_FRONT, "destination": "Union", "window_min": 0})).data
+        direct = (await c.call_tool("connections", {"origin": CHERRY_FRONT, "destination": "Union", "max_transfers": 0})).data
+    assert instant["window_min"] == 0 and 1 <= len(instant["options"]) <= 4
+    assert all(a["arrive_at"] < b["arrive_at"] or a["transfers"] < b["transfers"] for a, b in zip(instant["options"], instant["options"][1:], strict=False))
+    assert direct["options"] and all(o["transfers"] == 0 and [l["route"] for l in rides(o)] == ["121"] for o in direct["options"])
 
 
 @pytest.mark.anyio
 async def test_connections_explain_an_empty_answer(app_env, monkeypatch):
     async with Client(make_app([])) as c:
-        r = (await c.call_tool("connections", {"origin": "15246", "destination": "Union", "max_transfers": 0, "depart_at": "2026-10-06T02:00"})).data
-        assert r["options"] == [] and "within 120 minutes" in r["note"] and r["meta"]["cache"] == "static" and r["meta"]["advisories"]
+        # Only the 400 serves these two stops, and it runs Mondays, Wednesdays and Thursdays: this Tuesday has no trip left to board.
+        r = (await c.call_tool("connections", {"origin": "15547", "destination": "15602", "max_transfers": 0, "depart_at": "2026-10-06T02:00"})).data
+        assert r["options"] == [] and r["note"] == "no journey with up to 0 transfers departing within 30 minutes of 2026-10-06T02:00-04:00" and r["meta"]["cache"] == "static"
         monkeypatch.setattr("ttc_mcp.runtime.now", lambda: NIGHT)
-        monkeypatch.setattr("ttc_mcp.domain.planner._shuttle_runs", lambda el: False)
+        monkeypatch.setattr(planner, "_shuttle_runs", lambda el: False)
         r = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union", "max_transfers": 0})).data
-        assert r["options"] == [] and r["note"] == "every option is cut by a closure (no shuttle service, or a bypassed boarding or alighting station)"
+        assert r["options"] == [] and r["note"] == "every journey needs a closed section with no shuttle service"
         monkeypatch.setattr("ttc_mcp.runtime.now", lambda: dt.datetime(2026, 10, 6, 8, 0, tzinfo=TZ))
         roncesvalles = {"lat": 43.650939, "lon": -79.450927}
         r = (await c.call_tool("connections", {"origin": roncesvalles, "destination": "4582", "walk_m": 1})).data
         assert r["options"] == [] and r["note"] == "every stop at the origin is skipped by a detour"
         r = (await c.call_tool("connections", {"origin": "4582", "destination": "15039", "walk_m": 1})).data
         assert r["options"] == [] and r["note"] == "every stop at the destination is skipped by a detour"
+        r = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union", "depart_at": "2026-11-15T08:00"})).data
+        assert r["options"] == [] and r["note"] == "no service at the origin stops on 2026-11-15"
 
 
 @pytest.mark.anyio
@@ -151,9 +178,9 @@ async def test_connections_replace_a_detour_skipped_stop_with_the_served_stops_a
         r = (await c.call_tool("connections", {"origin": "15039", "destination": "4582"})).data
     assert r["from"] == {"stop": "15039", "name": "Roncesvalles Ave at Howard Park Ave South Side"}
     assert r["note"] == "origin stop 15039 is skipped by detour 9001; using the served stops within 400 m of it"
-    first = r["options"][0]
-    assert first["legs"][0] == {"mode": "walk", "to": {"number": "4569", "name": "Roncesvalles Ave at Boustead Ave South Side"}, "distance_m": 245, "min": 4}
-    assert [(l["route"], l["board"]["number"]) for l in first["legs"] if l["mode"] == "ride"] == [("504", "4569")]
+    walk = r["options"][0]["legs"][0]
+    assert (walk["mode"], walk["to"], walk["distance_m"], walk["min"]) == ("walk", {"number": "4569", "name": "Roncesvalles Ave at Boustead Ave South Side"}, 245, 4)
+    assert [(l["route"], l["board"]["number"]) for l in rides(r["options"][0])] == [("504", "4569")]
 
 
 @pytest.mark.anyio
@@ -164,13 +191,16 @@ async def test_connections_reject_what_they_cannot_plan(app_env):
         far = (await c.call_tool("connections", {"origin": {"lat": 43.0, "lon": -79.0}, "destination": "Union"})).data
         assert far["error"] == "no stop within 400 m of the origin; raise walk_m or start from a stop"
         with pytest.raises(ToolError):
-            await c.call_tool("connections", {"origin": "15461", "destination": "Union", "max_transfers": 2})
+            await c.call_tool("connections", {"origin": "15461", "destination": "Union", "max_transfers": 4})
 
 
 @pytest.mark.parametrize("args,error", [
     ({"limit": 0}, "limit must be between 1 and 10"), ({"limit": 11}, "limit must be between 1 and 10"),
     ({"walk_m": 0}, "walk_m must be between 1 and 2000"), ({"walk_m": 8000}, "walk_m must be between 1 and 2000"),
     ({"depart_at": "tomorrow at 8"}, "depart_at must be an ISO date-time such as 2026-10-06T08:30"),
+    ({"arrive_by": "nine"}, "arrive_by must be an ISO date-time such as 2026-10-06T09:00"),
+    ({"depart_at": "2026-10-06T08:00", "arrive_by": "2026-10-06T09:00"}, "give depart_at or arrive_by, not both"),
+    ({"window_min": -1}, "window_min must be between 0 and 60"), ({"window_min": 61}, "window_min must be between 0 and 60"),
     ({"origin": {"lat": "north", "lon": -79.36}}, "origin needs numeric lat and lon"),
     ({"origin": {"lat": 43.65}}, "origin needs numeric lat and lon"),
     ({"destination": {"lat": None, "lon": -79.38}}, "destination needs numeric lat and lon")])
@@ -182,85 +212,52 @@ async def test_connections_answer_bad_inputs_with_an_error(app_env, args, error)
 
 
 @pytest.mark.anyio
+async def test_connections_route_around_a_closure_without_shuttle_service(app_env, monkeypatch):
+    monkeypatch.setattr("ttc_mcp.runtime.now", lambda: NIGHT)
+    monkeypatch.setattr(planner, "_shuttle_runs", lambda el: False)
+    # Pretend a 121 stop bound for Union is 50 m from Sheppard-Yonge's southbound platform, north of the York Mills to Eglinton closure.
+    raptor.timetable_for(app_env.feed_for()).foot.setdefault("13860", []).append(("11169", 39, 50, "walk"))
+    async with Client(make_app([])) as c:
+        r = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union"})).data
+    assert r["options"] and "note" not in r
+    first, second = rides(r["options"][0])[:2]
+    assert (first["route"], first["board"]["number"], first["alight"]["number"], r["options"][0]["transfers"]) == ("1", "14111", "13860", 1)
+    # Leaving the 121 at The Esplanade at Yonge St and walking 122 m to 16754 beats riding on to it.
+    assert (second["route"], second["board"]["number"], second["alight"]["number"]) == ("121", "11169", "12425")
+    assert {d["alert_id"] for d in r["options"][0]["disruptions"]} >= {"77535"} and "77519" not in {d.get("alert_id") for d in r["options"][0]["disruptions"]}
+
+
+@pytest.mark.anyio
+async def test_connections_plan_off_the_event_loop_on_the_workers_connection(app_env, monkeypatch):
+    """Spec 6.9 carry-over: the plan must not stall the single instance's other requests, and SQLite forbids a connection in two threads."""
+    import threading
+
+    seen, used = [], []
+    real_plan, real_mat = raptor.plan_window, planner.materialize
+
+    def spy_plan(*a, **k):
+        seen.append(threading.get_ident())
+        return real_plan(*a, **k)
+
+    def spy_mat(conn, *a, **k):
+        used.append((threading.get_ident(), conn))
+        return real_mat(conn, *a, **k)
+    monkeypatch.setattr(raptor, "plan_window", spy_plan)
+    monkeypatch.setattr(planner, "materialize", spy_mat)
+    async with Client(make_app([])) as c:
+        for extra in ({}, {"depart_at": "2026-10-06T08:00"}):
+            assert (await c.call_tool("connections", {"origin": CHERRY_FRONT, "destination": "Union", **extra})).data["options"]
+        loop_conn = app_env.feed_for().conn
+    assert seen and all(t != threading.get_ident() for t in seen)
+    assert used and all(t != threading.get_ident() and conn is not loop_conn for t, conn in used)
+
+
+@pytest.mark.anyio
 async def test_route_shape_needs_both_ends_of_a_span(app_env):
     async with Client(make_app([])) as c:
         for half in ({"from_stop": "4569"}, {"to_stop": "4573"}):
             r = (await c.call_tool("route_shape", {"route": "504", "direction": "0", **half})).data
             assert r["error"] == "give both from_stop and to_stop for a span, or neither"
-
-
-@pytest.mark.anyio
-async def test_connections_route_around_a_closure_without_shuttle_service(app_env, monkeypatch):
-    from ttc_mcp.domain import planner
-    real = planner.transfer_stops
-    monkeypatch.setattr("ttc_mcp.runtime.now", lambda: NIGHT)
-    monkeypatch.setattr(planner, "_shuttle_runs", lambda el: False)
-    # Pretend a 121 stop bound for Union is 50 m from Sheppard-Yonge, north of the York Mills to Eglinton closure.
-    monkeypatch.setattr(planner, "transfer_stops", lambda c, sid: {**real(c, sid), **({"11169": 50} if sid == "13860" else {})})
-    async with Client(make_app([])) as c:
-        r = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union"})).data
-    assert r["options"] and "note" not in r
-    rides = [l for l in r["options"][0]["legs"] if l["mode"] == "ride"]
-    assert [(l["route"], l["board"]["number"], l["alight"]["number"]) for l in rides][0] == ("1", "14111", "13860") and r["options"][0]["transfers"] == 1
-    assert (rides[1]["route"], rides[1]["board"]["number"]) == ("121", "11169") and rides[1]["alight"]["number"] in {"16754", "246"}
-
-
-@pytest.mark.anyio
-async def test_connections_hide_the_planners_private_keys(app_env, monkeypatch):
-    """board_pos and alight_pos index a private table and first_departure is a whole timetable record; the tool trims them."""
-    async with Client(make_app([])) as c:
-        r = (await c.call_tool("connections", {"origin": CHERRY_FRONT, "destination": "Union"})).data
-        legs = [l for o in r["options"] for l in o["legs"]]
-        assert legs and not any("board_pos" in l or "alight_pos" in l for l in legs)
-        assert all({"pattern_id", "transit"} <= set(l) for l in legs if l["mode"] == "ride")
-        assert all(set(o["first_departure"]) == {"when", "in_min", "trip_id"} for o in r["options"]) and r["options"][0]["first_departure"]["in_min"] >= 0
-    monkeypatch.setattr("ttc_mcp.runtime.now", lambda: NIGHT)
-    async with Client(make_app([])) as c:
-        night = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union", "max_transfers": 0})).data
-        legs = night["options"][0]["legs"]
-        assert [l["mode"] for l in legs] == ["ride", "shuttle", "ride"] and not any("board_pos" in l or "alight_pos" in l for l in legs)
-
-
-@pytest.mark.anyio
-async def test_connections_plan_off_the_event_loop(app_env, monkeypatch):
-    """Spec 6.9 carry-over: the planner's tens of milliseconds must not stall every other request of the single instance."""
-    import threading
-
-    from ttc_mcp.domain import planner
-    seen, real = [], planner.search
-
-    def spy(*a, **k):
-        seen.append(threading.get_ident())
-        return real(*a, **k)
-    monkeypatch.setattr(planner, "search", spy)
-    async with Client(make_app([])) as c:
-        assert (await c.call_tool("connections", {"origin": CHERRY_FRONT, "destination": "Union"})).data["options"]
-    assert seen and all(t != threading.get_ident() for t in seen)
-
-
-@pytest.mark.anyio
-async def test_the_plan_worker_never_borrows_the_loop_threads_connection(app_env, monkeypatch):
-    """SQLite in multi-thread mode forbids one connection in two threads at once: the planner's worker, and the snapshot's
-    Disruptions it reads there, must query through the worker's own connection."""
-    import threading
-
-    from ttc_mcp.domain import planner
-    used, real = [], {n: getattr(planner, n) for n in ("search", "pattern_meta", "overlay")}
-
-    def spy(name):
-        def f(conn, *a, **k):
-            used.append((name, threading.get_ident(), conn, a[0].conn if name == "overlay" else conn))
-            return real[name](conn, *a, **k)
-        return f
-    for n in real:
-        monkeypatch.setattr(planner, n, spy(n))
-    async with Client(make_app([])) as c:
-        for extra in ({}, {"depart_at": "2026-10-06T08:00"}):
-            assert (await c.call_tool("connections", {"origin": CHERRY_FRONT, "destination": "Union", **extra})).data["options"]
-        loop_conn = app_env.feed_for().conn
-    worker = [u for u in used if u[1] != threading.get_ident()]
-    assert {u[0] for u in worker} == {"search", "pattern_meta", "overlay"}
-    assert all(conn is not loop_conn and disr_conn is conn for _, _, conn, disr_conn in worker)
 
 
 def test_disruptions_query_through_the_calling_threads_connection(fixture_db, conn):

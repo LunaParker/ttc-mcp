@@ -375,3 +375,8 @@ def plan_arrive_by(q: Query, target: int, window_s: int, step_s: int = WINDOW_ST
     stop = lo - window_s if floor is None else max(lo - window_s, floor)
     found = [j for t in range(lo, stop - 1, -step_s) for j in plan(q, t) if j.arrive <= target]
     return rank(dedupe(q, found, latest=True), latest=True)
+
+
+def has_service(q: Query, stops) -> bool:
+    """Any group at these stops that runs on one of the query's days."""
+    return any(g.service_id in sl.service_ids for s in stops for sl in q.slices for pid, _ in sl.patterns_at(s) for g in sl.groups_for(pid))
