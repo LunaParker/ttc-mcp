@@ -346,6 +346,20 @@ def test_build_memoises_per_feed_day_and_inputs_and_reset_clears_it(app_env, con
     assert overlay.build(feed, tt, disr, None, None, None, dt.date(2026, 10, 6)) is not a
 
 
+def test_get_store_reopen_on_a_feed_change_drops_the_overlay_memo(app_env, conn):
+    """A feed the manifest no longer lists must not stay alive in the memo through its timetable and overlays."""
+    from ttc_mcp.static.manifest import Manifest
+    feed = app_env.feed_for()
+    overlay.build(feed, raptor.timetable_for(feed), build(conn, NOW_NIGHT), None, None, None, dt.date(2026, 10, 6))
+    assert overlay._memo and overlay._prep
+    cache = app_env.settings().cache_dir
+    m = Manifest.load(cache)
+    m.upsert(dataclasses.replace(m.feeds[0], etag='"republished"'))
+    m.save(cache)
+    app_env.get_store()
+    assert not overlay._memo and not overlay._prep
+
+
 def test_public_updates_map_surface_stop_ids_through_the_crosswalk(conn):
     from tests.rtfeeds import make_trip_feed
     from ttc_mcp.adapters.bustime_rt import parse_trips
