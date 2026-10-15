@@ -9,6 +9,7 @@ from bisect import bisect_left
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import ClassVar
 
 from ttc_mcp.domain.geo import haversine_m, walk_seconds
 from ttc_mcp.static.schedule import wall_clock
@@ -117,6 +118,7 @@ def day_offset(from_day: dt.date, to_day: dt.date) -> int:
 @dataclass(frozen=True)
 class Closed:
     """A rail pattern under closures: positions no trip boards at, none alights at, and the ones a trip is dropped after (6.7 item 4)."""
+    NONE: ClassVar[Closed]
     no_board: frozenset[int]
     no_alight: frozenset[int]
     drop_after: frozenset[int]
@@ -247,6 +249,8 @@ def plan(q: Query, t0: int | None = None) -> list[Journey]:
     best: dict[str, int] = {}
     tau: list[dict[str, int]] = [{} for _ in range(rounds + 1)]
     parent: list[dict[str, tuple]] = [{} for _ in range(rounds + 1)]
+    rode: list[dict[str, int]] = [{} for _ in range(rounds + 1)]
+    rparent: list[dict[str, tuple]] = [{} for _ in range(rounds + 1)]
     marked: set[str] = set()
     for s, (w, m) in q.origin.items():
         if q.usable(s):
@@ -257,7 +261,7 @@ def plan(q: Query, t0: int | None = None) -> list[Journey]:
     foot = q.slices[0].tt.foot
     for k in range(1, rounds + 1):
         queue: dict[tuple[int, int], int] = {}
-        for s in marked:
+        for s in sorted(marked):
             for si, sl in enumerate(q.slices):
                 for pid, pos in sl.patterns_at(s):
                     if pos < queue.get((si, pid), INF):
@@ -265,9 +269,11 @@ def plan(q: Query, t0: int | None = None) -> list[Journey]:
         marked = set()
         for (si, pid), pos0 in queue.items():
             _scan(q, k, si, pid, pos0, tau[k - 1], tau[k], best, parent[k], marked, target)
-        for s in list(marked):
+        # Footpaths are one hop from this round's ride arrivals, relaxed in stop order so the answer never depends on the hash seed.
+        rode[k], rparent[k] = dict(tau[k]), dict(parent[k])
+        for s in sorted(rode[k]):
             for s2, secs, m, via in foot.get(s, ()):
-                a = tau[k][s] + secs
+                a = rode[k][s] + secs
                 if q.usable(s2) and a < best.get(s2, INF) and a < target[0]:
                     tau[k][s2] = best[s2] = a
                     parent[k][s2] = ("walk", s, secs, m, via)
@@ -282,20 +288,21 @@ def plan(q: Query, t0: int | None = None) -> list[Journey]:
         if not hits or min(hits)[0] >= bound:
             continue
         bound, s = min(hits)
-        out.append(_journey(q, t0, tau, parent, k, s))
+        out.append(_journey(q, tau, parent, rode, rparent, k, s))
     return out
 
 
-def _journey(q: Query, t0: int, tau: list[dict], parent: list[dict], k: int, s: str) -> Journey:
+def _journey(q: Query, tau: list[dict], parent: list[dict], rode: list[dict], rparent: list[dict], k: int, s: str) -> Journey:
+    """Walk the parents back from s; a walk continues from the ride that reached its start, and the origin walk ends as the first ride leaves."""
     legs: list[Leg] = []
     w, m = q.dest[s]
     if w or m:
         legs.append(Leg("walk", s, None, tau[k][s], tau[k][s] + w, metres=m, via="walk"))
+    p = parent[k][s]
     while True:
-        p = parent[k][s]
         if p[0] == "origin":
             if p[1] or p[2]:
-                legs.append(Leg("walk", None, s, t0, t0 + p[1], metres=p[2], via="walk"))
+                legs.append(Leg("walk", None, s, legs[-1].depart - p[1], legs[-1].depart, metres=p[2], via="walk"))
             break
         if p[0] == "ride":
             _, si, pid, gi, t, board, pos = p
@@ -304,10 +311,11 @@ def _journey(q: Query, t0: int, tau: list[dict], parent: list[dict], k: int, s: 
             legs.append(Leg("ride", stops[board], stops[pos], g.cols[board][t] + sl.offset, g.cols[pos][t] + sl.offset, pattern=pid, slice_idx=si,
                             group=gi, trip=t, board_pos=board, alight_pos=pos, basis="realtime" if t in g.realtime else "schedule"))
             s, k = stops[board], k - 1
+            p = parent[k][s]
         else:
             _, frm, secs, m, via = p
-            legs.append(Leg("walk", frm, s, tau[k][frm], tau[k][frm] + secs, metres=m, via=via))
-            s = frm
+            legs.append(Leg("walk", frm, s, rode[k][frm], rode[k][frm] + secs, metres=m, via=via))
+            s, p = frm, rparent[k][frm]
     legs.reverse()
     merged: list[Leg] = []
     for l in legs:

@@ -101,6 +101,25 @@ def trip_of(q, leg):
     return g.trip_ids[leg.trip]
 
 
+def assert_timed(q, j):
+    """Legs meet end to end, the origin walk ends at the first ride's departure, and a walk after a ride lasts exactly its footpath."""
+    foot = {a: {b: t for b, t, _, _ in edges} for a, edges in q.slices[0].tt.foot.items()}
+    legs = j.legs
+    assert (j.depart, j.arrive) == (legs[0].depart, legs[-1].arrive) and all(a.arrive <= b.depart for a, b in zip(legs, legs[1:], strict=False))
+    for i, l in enumerate(legs):
+        if l.kind != "walk":
+            continue
+        if l.frm is None:
+            assert i == 0 and legs[1].kind == "ride" and l.arrive == legs[1].depart and l.arrive - l.depart == q.origin[l.to][0]
+            continue
+        assert legs[i - 1].kind == "ride" and l.depart == legs[i - 1].arrive
+        if l.to is not None:
+            assert l.arrive - l.depart == foot[l.frm][l.to]
+        else:
+            ends = {foot[l.frm][s2] + q.dest[s2][0] for s2 in foot.get(l.frm, {}) if s2 in q.dest} | ({q.dest[l.frm][0]} if l.frm in q.dest else set())
+            assert l.arrive - l.depart in ends
+
+
 def test_day_offset_is_a_day_in_seconds_except_across_a_clock_change():
     assert raptor.day_offset(dt.date(2026, 10, 5), dt.date(2026, 10, 6)) == -86400
     assert raptor.day_offset(dt.date(2026, 10, 31), dt.date(2026, 11, 1)) == -90000  # DST ends on 2026-11-01
@@ -148,6 +167,9 @@ def test_cherry_front_to_union_is_a_pareto_set_with_a_timed_transfer(conn, monke
     assert [j.transfers for j in js] == sorted(j.transfers for j in js) and all(a.arrive > b.arrive for a, b in zip(js, js[1:], strict=False))
     direct = next(j for j in js if j.transfers == 0)
     assert q.slices[0].meta_of(direct.rides[0].pattern)["route"] == "121" and direct.arrive <= secs(8, 30) and direct.legs[0].kind == "walk"
+    # One footpath hop after the ride (12425 to 16754, 122 m) and the 171 m walk off at 16754; never a second hop on to 10935.
+    assert (direct.depart, direct.arrive, trip_of(q, direct.rides[0])) == (secs(8, 2, 28), secs(8, 26, 30), 22650020)
+    assert [(l.kind, l.frm, l.to, l.metres) for l in direct.legs] == [("walk", None, "16025", 361), ("ride", "16025", "12425", 0), ("walk", "12425", None, 293)]
     two = next(j for j in js if j.transfers == 1)
     first, second = two.rides
     assert (q.slices[0].meta_of(first.pattern)["route"], first.frm, first.to, first.depart, first.arrive) == ("504", "4144", "15637", secs(8, 6, 9), secs(8, 16, 21))
@@ -156,10 +178,21 @@ def test_cherry_front_to_union_is_a_pareto_set_with_a_timed_transfer(conn, monke
     assert (walk.kind, walk.frm, walk.to, walk.metres, walk.via) == ("walk", "15637", "13814", 98, "walk")
     # The 2-minute change buffer: the 08:18:17 train leaves 20 seconds after the 96-second walk ends, so the planner takes the 08:20:47 one.
     assert second.depart - first.arrive >= 96 + raptor.CHANGE_S and trip_of(q, second) != 134929152
+    assert trip_of(q, second) == 134929153 and second.depart == secs(8, 20, 47)
+    for j in js:
+        assert_timed(q, j)
     monkeypatch.setattr(raptor, "CHANGE_S", 0)
     relaxed = next(j for j in raptor.plan(q) if j.transfers == 1)
     assert trip_of(q, relaxed.rides[1]) == 134929152 and relaxed.arrive < two.arrive
     assert raptor.journey_key(q, two) == (("504", "4144", "15637"), ("1", "13814", "13815"))
+
+
+def test_plan_answers_the_same_in_any_order_and_on_every_call(conn):
+    tt = raptor.Timetable.load(conn, "S1000538")
+    q = query(conn, tt, CHERRY_FRONT, "Union", NOW)
+    js = raptor.plan(q)
+    flipped = dataclasses.replace(q, origin=dict(reversed(q.origin.items())), dest=dict(reversed(q.dest.items())))
+    assert js and raptor.plan(q) == js and raptor.plan(flipped) == js
 
 
 def test_max_transfers_and_unusable_stops_bound_the_search(conn):
