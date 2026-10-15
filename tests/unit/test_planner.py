@@ -36,12 +36,23 @@ def test_pattern_rows_meta_and_stop_names(conn):
 
 
 def test_closed_for_turns_the_night_closure_into_spans_on_line_1_only(conn):
-    closed = planner.closed_for(conn, build(conn, NOW_NIGHT))
+    tt = raptor.Timetable.load(conn, "S1000538")
+    closed = planner.closed_for(conn, build(conn, NOW_NIGHT), tt)
     south, north = closed(54), closed(59)
     assert (south.no_board, south.no_alight, south.drop_after) == (frozenset({3, 4}), frozenset({4, 5}), frozenset({3}))
     assert (north.no_board, north.no_alight, north.drop_after) == (frozenset({32, 33}), frozenset({33, 34}), frozenset({32}))
     assert closed(3) == raptor.Closed.NONE and closed(-1) == raptor.Closed.NONE and closed(54) is south
-    assert planner.closed_for(conn, build(conn, NOW))(54) == raptor.Closed.NONE
+    assert planner.closed_for(conn, build(conn, NOW), tt)(54) == raptor.Closed.NONE
+
+
+def test_closed_for_reads_no_positions_while_no_closure_is_active(conn, monkeypatch):
+    tt = raptor.Timetable.load(conn, "S1000538")
+
+    def boom(*a):
+        raise AssertionError("positions read with nothing closed")
+    monkeypatch.setattr(planner, "_closed_positions", boom)
+    closed = planner.closed_for(conn, build(conn, NOW), tt)
+    assert tt.pattern_meta[54]["mode"] == "subway" and closed(54) == raptor.Closed.NONE and closed(59) == raptor.Closed.NONE and closed(3) == raptor.Closed.NONE
 
 
 def test_materialize_writes_the_contract_legs_with_exact_and_typical_minutes(conn):

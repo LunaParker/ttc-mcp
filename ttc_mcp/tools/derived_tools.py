@@ -83,7 +83,7 @@ def _plan(feed, store, disr, o, d, when: dt.datetime, max_transfers: int, window
         return [], f"arrive_by {stamp} is not after now"
     ends = [{s: (geo.walk_seconds(m), m) for s, m in e.stops.items()} for e in (o, d)]
     slices = _slices(store, feed, day)
-    closers = [planner.closed_for(sl.conn, disr) for sl in slices]
+    closers = [planner.closed_for(sl.conn, disr, sl.tt) for sl in slices]
     q = raptor.Query(ends[0], ends[1], t, slices, max_transfers=max_transfers, usable=usable, closed=lambda si, pid: closers[si](pid))
     run = (lambda query: raptor.plan_arrive_by(query, t, window_min * 60, floor=floor)) if arrive_by else (lambda query: raptor.plan_window(query, window_min * 60))
     journeys = run(q)[:limit]

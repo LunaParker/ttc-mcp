@@ -223,3 +223,12 @@ def test_no_service_means_no_journey(conn):
     q = query(conn, tt, "Finch", "Union", NOW)
     q.slices = [raptor.Slice(tt, frozenset()), raptor.Slice(tt, frozenset(), -86400)]
     assert raptor.plan(q) == []
+
+
+def test_a_group_whose_last_departure_is_before_the_instant_is_never_scanned(conn):
+    tt = raptor.Timetable.load(conn, "S1000538")
+    q = query(conn, tt, "Finch", "Union", NOW)
+    seen: list[str] = []
+    # Yesterday's trips are all over by 08:00, so the scan skips every group and asks usable only for the origin labels.
+    q = dataclasses.replace(q, slices=[raptor.Slice(tt, frozenset()), q.slices[1]], usable=lambda s: seen.append(s) or True)
+    assert raptor.plan(q) == [] and not raptor.has_service(q, q.origin) and seen == list(q.origin)

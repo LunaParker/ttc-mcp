@@ -26,6 +26,11 @@ class Group:
     trip_ids: array
     skip: frozenset[tuple[int, int]] = frozenset()
     realtime: frozenset[int] = frozenset()
+    # The latest departure at any position on the group's own day: the scan skips the group once the query instant is past it.
+    last: int = field(init=False, compare=False, repr=False)
+
+    def __post_init__(self):
+        object.__setattr__(self, "last", max((c[-1] for c in self.cols if c), default=-INF))
 
     @property
     def n_trips(self) -> int:
@@ -213,35 +218,41 @@ class Query:
     closed: Callable[[int, int], Closed] = field(default=lambda si, p: Closed.NONE)
 
 
-def _scan(q: Query, k: int, si: int, pid: int, pos0: int, prev: dict, cur: dict, best: dict, parent: dict, marked: set, target: list[int]) -> None:
-    """One pattern in one slice for round k: ride every group from pos0, boarding the earliest trip the previous round allows."""
+def _scan(q: Query, k: int, si: int, pid: int, pos0: int, t0: int, prev: dict, cur: dict, best: dict, parent: dict, marked: set, target: list[int]) -> None:
+    """One pattern in one slice for round k: ride every group from pos0, boarding the earliest trip the previous round allows.
+    Every label is at or after t0, so a group whose last departure is before it can board nothing and is skipped."""
     sl = q.slices[si]
-    stops, closed = sl.stops_of(pid), q.closed(si, pid)
+    stops, closed, off, sids = sl.stops_of(pid), q.closed(si, pid), sl.offset, sl.service_ids
+    nb, na, drop = closed.no_board, closed.no_alight, closed.drop_after
+    usable, dest, best_get, prev_get = q.usable, q.dest, best.get, prev.get
+    wait, n_stops = (CHANGE_S if k > 1 else 0) - off, len(stops)
     for gi, g in enumerate(sl.groups_for(pid)):
-        if g.service_id not in sl.service_ids:
+        if g.service_id not in sids or g.last + off < t0:
             continue
+        cols, skip, n = g.cols, g.skip, len(g.trip_ids)
         t = board = -1
-        for pos in range(pos0, len(stops)):
+        for pos in range(pos0, n_stops):
             s = stops[pos]
             if t >= 0:
-                if pos not in closed.no_alight and (t, pos) not in g.skip and q.usable(s):
-                    arr = g.cols[pos][t] + sl.offset
-                    if arr < best.get(s, INF) and arr < target[0]:
+                if pos not in na and (t, pos) not in skip and usable(s):
+                    arr = cols[pos][t] + off
+                    if arr < best_get(s, INF) and arr < target[0]:
                         cur[s] = best[s] = arr
                         parent[s] = ("ride", si, pid, gi, t, board, pos)
                         marked.add(s)
-                        if s in q.dest:
-                            target[0] = min(target[0], arr + q.dest[s][0])
-                if pos in closed.drop_after:
+                        if s in dest:
+                            target[0] = min(target[0], arr + dest[s][0])
+                if pos in drop:
                     t = -1
-            p = prev.get(s)
-            if p is not None and pos not in closed.no_board and q.usable(s):
-                need = p + (CHANGE_S if k > 1 else 0) - sl.offset
-                if t < 0 or need <= g.cols[pos][t]:
-                    t2 = bisect_left(g.cols[pos], need)
-                    while t2 < g.n_trips and (t2, pos) in g.skip:
+            p = prev_get(s)
+            if p is not None and pos not in nb and usable(s):
+                need = p + wait
+                col = cols[pos]
+                if t < 0 or need <= col[t]:
+                    t2 = bisect_left(col, need)
+                    while t2 < n and (t2, pos) in skip:
                         t2 += 1
-                    if t2 < g.n_trips and (t < 0 or t2 < t):
+                    if t2 < n and (t < 0 or t2 < t):
                         t, board = t2, pos
 
 
@@ -271,7 +282,7 @@ def plan(q: Query, t0: int | None = None) -> list[Journey]:
                         queue[(si, pid)] = pos
         marked = set()
         for (si, pid), pos0 in queue.items():
-            _scan(q, k, si, pid, pos0, tau[k - 1], tau[k], best, parent[k], marked, target)
+            _scan(q, k, si, pid, pos0, t0, tau[k - 1], tau[k], best, parent[k], marked, target)
         # Footpaths are one hop from this round's ride arrivals, relaxed in stop order so the answer never depends on the hash seed.
         rode[k], rparent[k] = dict(tau[k]), dict(parent[k])
         for s in sorted(rode[k]):

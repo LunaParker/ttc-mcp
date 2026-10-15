@@ -154,15 +154,21 @@ def _touch(found: dict, affects: dict, el: dict, numbers: list[int]) -> None:
     affects[key] = sorted(set(affects.get(key, ())) | set(numbers))
 
 
-def closed_for(conn, disr: Disruptions):
-    """closed(pattern_id) -> raptor.Closed: each closure's lowest and highest position on a rail pattern is a span (6.7 item 4)."""
+def closed_for(conn, disr: Disruptions, tt: raptor.Timetable):
+    """closed(pattern_id) -> raptor.Closed: each closure's lowest and highest position on a rail pattern is a span (6.7 item 4).
+    tt is conn's feed; positions are read only when a closure is active on a rail line at the pattern's stops or GTFS-RT lists a platform."""
     memo: dict[int, raptor.Closed] = {}
+    closing = {line for el in disr.elements if el["type"] == "closure" and el["active_now"] for line in el["routes"]}
+    meta = tt.pattern_meta
+
+    def closable(pid: int) -> bool:
+        return bool(disr.platform_closed or closing and closing & {meta[p]["route"] for s in tt.pattern_stops[pid] for p, _ in tt.stop_patterns.get(s, ()) if meta[p]["mode"] in RAIL})
 
     def closed(pid: int) -> raptor.Closed:
         if pid not in memo:
             spans: dict[tuple, list[int]] = {}
-            m = pattern_meta(conn, pid) if pid >= 0 else None
-            if m and m["mode"] in RAIL:
+            m = meta[pid] if pid >= 0 else None
+            if m and m["mode"] in RAIL and closable(pid):
                 for pos, el in _closed_positions(conn, disr, pid, m["route"]):
                     spans.setdefault(element_key(el), []).append(pos)
             memo[pid] = raptor.Closed.from_spans([(min(p), max(p)) for p in spans.values()])
