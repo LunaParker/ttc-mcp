@@ -16,6 +16,8 @@ from ttc_mcp.domain.geo import haversine_m, walk_seconds
 from ttc_mcp.static.schedule import wall_clock
 from ttc_mcp.static.timetable import unpack
 
+INF = 1 << 40
+
 
 @dataclass(frozen=True)
 class Group:
@@ -35,6 +37,22 @@ class Group:
     @property
     def n_trips(self) -> int:
         return len(self.trip_ids)
+
+
+@dataclass(frozen=True)
+class Headway:
+    """A frequency-based pseudo-route (a closure shuttle): wait the full headway, then ride the cumulative seconds."""
+    pattern: int
+    headway_s: int
+    cum: tuple[int, ...]
+    service_id: str = "*"
+    skip: frozenset = frozenset()
+    realtime: frozenset = frozenset()
+    last: int = INF  # never spent: the scan's skip reads it
+
+    @property
+    def n_trips(self) -> int:
+        return 0
 
 
 class Timetable:
@@ -114,7 +132,6 @@ def reset() -> None:
         _cache.clear()
 
 
-INF = 1 << 40
 CHANGE_S = 120  # a vehicle change is never promised on less than two minutes of slack (spec 6.10)
 MAX_TRANSFERS = 3
 
@@ -239,7 +256,10 @@ def _scan(q: Query, k: int, si: int, pid: int, pos0: int, t0: int, prev: dict, c
     usable, dest, best_get, prev_get = q.usable, q.dest, best.get, prev.get
     wait, n_stops = (CHANGE_S if k > 1 else 0) - off, len(stops)
     for gi, g in enumerate(sl.groups_for(pid)):
-        if g.service_id not in sids or g.last + off < t0:
+        if (g.service_id not in sids and g.service_id != "*") or g.last + off < t0:
+            continue
+        if isinstance(g, Headway):
+            _scan_headway(q, k, si, pid, gi, g, stops, pos0, prev, cur, best, parent, marked, target)
             continue
         cols, skip, n = g.cols, g.skip, len(g.trip_ids)
         t = board = -1
@@ -266,6 +286,27 @@ def _scan(q: Query, k: int, si: int, pid: int, pos0: int, t0: int, prev: dict, c
                         t2 += 1
                     if t2 < n and (t < 0 or t2 < t):
                         t, board = t2, pos
+
+
+def _scan_headway(q: Query, k: int, si: int, pid: int, gi: int, g: Headway, stops: list[str], pos0: int, prev: dict, cur: dict, best: dict, parent: dict,
+                  marked: set, target: list[int]) -> None:
+    """A frequency route: board after the buffer and the full headway, and reboard downstream whenever that leaves before the shuttle ridden passes."""
+    cum, dep, board = g.cum, -1, -1
+    for pos in range(pos0, len(stops)):
+        s = stops[pos]
+        if dep >= 0 and q.usable(s):
+            arr = dep + cum[pos] - cum[board]
+            if arr < best.get(s, INF) and arr < target[0]:
+                cur[s] = best[s] = arr
+                parent[s] = ("shuttle", si, pid, gi, dep, board, pos)
+                marked.add(s)
+                if s in q.dest:
+                    target[0] = min(target[0], arr + q.dest[s][0])
+        p = prev.get(s)
+        if p is not None and q.usable(s):
+            cand = p + (CHANGE_S if k > 1 else 0) + g.headway_s
+            if dep < 0 or cand < dep + cum[pos] - cum[board]:
+                dep, board = cand, pos
 
 
 def plan(q: Query, t0: int | None = None) -> list[Journey]:
@@ -341,7 +382,15 @@ def _journey(q: Query, tau: list[dict], parent: list[dict], rode: list[dict], rp
             if p[1] or p[2]:
                 legs.append(Leg("walk", None, s, legs[-1].depart - p[1], legs[-1].depart, metres=p[2], via="walk"))
             break
-        if p[0] == "ride":
+        if p[0] == "shuttle":
+            _, si, pid, gi, dep, board, pos = p
+            sl = q.slices[si]
+            g, stops = sl.groups_for(pid)[gi], sl.stops_of(pid)
+            legs.append(Leg("shuttle", stops[board], stops[pos], dep, dep + g.cum[pos] - g.cum[board], pattern=pid, slice_idx=si, group=gi,
+                            board_pos=board, alight_pos=pos, basis="estimate"))
+            s, k = stops[board], k - 1
+            p = parent[k][s]
+        elif p[0] == "ride":
             _, si, pid, gi, t, board, pos = p
             sl = q.slices[si]
             g, stops = sl.groups_for(pid)[gi], sl.stops_of(pid)

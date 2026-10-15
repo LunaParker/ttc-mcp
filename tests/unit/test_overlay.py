@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit.test_disruptions import NOW_DAY, NOW_NIGHT, build
 from ttc_mcp import overlay
 from ttc_mcp.adapters.bustime_rt import StopUpdate, TripUpdateRec
 from ttc_mcp.adapters.detour_feed import parse_detours
@@ -236,3 +237,16 @@ def test_a_trip_an_entity_lists_twice_rides_the_variant_once(conn):
     e = dataclasses.replace(next(e for e in _entities() if e.detour_id == "9001"), trip_ids=("100677020", "100677020"))
     groups, extra, *_ = overlay.detour_variants(conn, tt, [e], dt.date(2026, 10, 6))
     assert [int(t) for g in extra[-1000] for t in g.trip_ids] == [100677020] and sum(g.n_trips for g in groups[6]) == sum(g.n_trips for g in tt.groups[6]) - 1
+
+
+def test_the_night_closure_becomes_two_shuttle_pseudo_routes_over_its_stations_in_line_order(conn):
+    tt = raptor.Timetable.load(conn, "S1000538")
+    extra, stops, meta, at = overlay.shuttle_routes(conn, tt, build(conn, NOW_NIGHT))
+    assert set(extra) == {-2000, -2001} and stops[-2000] == ["13791", "13793", "13795"] and stops[-2001] == ["13795", "13793", "13791"]
+    h = extra[-2000][0]
+    assert isinstance(h, raptor.Headway) and h.headway_s == 300 and h.cum == (0, 547, 1166) and extra[-2001][0].cum == (0, 619, 1166)
+    m = meta[-2000]
+    assert (m["line"], m["alert_id"], m["mode"], m["station_of"]["13795"]) == ("1", "77519", "shuttle", {"station": "43274", "name": "Eglinton"})
+    assert m["note"] == "assumed 5-minute headway and 15 km/h over 4.4 km of track with a 1-minute stop per station; the TTC publishes no shuttle timetable (alert 77519)"
+    assert at["13793"] == [(-2000, 1), (-2001, 1)]
+    assert overlay.shuttle_routes(conn, tt, build(conn, NOW_DAY))[0] == {}

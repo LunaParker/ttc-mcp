@@ -240,3 +240,32 @@ def test_a_group_whose_last_departure_is_before_the_instant_is_never_scanned(con
     # Yesterday's trips are all over by 08:00, so the scan skips every group and asks usable only for the origin labels.
     q = dataclasses.replace(q, slices=[raptor.Slice(tt, frozenset()), q.slices[1]], usable=lambda s: seen.append(s) or True)
     assert raptor.plan(q) == [] and not raptor.has_service(q, q.origin) and seen == list(q.origin)
+
+
+def test_a_headway_group_is_boarded_after_the_buffer_and_the_full_headway(conn):
+    tt = raptor.Timetable.load(conn, "S1000538")
+    from ttc_mcp import overlay as ov_mod
+    ov = ov_mod.Overlay(extra={-7: [raptor.Headway(-7, 300, (0, 547, 1166))]}, extra_stops={-7: ["13791", "13793", "13795"]},
+                        extra_meta={-7: {"route": "1", "direction_id": "0", "headsign": "shuttle", "mode": "shuttle", "line": "1", "alert_id": "x", "note": "n",
+                                         "station_of": {"13791": {"station": "43276", "name": "York Mills"}, "13795": {"station": "43274", "name": "Eglinton"}}}},
+                        extra_at={"13791": [(-7, 0)], "13793": [(-7, 1)], "13795": [(-7, 2)]})
+    cut = raptor.Closed.from_spans([(3, 5)])
+    q = query(conn, tt, "Finch", "Union", NOW, closed=lambda si, pid: cut if pid == 54 else raptor.Closed.NONE)
+    q.slices = [raptor.Slice(s.tt, s.service_ids, s.offset, ov, s.conn) for s in q.slices]
+    j = raptor.plan(q)[0]
+    kinds = [l.kind for l in j.legs]
+    assert kinds == ["ride", "walk", "shuttle", "ride"] and j.transfers == 2 and j.estimate  # the shuttle and the train share Eglinton's 13795
+    ride, walk, shuttle, ride2 = j.legs
+    assert (ride.to, walk.to, shuttle.frm, shuttle.to, ride2.frm) == ("13792", "13791", "13791", "13795", "13795")
+    assert shuttle.depart == ride.arrive + walk.arrive - walk.depart + raptor.CHANGE_S + 300 and shuttle.arrive == shuttle.depart + 1166 and shuttle.basis == "estimate"
+    assert ride2.depart >= shuttle.arrive + raptor.CHANGE_S and raptor.journey_key(q, j)[1] == ("1", "13791", "13795")
+
+
+def test_a_headway_route_is_boarded_downstream_when_that_leaves_before_the_shuttle_already_ridden_passes():
+    from ttc_mcp import overlay as ov_mod
+    ov = ov_mod.Overlay(extra={-7: [raptor.Headway(-7, 300, (0, 600, 1200))]}, extra_stops={-7: ["A", "B", "C"]},
+                        extra_meta={-7: {"route": "1", "direction_id": "0", "headsign": "shuttle", "mode": "shuttle"}}, extra_at={"A": [(-7, 0)], "B": [(-7, 1)], "C": [(-7, 2)]})
+    q = raptor.Query({"A": (0, 0), "B": (400, 400)}, {"C": (0, 0)}, 0, [raptor.Slice(raptor.Timetable("T", {}, {}, {}, {}), frozenset(), 0, ov)])
+    # From A the shuttle leaves at 300 and passes B at 900; walking to B and waiting the headway leaves B at 700, so C is reached at 1300, not 1500.
+    j = raptor.plan(q)[0]
+    assert [(l.kind, l.frm, l.to, l.depart, l.arrive) for l in j.legs] == [("walk", None, "B", 300, 700), ("shuttle", "B", "C", 700, 1300)]

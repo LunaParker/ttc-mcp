@@ -8,7 +8,10 @@ from dataclasses import dataclass, field
 
 from ttc_mcp.adapters.bustime_rt import TripUpdateRec
 from ttc_mcp.adapters.detour_feed import DetourEntity
-from ttc_mcp.domain.raptor import INF, Group, Timetable
+from ttc_mcp.domain.disruptions import LINE_PLATFORMS, Disruptions
+from ttc_mcp.domain.planner import _shuttle_runs
+from ttc_mcp.domain.raptor import INF, Group, Headway, Timetable
+from ttc_mcp.static.gtfs import RAIL
 from ttc_mcp.static.timetable import split_overtaking
 
 MAX_DRIFT_S = 2 * 3600  # surface feed: past this an update is another day's run of the trip, since no bus runs two hours late (drifts split after the 2026-10-14 capture)
@@ -36,7 +39,11 @@ class Overlay:
         return self.extra_meta[pattern] if pattern < 0 else tt.pattern_meta[pattern]
 
     def add_variants(self, groups, extra, extra_stops, extra_meta, extra_at) -> None:
-        self.groups.update(groups), self.extra.update(extra), self.extra_stops.update(extra_stops), self.extra_meta.update(extra_meta)
+        self.groups.update(groups)
+        self.add_shuttles(extra, extra_stops, extra_meta, extra_at)
+
+    def add_shuttles(self, extra, extra_stops, extra_meta, extra_at) -> None:
+        self.extra.update(extra), self.extra_stops.update(extra_stops), self.extra_meta.update(extra_meta)
         for s, hits in extra_at.items():
             self.extra_at.setdefault(s, []).extend(hits)
 
@@ -205,3 +212,53 @@ def detour_variants(conn, tt: Timetable, entities: Iterable[DetourEntity], day: 
         for pos, s in enumerate(extra_stops[vid]):
             extra_at.setdefault(s, []).append((vid, pos))
     return groups, extra, extra_stops, extra_meta, extra_at
+
+
+SHUTTLE_BASE = -2000
+SHUTTLE_HEADWAY_MIN, SHUTTLE_KMH, SHUTTLE_DWELL_MIN = 5, 15, 1  # spec 6.10's constants, checked by validation item 19
+
+
+def _line_stations(conn, tt: Timetable, line: str, stations: list[str]) -> list[tuple[str, str, str, float]]:
+    """(station, name, lowest platform of the line, distance along the line's rank-1 pattern) in line order; none when the feed lacks the line."""
+    row = conn.execute("SELECT pattern_id FROM patterns WHERE route_id=? AND direction_id=0 AND rank=1", (line,)).fetchone()
+    if row is None:
+        return []
+    dist = {sid: d for sid, d in conn.execute("SELECT stop_id, dist_m FROM pattern_stops WHERE pattern_id=?", (row[0],))}
+    out = []
+    for sid in stations:
+        platforms = sorted(r[0] for r in conn.execute(LINE_PLATFORMS, (sid, line)))
+        on_line = [p for p in platforms if p in dist]
+        if platforms and on_line:
+            name = conn.execute("SELECT name FROM stops WHERE stop_id=?", (sid,)).fetchone()[0]
+            out.append((sid, name, platforms[0], dist[on_line[0]]))
+    return sorted(out, key=lambda x: x[3])
+
+
+def shuttle_routes(conn, tt: Timetable, disr: Disruptions):
+    """Each active closure with a running shuttle: a headway route over its stations in line order, both directions (spec 6.10)."""
+    extra, extra_stops, extra_meta, extra_at = {}, {}, {}, {}
+    n = 0
+    for el in disr.elements:
+        if el["type"] != "closure" or not el["active_now"] or not _shuttle_runs(el) or len(el["stations"]) < 2:
+            continue
+        for line in (r for r in el["routes"] if r in RAIL):
+            chain = _line_stations(conn, tt, line, el["stations"])
+            if len(chain) < 2:
+                continue
+            km = (chain[-1][3] - chain[0][3]) / 1000
+            note = (f"assumed {SHUTTLE_HEADWAY_MIN}-minute headway and {SHUTTLE_KMH} km/h over {km:.1f} km of track with a {SHUTTLE_DWELL_MIN}-minute stop per station; "
+                    f"the TTC publishes no shuttle timetable (alert {el['alert_id']})")
+            for direction, order in (("0", chain), ("1", chain[::-1])):
+                cum, total = [0], 0
+                for a, b in zip(order, order[1:], strict=False):
+                    total += round(abs(b[3] - a[3]) / (SHUTTLE_KMH * 1000 / 3600) + SHUTTLE_DWELL_MIN * 60)
+                    cum.append(total)
+                vid = SHUTTLE_BASE - n
+                n += 1
+                extra[vid] = [Headway(vid, SHUTTLE_HEADWAY_MIN * 60, tuple(cum))]
+                extra_stops[vid] = [p for _, _, p, _ in order]
+                extra_meta[vid] = {"route": line, "direction_id": direction, "headsign": f"shuttle bus {order[0][1]} to {order[-1][1]}", "mode": "shuttle", "line": line,
+                                   "alert_id": el["alert_id"], "note": note, "station_of": {p: {"station": sid, "name": name} for sid, name, p, _ in order}}
+                for pos, p in enumerate(extra_stops[vid]):
+                    extra_at.setdefault(p, []).append((vid, pos))
+    return extra, extra_stops, extra_meta, extra_at
