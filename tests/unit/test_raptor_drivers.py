@@ -21,7 +21,7 @@ def test_arrive_by_finds_the_latest_departure_that_makes_it(conn):
     target = secs(9, 0)
     js = raptor.plan_arrive_by(q, target, 30 * 60)
     assert js and all(j.arrive <= target for j in js) and js == raptor.rank(js, latest=True) and js[0].depart >= js[-1].depart
-    later = raptor.plan(q, js[0].depart + 60)
+    later = raptor.plan(q, js[0].depart + raptor.ARRIVE_BY_RESOLUTION_S)
     assert not later or all(j.arrive > target for j in later)
     # The fixture's last night trip leaves at 01:20 and the first morning one arrives at 06:01, so 05:30 has nothing in the four hours before it.
     assert raptor.plan_arrive_by(q, secs(5, 30), 30 * 60) == []
@@ -64,7 +64,8 @@ def test_rank_orders_by_arrival_then_transfers_then_walking_and_latest_by_depart
 def test_arrive_by_floor_never_runs_a_search_or_a_departure_before_it(conn, monkeypatch):
     tt = raptor.Timetable.load(conn, "S1000538")
     q = query(conn, tt, "Finch", "Union", NOW)
-    assert [(j.depart, j.arrive) for j in raptor.plan_arrive_by(q, secs(8, 10), 30 * 60)] == [(secs(7, 39, 42), secs(8, 9, 47))]
+    # The search settles within five minutes of the latest departure: the 07:37 train, where the 07:39 one would also make 08:10.
+    assert [(j.depart, j.arrive) for j in raptor.plan_arrive_by(q, secs(8, 10), 30 * 60)] == [(secs(7, 37, 12), secs(8, 7, 17))]
     seen, real = [], raptor.plan
     monkeypatch.setattr(raptor, "plan", lambda q, t=None: seen.append(t) or real(q, t))
     assert raptor.plan_arrive_by(q, secs(8, 10), 30 * 60, floor=secs(8, 0)) == [] and seen == [secs(8, 0)]

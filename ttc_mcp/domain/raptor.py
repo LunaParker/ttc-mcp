@@ -368,8 +368,9 @@ def journey_key(q: Query, j: Journey) -> tuple:
 
 WINDOW_DEFAULT_MIN, WINDOW_MAX_MIN, WINDOW_STEP_MIN = 30, 60, 5
 WINDOW_LONG_STEP_MIN = 10  # a window past the default steps every 10 minutes: 13 runs at 5 broke the 250 ms p95 budget on the live store
-ARRIVE_BY_STEP_MIN = 15  # arrive-by's window after its nine-run search steps every 15 minutes, the spec's fallback: 3 runs instead of 7
+ARRIVE_BY_STEP_MIN = 15  # arrive-by's window after its search steps every 15 minutes, the spec's fallback: 3 runs instead of 7
 ARRIVE_BY_SEARCH_H = 4
+ARRIVE_BY_RESOLUTION_S = 300  # six halvings of the four-hour span instead of nine keep arrive-by in budget; a departure within 5 min of the latest
 
 
 def dedupe(q: Query, journeys: list[Journey], *, latest: bool = False) -> list[Journey]:
@@ -403,7 +404,7 @@ def _earliest(q: Query, t: int) -> int:
 
 
 def plan_arrive_by(q: Query, target: int, window_s: int, step_s: int = WINDOW_STEP_MIN * 60, floor: int | None = None) -> list[Journey]:
-    """The latest on-time departure by bisection to the minute, then a window stepping back from it; no run starts before floor."""
+    """The latest on-time departure by bisection to within ARRIVE_BY_RESOLUTION_S, then a window stepping back from it; no run starts before floor."""
     lo, hi = target - ARRIVE_BY_SEARCH_H * 3600, target
     if floor is not None:
         lo = max(lo, floor)
@@ -413,7 +414,7 @@ def plan_arrive_by(q: Query, target: int, window_s: int, step_s: int = WINDOW_ST
     q = _with_spent(q, lo - window_s if floor is None else max(lo - window_s, floor))
     if _earliest(q, lo) > target:
         return []
-    while hi - lo > 60:
+    while hi - lo > ARRIVE_BY_RESOLUTION_S:
         mid = (lo + hi) // 2
         if _earliest(q, mid) <= target:
             lo = mid

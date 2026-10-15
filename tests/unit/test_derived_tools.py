@@ -147,11 +147,12 @@ async def test_connections_answer_arrive_by_latest_departure_first(app_env):
 @pytest.mark.anyio
 async def test_connections_arrive_by_go_live_on_the_options_departure_not_the_target(app_env):
     async with Client(make_app([])) as c:
-        # 75 minutes away, but the latest train from Bloor-Yonge that arrives in time leaves at 08:51, inside the hour.
+        # 75 minutes away, but the train from Bloor-Yonge that the search settles on leaves at 08:48 (the last that makes it, 08:51, is within
+        # its five minutes), inside the hour.
         r = (await c.call_tool("connections", {"origin": "13863", "destination": "Finch", "arrive_by": "2026-10-06T09:15"})).data
     ride = rides(r["options"][0])[0]
-    assert ride["depart"] == "2026-10-06T08:51-04:00" and r["meta"]["cache"] == "live" and r["meta"]["source"].startswith("static timetable")
-    assert ride["next"][0]["scheduled_at"] >= "2026-10-06T08:51" and ride["next_note"] == "no real-time prediction in this direction from depart_at on; times are from the timetable"
+    assert ride["depart"] == "2026-10-06T08:48-04:00" and r["meta"]["cache"] == "live" and r["meta"]["source"].startswith("static timetable")
+    assert ride["next"][0]["scheduled_at"] >= "2026-10-06T08:48" and ride["next_note"] == "no real-time prediction in this direction from depart_at on; times are from the timetable"
 
 
 @pytest.mark.anyio
