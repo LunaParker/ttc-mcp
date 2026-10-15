@@ -243,6 +243,27 @@ def test_a_trip_an_entity_lists_twice_rides_the_variant_once(conn):
     assert [int(t) for g in extra[-1000] for t in g.trip_ids] == [100677020] and sum(g.n_trips for g in groups[6]) == sum(g.n_trips for g in tt.groups[6]) - 1
 
 
+def test_entities_that_share_a_pattern_each_take_their_own_trip(conn):
+    tt = raptor.Timetable.load(conn, "S1000538")
+    e = next(e for e in _entities() if e.detour_id == "9001")
+    trips = [str(t) for t in tt.groups[6][0].trip_ids[:6]]
+    # Each entity after the first finds its trip in a group an earlier one rebuilt, through the per-build maps.
+    groups, extra, *_, variants = overlay.detour_variants(conn, tt, [dataclasses.replace(e, id=f"e{i}", trip_ids=(t,)) for i, t in enumerate(trips)], dt.date(2026, 10, 6))
+    assert [[str(t) for g in extra[-1000 - i] for t in g.trip_ids] for i in range(6)] == [[t] for t in trips] and variants == {f"e{i}" for i in range(6)}
+    assert sum(g.n_trips for g in groups[6]) == sum(g.n_trips for g in tt.groups[6]) - 6 and not {int(t) for t in trips} & {t for g in groups[6] for t in g.trip_ids}
+
+
+def test_a_per_build_map_holds_its_group_so_the_groups_id_is_never_reused_under_it(conn):
+    import weakref
+    tt = raptor.Timetable.load(conn, "S1000538")
+    g = tt.groups[6][0]
+    copy, local = raptor.Group(6, g.service_id, list(g.cols), g.trip_ids), {}
+    loc, ref = overlay.Locator(conn, tt, [str(g.trip_ids[0])]), weakref.ref(copy)
+    assert loc.find(str(g.trip_ids[0]), [copy], local) == (0, 0) and not loc._maps
+    del copy
+    assert ref() is not None and len(local) == 1
+
+
 def test_a_group_the_detour_takes_every_trip_of_leaves_the_pattern(conn):
     tt = raptor.Timetable.load(conn, "S1000538")
     small = min(tt.groups[6], key=lambda g: g.n_trips)
@@ -334,7 +355,7 @@ def test_public_updates_map_surface_stop_ids_through_the_crosswalk(conn):
     assert [(u.stop_id, u.time) for u in recs[0].updates] == [("15637", 1000)] and overlay.public_updates(conn, None) == []
 
 
-def test_the_locator_answers_what_trip_slot_and_the_list_scan_answer(conn):
+def test_the_locator_answers_what_trip_slot_does_and_a_shared_one_what_a_fresh_one_does(conn):
     tt = raptor.Timetable.load(conn, "S1000538")
     ids = ["100677020", "22650020", "134929152", "999999999", "nope"]
     loc = overlay.Locator(conn, tt, [*ids, *(t for e in _entities() for t in e.trip_ids)])
@@ -385,3 +406,28 @@ def test_build_keeps_an_overlay_per_service_day_prepares_a_fetch_once_and_drops_
     assert list(g.trip_ids).index(134929451) in g.realtime and g.cols[0][list(g.trip_ids).index(134929451)] == 88402 + 180 and 54 not in tue.groups
     overlay.build(feed, tt, disr, None, None, subway, dt.date(2026, 10, 7))
     assert overlay.build(feed, tt, disr, None, None, subway, dt.date(2026, 10, 6)) is tue and overlay.build(feed, tt, disr, None, None, subway, dt.date(2026, 10, 5)) is not mon
+
+
+def test_public_updates_keep_a_canceled_trip_whose_updates_name_only_unmapped_stops(conn):
+    from tests.rtfeeds import make_trip_feed
+    from ttc_mcp.adapters.bustime_rt import parse_trips
+    feed = parse_trips(make_trip_feed(1, [{"trip": "107845020", "route": "504", "relationship": "CANCELED", "stops": [("nope", 11, None)]},
+                                          {"trip": "97799020", "route": "504", "stops": [("nope", 3, 2000)]}]), {}).value
+    assert [(r.trip_id, r.relationship, r.updates) for r in overlay.public_updates(conn, feed)] == [("107845020", "CANCELED", ())]
+
+
+def test_the_shared_locator_keeps_maps_only_for_the_timetables_own_groups(app_env, conn):
+    from tests.rtfeeds import make_trip_feed
+    from tests.unit.test_disruptions import build as disr_at
+    from ttc_mcp.adapters.bustime_rt import parse_trips
+    feed, day = app_env.feed_for(), dt.date(2026, 10, 6)
+    tt, origin = raptor.timetable_for(feed), int(schedule.wall_clock(day, 0).timestamp())
+    at_4569 = conn.execute("SELECT surface_stop_id FROM crosswalk WHERE stop_code='4569'").fetchone()[0]
+    surface = parse_trips(make_trip_feed(1, [{"trip": "100677020", "route": "504", "stops": [(at_4569, 2, origin + 39518 + 120)]}]), {}).value
+    detours = parse_detours((FIX / "detour.json").read_bytes(), {}).value
+    counts = []
+    for _ in range(3):
+        # A fresh Disruptions misses the day memo, as a depart_at call does; the variant then scans pattern 6's patched groups.
+        overlay.build(feed, tt, disr_at(conn, NOW_DAY), detours, surface, None, day)
+        counts.append(len(overlay._prepared(feed, tt, surface, None, detours)[2]._maps))
+    assert counts[0] == counts[1] == counts[2] and 6 in overlay.build(feed, tt, disr_at(conn, NOW_DAY), detours, surface, None, day).groups

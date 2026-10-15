@@ -59,8 +59,8 @@ CHUNK = 900  # trip ids per IN list, under SQLite's old 999-parameter limit
 
 
 class Locator:
-    """Where trips sit: each trip's pattern and service from batched reads of trips, then its (group, trip) index in a group list through
-    one trip id -> index map per group of that service, built once per group object (a re-split or a variant's removal makes new groups)."""
+    """Where trips sit: each trip's pattern and service from batched reads of trips, then its (group, trip) index through one trip id -> index
+    map per group of that service; the timetable's own groups keep theirs, any other group's go in the caller's per-build dict."""
 
     def __init__(self, conn, tt: Timetable, trip_ids: Iterable[str]):
         self.tt, self.where = tt, {}
@@ -69,19 +69,21 @@ class Locator:
             part = ids[i:i + CHUNK]
             for tid, pid, sid in conn.execute(f"SELECT trip_id, pattern_id, service_id FROM trips WHERE trip_id IN ({','.join('?' * len(part))})", part):
                 self.where[tid] = (pid, sid)
+        self._base = {id(g) for gs in tt.groups.values() for g in gs}  # tt holds these groups, so their ids stay theirs
         self._maps: dict[int, tuple[Group, dict[int, int]]] = {}
 
-    def find(self, trip_id: str, groups: list) -> tuple[int, int] | None:
-        """(group index, trip index) of a trip id given at construction in this group list."""
+    def find(self, trip_id: str, groups: list, local: dict | None = None) -> tuple[int, int] | None:
+        """(group index, trip index) of a trip id given at construction in this group list; local holds the maps of groups the timetable lacks."""
         w = self.where.get(trip_id)
         if w is None:
             return None
         tid, sid = int(trip_id), w[1]
         for gi, g in enumerate(groups):
             if g.service_id == sid:
-                hit = self._maps.get(id(g))
+                maps = self._maps if id(g) in self._base else local if local is not None else {}
+                hit = maps.get(id(g))
                 if hit is None:
-                    hit = self._maps[id(g)] = (g, dict(zip(g.trip_ids, range(len(g.trip_ids)), strict=True)))  # the group is held, so its id stays its own
+                    hit = maps[id(g)] = (g, dict(zip(g.trip_ids, range(len(g.trip_ids)), strict=True)))  # held, so a freed group's id is never read
                 if (ti := hit[1].get(tid)) is not None:
                     return gi, ti
         return None
@@ -205,24 +207,21 @@ def _without(g: Group, drop: set[int]) -> Group:
 
 def detour_variants(conn, tt: Timetable, entities: Iterable[DetourEntity], day: dt.date, base: dict[int, list[Group]] | None = None, *,
                     locate: Locator | None = None):
-    """Per entity active on `day` whose trips resolve: a pseudo pattern over the kept positions holding exactly its trips, the propagated
-    delay added beyond each span unless a patch predicted the trip, its masks and realtime mark kept; those trips leave their groups (spec 6.10).
-    The sixth item is the ids of the entities whose variant holds a trip. locate (built with the entities' trip ids) replaces the per-trip reads."""
+    """Per entity active on `day` whose trips resolve, a variant pattern over its kept positions holding exactly its trips, which leave their groups
+    (spec 6.10); returns the overlay's five maps and the ids of the entities whose variant holds a trip. locate must know the entities' trip ids."""
+    ents = list(entities)
+    locate = locate or Locator(conn, tt, [t for e in ents for t in e.trip_ids])
     groups: dict[int, list[Group]] = dict(base or {})
-    extra, extra_stops, extra_meta, extra_at, variants = {}, {}, {}, {}, set()
+    extra, extra_stops, extra_meta, extra_at, variants, local = {}, {}, {}, {}, set(), {}
     key = day.strftime("%Y%m%d")
-    find = locate.slot if locate else (lambda t: tt.trip_slot(conn, t))
-    for n, e in enumerate(x for x in entities if key in x.service_dates):
-        slots = [(t, s) for t in dict.fromkeys(e.trip_ids) if (s := find(t))]
+    for n, e in enumerate(x for x in ents if key in x.service_dates):
+        slots = [(t, s) for t in dict.fromkeys(e.trip_ids) if (s := locate.slot(t))]
         if not slots or len({s[0] for _, s in slots}) != 1:
             continue
         pid = slots[0][1][0]
         current = groups.get(pid, tt.groups[pid])
         # A real-time patch may have re-split this pattern's groups, so find each trip in the list in force, not by trip_slot's index.
-        if locate:
-            located = [hit for t, _ in slots if (hit := locate.find(t, current))]
-        else:
-            located = [(i, list(g.trip_ids).index(int(t))) for t, _ in slots for i, g in enumerate(current) if int(t) in g.trip_ids]
+        located = [hit for t, _ in slots if (hit := locate.find(t, current, local))]
         seqs, stops = tt.pattern_seqs[pid], tt.pattern_stops[pid]
         skipped, delay_after = set(), {}
         for start, end, delay in e.spans:
@@ -329,22 +328,22 @@ def reset() -> None:
 
 
 def public_updates(conn, trips: TripFeed | None) -> list[TripUpdateRec]:
-    """Surface trip updates with their stop ids read as public numbers through the crosswalk; updates at unmapped stops are dropped,
-    and a record left with none goes unless it had none to begin with (a CANCELED trip)."""
+    """Surface trip updates with their stop ids read as public numbers through the crosswalk; updates at unmapped stops are dropped, and a
+    record left with none goes unless it cancels its trip."""
     if trips is None:
         return []
     to_public = dict(conn.execute("SELECT surface_stop_id, stop_code FROM crosswalk"))
     out = []
     for rec in trips.trips.values():
         ups = tuple(StopUpdate(to_public[u.stop_id], u.seq, u.time, u.relationship) for u in rec.updates if u.stop_id in to_public)
-        if ups or not rec.updates:
+        if ups or rec.relationship == "CANCELED":
             out.append(TripUpdateRec(rec.trip_id, rec.route, rec.vehicle_id, rec.relationship, ups))
     return out
 
 
 def _prepared(feed, tt: Timetable, trips: TripFeed | None, subway: TripFeed | None, detour_feed: DetourFeed | None):
-    """What a fetch gives every service day alike: the crosswalked surface records, the subway records and the locator over all their trips and
-    the detour feed's; one per feed, holding its inputs so their ids stay theirs. The locator's maps are per group object, so days share the base ones."""
+    """What a fetch gives every service day alike: the crosswalked surface records, the subway records and the locator over their trips and the
+    detour feed's; one per feed, holding its inputs so their ids stay theirs."""
     held = (tt, trips, subway, detour_feed)
     key = tuple(map(id, held))
     hit = _prep.get(feed.version)

@@ -22,7 +22,7 @@ from ttc_mcp.tools.realtime_tools import _aguard
 from ttc_mcp.tools.static_tools import _guard, _with_advisories
 
 SOURCE = "static timetable + bustime getStopPredictions.jsp + ntas"
-SOURCE_LIVE = "static timetable + bustime trips + gtfsrt trips/subway + bustime getStopPredictions.jsp + ntas"
+SOURCE_LIVE = "static timetable + bustime trips + gtfsrt trips/subway + bustime getStopPredictions.jsp + ntas"  # both trip feeds fetched
 LIVE_WINDOW = dt.timedelta(minutes=60)
 WALK_MAX_M, LIMIT_MAX = 2000, 10
 CLOSED = "every journey needs a closed section with no shuttle service"
@@ -88,9 +88,8 @@ def _slices(store, feed, day: dt.date, make_overlay=None) -> list[raptor.Slice]:
 
 def _plan(feed, store, disr, o, d, when: dt.datetime, max_transfers: int, window_min: int, arrive_by: bool, usable,
           limit: int | None = None, *, walk_m: int = planner.WALK_M, detour_feed=None, trips=None, subway=None) -> tuple[list[dict], str | None]:
-    """Runs in a worker thread: it builds the slices' overlays and the query, runs the engine, and writes the first limit options through that
-    thread's own connections. A stop skipped by a detour with no variant pattern keeps decision h's mask (an endpoint stop gives way to the served
-    stops around it), applied here once the overlays say which entities run on variants; usable (or None) is the caller's own further predicate."""
+    """In a worker thread: the slices' overlays, decision h's mask for stops a detour with no variant skips (an endpoint gives way to the served
+    stops around it), the engine, then the first limit options through this thread's connections; usable (or None) is a further predicate."""
     conn, day, stamp = feed.conn, when.date(), when.isoformat(timespec="minutes")
     t = int((when - schedule.wall_clock(day, 0)).total_seconds())
     # Arrive-by never asks the rider to have left already: now, on the query day's clock, floors the search.
@@ -233,6 +232,8 @@ def register(mcp: FastMCP) -> None:
                 for leg in opt["legs"]:
                     leg.pop("board_pos", None), leg.pop("alight_pos", None), leg.pop("slice", None), leg.pop("detour_id", None)
             out = {**head, "options": opts, **({"note": note} if note else {})}
-            # The source names the trip feeds only when they were fetched (spec 6.10's contract).
-            return out, feed_hits + [h for _, hits, _ in nexts for h in hits], SOURCE_LIVE if feed_hits else SOURCE if any(lives) else "", snap
+            # The source names the trip feeds that answered (spec 6.10's contract); both make SOURCE_LIVE.
+            fetched = [h.source.name for h in feed_hits]
+            source = SOURCE.replace("static timetable", " + ".join(["static timetable", *fetched]), 1) if fetched else SOURCE if any(lives) else ""
+            return out, feed_hits + [h for _, hits, _ in nexts for h in hits], source, snap
         return await _aguard(run)

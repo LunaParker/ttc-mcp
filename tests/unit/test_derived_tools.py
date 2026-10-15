@@ -28,6 +28,7 @@ def no_variants(monkeypatch):
     from ttc_mcp import overlay
     real = overlay.detour_variants
     monkeypatch.setattr(overlay, "detour_variants", lambda conn, tt, entities, day, **kw: real(conn, tt, [], day, **kw))
+    overlay.reset()
 
 
 @pytest.mark.anyio
@@ -439,3 +440,23 @@ async def test_connections_after_midnight_apply_the_prediction_of_yesterdays_lat
         r = (await c.call_tool("connections", {"origin": "14111", "destination": "13792", "max_transfers": 0, "window_min": 0})).data
     ride = rides(r["options"][0])[0]
     assert (ride["trip_id"], ride["depart"], ride["arrive"], ride["basis"]) == ("134929451", "2026-10-07T00:36-04:00", "2026-10-07T00:43-04:00", "realtime")
+
+
+@pytest.mark.anyio
+async def test_connections_board_a_variant_backed_origin_stop_on_the_next_undetoured_trip(app_env):
+    async with Client(make_app([])) as c:
+        # 9001 has a variant, so 15039 keeps its place: the detoured 100677020 would pass at 11:00, the next undetoured trip leaves at 11:10.
+        r = (await c.call_tool("connections", {"origin": "15039", "destination": "4573", "depart_at": "2026-10-06T10:55", "window_min": 0, "max_transfers": 0})).data
+    ride = r["options"][0]["legs"][0]
+    assert "note" not in r and r["from"]["stop"] == "15039" and ride["mode"] == "ride" and ride["board"]["number"] == "15039"
+    assert (ride["trip_id"], ride["depart"], ride["arrive"]) == ("97799020", "2026-10-06T11:10-04:00", "2026-10-06T11:15-04:00")
+
+
+@pytest.mark.anyio
+async def test_connections_name_only_the_trip_feeds_that_answered(app_env):
+    from ttc_mcp.tools.derived_tools import SOURCE_LIVE
+    async with Client(make_app([])) as c:
+        both = (await c.call_tool("connections", {"origin": "13814", "destination": "Union"})).data
+    async with Client(make_app([], fail=("gtfsrt.ttc.ca",))) as c:
+        r = (await c.call_tool("connections", {"origin": "13814", "destination": "Union"})).data
+    assert both["meta"]["source"] == SOURCE_LIVE and r["options"] and r["meta"]["source"] == "static timetable + bustime trips + bustime getStopPredictions.jsp + ntas"
