@@ -68,15 +68,16 @@ def element(conn, a: Alert, now: dt.datetime) -> dict:
             "url": a.url, "unit_code": a.unit_code, "rsz": a.rsz}
 
 
-def detour_elements(groups: list[dict]) -> list[dict]:
-    out = []
+def detour_elements(groups: list[dict], day: dt.date) -> list[dict]:
+    """active_now is the group's on day: an entity of it in service (the resolved groups' active_today is the resolving day's)."""
+    out, key = [], day.strftime("%Y%m%d")
     for g in groups:
-        dates = g["service_dates"]
+        dates, active = g["service_dates"], any(key in d["service_dates"] for d in g["directions"])
         for d in g["directions"]:
             out.append({"type": "detour", "source": "detour feed", "detour_id": g["detour_id"], "entity_id": d["entity_id"],
                         "route": g["route"], "routes": [g["route"]], "direction_id": d["direction_id"], "headsign": d["headsign"],
                         "pattern": d["pattern"], "stations": [], "station_names": [], "stops": [s["number"] for s in d["skipped"]],
-                        "leaves_after": d["leaves_after"], "rejoins_at": d["rejoins_at"], "active_now": g["active_today"],
+                        "leaves_after": d["leaves_after"], "rejoins_at": d["rejoins_at"], "active_now": active,
                         "period": [dates[0] if dates else None, dates[-1] if dates else None],
                         "text": g["reason"]["title"] if g["reason"] else None, "url": g["reason"]["url"] if g["reason"] else None})
     return out
@@ -159,7 +160,7 @@ class Disruptions:
         """conn is a connection or a zero-argument getter of one; pass a getter when the result is read from other threads."""
         get = _getter(conn)
         c = get()
-        els = [element(c, a, now) for a in (alerts.alerts if alerts else [])] + detour_elements(groups)
+        els = [element(c, a, now) for a in (alerts.alerts if alerts else [])] + detour_elements(groups, now.date())
         return cls(get, els, platform_closures(rt, now.timestamp()))
 
     def station_closed_now(self, sid: str, line: str | None = None) -> dict | None:

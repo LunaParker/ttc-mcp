@@ -332,6 +332,15 @@ async def test_connections_replace_a_detour_skipped_stop_with_the_served_stops_a
 
 
 @pytest.mark.anyio
+async def test_connections_on_a_day_the_detour_does_not_run_board_its_stops(app_env):
+    """Asked on the 6th for the 9th, two days after detour 9001's last (on the 8th the 7th's slice models it as a variant): 14994 is neither
+    masked nor substituted."""
+    async with Client(make_app([])) as c:
+        r = (await c.call_tool("connections", {"origin": "14994", "destination": "4582", "max_transfers": 0, "depart_at": "2026-10-09T08:00"})).data
+    assert "note" not in r and rides(r["options"][0])[0]["board"]["number"] == "14994"
+
+
+@pytest.mark.anyio
 async def test_connections_reject_what_they_cannot_plan(app_env):
     async with Client(make_app([])) as c:
         r = (await c.call_tool("connections", {"origin": "15461", "destination": "nowhere"})).data

@@ -193,6 +193,13 @@ def test_a_one_station_closure_suspends_both_platforms_as_the_planner_bypasses_i
     assert disr.station_service("43275", ["1"])[0]["service"] == "suspended" and disr.route_stop_status(stop_row(conn, "13792")) == "open"
 
 
+def test_a_detour_skips_its_stops_only_on_its_own_service_dates(conn):
+    """Detour 9001 runs 2026-10-05 to 07; groups resolved on the 6th, elements built for the 8th: 14994 is served that day."""
+    assert build(conn, NOW_DAY).stop_skipped("14994")["detour_id"] == "9001"
+    later = build(conn, dt.datetime(2026, 10, 8, 8, 0, tzinfo=TZ))
+    assert later.stop_skipped("14994") is None and not next(e for e in later.elements if e.get("detour_id") == "9001")["active_now"]
+
+
 def test_a_stop_skipped_only_by_an_entity_on_a_variant_pattern_is_not_skipped(conn):
     d = build(conn, NOW_DAY)
     assert d.stop_skipped("14994")["detour_id"] == "9001" and d.stop_skipped("14994", {"detour_0_9001:0_0_6_504_Distillery"}) is None
