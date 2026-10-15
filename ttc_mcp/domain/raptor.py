@@ -8,7 +8,7 @@ import threading
 from array import array
 from bisect import bisect_left
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import ClassVar
 
@@ -165,6 +165,12 @@ class Slice:
     def meta_of(self, pattern: int) -> dict:
         return self.tt.pattern_meta[pattern]
 
+    def spent(self, t: int) -> frozenset[int]:
+        """The timetable's patterns with no group on this slice's services departing at or after t on the query day's clock; a pattern the
+        timetable does not hold (an overlay's pseudo pattern) is never spent."""
+        sids, off = self.service_ids, self.offset
+        return frozenset(pid for pid in self.tt.groups if not any(g.service_id in sids and g.last + off >= t for g in self.groups_for(pid)))
+
 
 @dataclass(frozen=True)
 class Leg:
@@ -216,6 +222,10 @@ class Query:
     max_transfers: int = MAX_TRANSFERS
     usable: Callable[[str], bool] = field(default=lambda s: True)
     closed: Callable[[int, int], Closed] = field(default=lambda si, p: Closed.NONE)
+    # Per slice, Slice.spent at the earliest instant any run will use: the drivers fill it and plan never queues those patterns.
+    spent: list[frozenset[int]] | None = None
+    # A stop's queue candidates ((slice, pattern), position) under spent, shared by the runs of one driver call (its own copy of the query).
+    stops_at: dict[str, list[tuple[tuple[int, int], int]]] | None = None
 
 
 def _scan(q: Query, k: int, si: int, pid: int, pos0: int, t0: int, prev: dict, cur: dict, best: dict, parent: dict, marked: set, target: list[int]) -> None:
@@ -266,34 +276,45 @@ def plan(q: Query, t0: int | None = None) -> list[Journey]:
     rode: list[dict[str, int]] = [{} for _ in range(rounds + 1)]
     rparent: list[dict[str, tuple]] = [{} for _ in range(rounds + 1)]
     marked: set[str] = set()
+    usable, dest, best_get = q.usable, q.dest, best.get
     for s, (w, m) in q.origin.items():
-        if q.usable(s):
+        if usable(s):
             tau[0][s] = best[s] = t0 + w
             parent[0][s] = ("origin", w, m)
             marked.add(s)
-    target = [min((t0 + q.origin[s][0] + q.dest[s][0] for s in marked if s in q.dest), default=INF)]
-    foot = q.slices[0].tt.foot
+    target = [min((t0 + q.origin[s][0] + dest[s][0] for s in marked if s in dest), default=INF)]
+    foot_get = q.slices[0].tt.foot.get
+    spent = q.spent or [frozenset()] * len(q.slices)
+    ats = [(si, sl.patterns_at, spent[si]) for si, sl in enumerate(q.slices)]
+    cands = q.stops_at if q.stops_at is not None else {}
+    cands_get = cands.get
     for k in range(1, rounds + 1):
         queue: dict[tuple[int, int], int] = {}
+        queue_get = queue.get
         for s in sorted(marked):
-            for si, sl in enumerate(q.slices):
-                for pid, pos in sl.patterns_at(s):
-                    if pos < queue.get((si, pid), INF):
-                        queue[(si, pid)] = pos
+            c = cands_get(s)
+            if c is None:
+                c = cands[s] = [((si, pid), pos) for si, at, dead in ats for pid, pos in at(s) if pid not in dead]
+            for key, pos in c:
+                if pos < queue_get(key, INF):
+                    queue[key] = pos
         marked = set()
+        prev, cur, pk = tau[k - 1], tau[k], parent[k]
         for (si, pid), pos0 in queue.items():
-            _scan(q, k, si, pid, pos0, t0, tau[k - 1], tau[k], best, parent[k], marked, target)
+            _scan(q, k, si, pid, pos0, t0, prev, cur, best, pk, marked, target)
         # Footpaths are one hop from this round's ride arrivals, relaxed in stop order so the answer never depends on the hash seed.
-        rode[k], rparent[k] = dict(tau[k]), dict(parent[k])
-        for s in sorted(rode[k]):
-            for s2, secs, m, via in foot.get(s, ()):
-                a = rode[k][s] + secs
-                if q.usable(s2) and a < best.get(s2, INF) and a < target[0]:
-                    tau[k][s2] = best[s2] = a
-                    parent[k][s2] = ("walk", s, secs, m, via)
+        r = rode[k] = dict(cur)
+        rparent[k] = dict(pk)
+        for s in sorted(r):
+            rs = r[s]
+            for s2, secs, m, via in foot_get(s, ()):
+                a = rs + secs
+                if usable(s2) and a < best_get(s2, INF) and a < target[0]:
+                    cur[s2] = best[s2] = a
+                    pk[s2] = ("walk", s, secs, m, via)
                     marked.add(s2)
-                    if s2 in q.dest:
-                        target[0] = min(target[0], a + q.dest[s2][0])
+                    if s2 in dest:
+                        target[0] = min(target[0], a + dest[s2][0])
         if not marked:
             break
     out, bound = [], INF
@@ -346,6 +367,8 @@ def journey_key(q: Query, j: Journey) -> tuple:
 
 
 WINDOW_DEFAULT_MIN, WINDOW_MAX_MIN, WINDOW_STEP_MIN = 30, 60, 5
+WINDOW_LONG_STEP_MIN = 10  # a window past the default steps every 10 minutes: 13 runs at 5 broke the 250 ms p95 budget on the live store
+ARRIVE_BY_STEP_MIN = 15  # arrive-by's window after its nine-run search steps every 15 minutes, the spec's fallback: 3 runs instead of 7
 ARRIVE_BY_SEARCH_H = 4
 
 
@@ -363,7 +386,13 @@ def rank(journeys: list[Journey], *, latest: bool = False) -> list[Journey]:
     return sorted(journeys, key=lambda j: (j.estimate, -j.depart if latest else j.arrive, j.transfers, j.walk_m))
 
 
+def _with_spent(q: Query, t_first: int) -> Query:
+    """The query with each slice's spent patterns at t_first, for runs that never start before it."""
+    return replace(q, spent=[sl.spent(t_first) for sl in q.slices], stops_at={})
+
+
 def plan_window(q: Query, window_s: int, step_s: int = WINDOW_STEP_MIN * 60) -> list[Journey]:
+    q = _with_spent(q, q.t0)
     found = [j for t in range(q.t0, q.t0 + window_s + 1, step_s) for j in plan(q, t)]
     return rank(dedupe(q, found))
 
@@ -378,7 +407,11 @@ def plan_arrive_by(q: Query, target: int, window_s: int, step_s: int = WINDOW_ST
     lo, hi = target - ARRIVE_BY_SEARCH_H * 3600, target
     if floor is not None:
         lo = max(lo, floor)
-    if lo >= target or _earliest(q, lo) > target:
+    if lo >= target:
+        return []
+    # The search never runs before lo and the window never steps back further than window_s from it, nor below floor.
+    q = _with_spent(q, lo - window_s if floor is None else max(lo - window_s, floor))
+    if _earliest(q, lo) > target:
         return []
     while hi - lo > 60:
         mid = (lo + hi) // 2

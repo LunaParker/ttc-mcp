@@ -211,6 +211,21 @@ async def test_connections_window_zero_and_max_transfers_zero_narrow_the_answer(
 
 
 @pytest.mark.anyio
+async def test_connections_step_a_long_window_every_10_minutes_and_arrive_by_every_15(app_env, monkeypatch):
+    runs, real = [], raptor.plan
+    monkeypatch.setattr(raptor, "plan", lambda q, t=None: runs.append(t) or real(q, t))
+    steps, real_by = [], raptor.plan_arrive_by
+    monkeypatch.setattr(raptor, "plan_arrive_by", lambda *a, **k: steps.append(k.get("step_s")) or real_by(*a, **k))
+    async with Client(make_app([])) as c:
+        for window, gap in ((60, 600), (30, 300)):
+            runs.clear()
+            r = (await c.call_tool("connections", {"origin": CHERRY_FRONT, "destination": "Union", "depart_at": "2026-10-06T08:00", "window_min": window})).data
+            assert r["options"] and len(runs) == 7 and {b - a for a, b in zip(runs, runs[1:], strict=False)} == {gap}
+        assert (await c.call_tool("connections", {"origin": CHERRY_FRONT, "destination": "Union", "arrive_by": "2026-10-06T09:00"})).data["options"]
+    assert set(steps) == {900}
+
+
+@pytest.mark.anyio
 async def test_connections_explain_an_empty_answer(app_env, monkeypatch):
     async with Client(make_app([])) as c:
         # The 504 at 15461 and Line 1 at Finch both run today, but no single route joins them.

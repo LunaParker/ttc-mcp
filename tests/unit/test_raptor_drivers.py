@@ -73,3 +73,16 @@ def test_arrive_by_floor_never_runs_a_search_or_a_departure_before_it(conn, monk
     seen.clear()
     js = raptor.plan_arrive_by(query(conn, tt, CHERRY_FRONT, "Union", NOW), secs(9, 0), 30 * 60, floor=secs(8, 35))
     assert min(seen) >= secs(8, 35) and [(j.depart, j.arrive) for j in js] == [(secs(8, 38, 36), secs(8, 56, 30))]
+
+
+def test_a_window_never_scans_a_slice_whose_patterns_are_all_spent(conn, monkeypatch):
+    tt = raptor.Timetable.load(conn, "S1000538")
+    q = query(conn, tt, "Finch", "Union", NOW)
+    assert q.slices[1].spent(q.t0) == set(tt.groups) and q.slices[0].spent(q.t0) < set(tt.groups)
+    scans, real = [], raptor._scan
+    monkeypatch.setattr(raptor, "_scan", lambda q_, k, si, *a: scans.append(si) or real(q_, k, si, *a))
+    js = raptor.plan_window(q, 10 * 60)
+    # At 08:00 every trip of yesterday's slice is over, so no run of the window queues one of its patterns.
+    assert js and scans and set(scans) == {0}
+    scans.clear()
+    assert raptor.plan(q) and 1 in scans

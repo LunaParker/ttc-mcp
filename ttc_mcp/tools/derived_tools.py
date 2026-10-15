@@ -85,7 +85,11 @@ def _plan(feed, store, disr, o, d, when: dt.datetime, max_transfers: int, window
     slices = _slices(store, feed, day)
     closers = [planner.closed_for(sl.conn, disr, sl.tt) for sl in slices]
     q = raptor.Query(ends[0], ends[1], t, slices, max_transfers=max_transfers, usable=usable, closed=lambda si, pid: closers[si](pid))
-    run = (lambda query: raptor.plan_arrive_by(query, t, window_min * 60, floor=floor)) if arrive_by else (lambda query: raptor.plan_window(query, window_min * 60))
+    def run(query: raptor.Query) -> list[raptor.Journey]:
+        if arrive_by:
+            return raptor.plan_arrive_by(query, t, window_min * 60, step_s=raptor.ARRIVE_BY_STEP_MIN * 60, floor=floor)
+        long = window_min > raptor.WINDOW_DEFAULT_MIN
+        return raptor.plan_window(query, window_min * 60, (raptor.WINDOW_LONG_STEP_MIN if long else raptor.WINDOW_STEP_MIN) * 60)
     journeys = run(q)[:limit]
     note = None
     if not journeys:
@@ -153,9 +157,10 @@ def register(mcp: FastMCP) -> None:
         """Timetable-exact trips between two places on the TTC: every ride is a real trip with its departure and arrival, transfers are
         timed (walking or station pathways plus a 2-minute change buffer), and the options are the Pareto set over arrival time and
         transfers, ranked by arrival. origin and destination are a stop number, a station id or alias, or {"lat", "lon"} from a geocoder.
-        depart_at (ISO, Toronto when it has no offset; default now) with window_min (0 to 60, default 30) returns the journeys found at
-        each five minutes of the window, one per route sequence; arrive_by instead returns the latest departures that arrive on time,
-        latest first; give one or the other. max_transfers is 0 to 3, walk_m (metres to and from the stops) 1 to 2000, limit 1 to 10.
+        depart_at (ISO, Toronto when it has no offset; default now) with window_min (0 to 60, default 30) returns the journeys found
+        every five minutes of the window (every ten past 30 minutes), one per route sequence; arrive_by instead returns the latest
+        departures that arrive on time, latest first; give one or the other. max_transfers is 0 to 3, walk_m (metres to and from the
+        stops) 1 to 2000, limit 1 to 10.
         Each ride carries basis realtime (its trip has a trip update, applied within an hour of now), schedule, or estimate; the first
         ride lists the next departures in its direction. A closure masks the closed section; when its shuttle runs the shuttle is an
         estimated leg (assumed headway and speed, stated in its note) and the option is flagged estimate: true and ranked last. A

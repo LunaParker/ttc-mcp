@@ -26,6 +26,7 @@ from validate_connections import PAIRS  # noqa: E402
 
 TIMES = ((8, 0), (17, 30), (23, 30), (1, 0))
 MODES = {"instant": (0, False), "window30": (30, False), "window60": (60, False), "arrive_by": (30, True)}
+LIMIT = 4  # the tool's default: only the options it returns are written and annotated
 
 
 def rss_mb() -> float:
@@ -60,7 +61,7 @@ def main() -> int:
             when = dt.datetime.combine(day + dt.timedelta(days=1 if h < 4 else 0), dt.time(h, m), tzinfo=TZ)
             for o, d in ends:
                 t = time.perf_counter()
-                opts, _ = derived_tools._plan(feed, store, disr, o, d, when + dt.timedelta(hours=1) if arrive else when, 3, window, arrive, lambda s: True)
+                opts, _ = derived_tools._plan(feed, store, disr, o, d, when + dt.timedelta(hours=1) if arrive else when, 3, window, arrive, lambda s: True, limit=LIMIT)
                 lat.append((time.perf_counter() - t) * 1000)
                 found += bool(opts)
         lat.sort()
