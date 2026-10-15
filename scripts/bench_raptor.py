@@ -3,8 +3,11 @@
 
 Run: TTC_MCP_SKIP_REFRESH=1 uv run python scripts/bench_raptor.py [--live] [--budget-ms 250]
 Needs a built store (TTC_MCP_CACHE). Twenty pairs at four times of day in four modes: an instant (window 0), 30- and 60-minute windows,
-and arrive-by an hour later. Exit 1 when any mode's p95 exceeds the budget. --live adds the advisory snapshot and the trip-update
-overlay the tool would use right now (phase 6c), which reaches the TTC's hosts.
+and arrive-by an hour later, on tomorrow's timetable (01:00 the day after), so no target is in the past whatever the clock says.
+Exit 1 when any mode's p95 exceeds the budget, or when the grid did not plan: an arrive-by target not after now, a grid day no feed
+covers or with no service, or an empty answer without one of the planner's notes. An empty answer the search ran to the end for (no
+service at a pair's stops, no journey) is a timetable fact: it is listed and counted. --live adds the advisory snapshot and the
+trip-update overlay the tool would use right now (phase 6c), which reaches the TTC's hosts.
 """
 import argparse
 import asyncio
@@ -13,11 +16,13 @@ import resource
 import statistics
 import sys
 import time
+from collections import Counter
 
 from ttc_mcp import runtime
 from ttc_mcp.adapters.ttc_alerts import AlertList
 from ttc_mcp.domain import planner
 from ttc_mcp.domain.disruptions import Disruptions
+from ttc_mcp.static import schedule
 from ttc_mcp.static.schedule import TZ
 from ttc_mcp.tools import derived_tools
 
@@ -27,6 +32,7 @@ from validate_connections import PAIRS  # noqa: E402
 TIMES = ((8, 0), (17, 30), (23, 30), (1, 0))
 MODES = {"instant": (0, False), "window30": (30, False), "window60": (60, False), "arrive_by": (30, True)}
 LIMIT = 4  # the tool's default: only the options it returns are written and annotated
+KINDS = ("arrive_by", "no service", "no journey", derived_tools.CLOSED)  # how _plan's empty-answer notes begin
 
 
 def rss_mb() -> float:
@@ -47,29 +53,46 @@ def main() -> int:
     a = p.parse_args()
     feed, store = runtime.feed_for(), runtime.get_store()
     conn = feed.conn
-    day = runtime.now().date()
+    day = runtime.now().date() + dt.timedelta(days=1)
     disr = Disruptions.build(conn, AlertList(None, None, []), None, [], runtime.now())
     if a.live:
         disr, _ = asyncio.run(snapshot_and_overlay(feed))
-    ends = [(planner.resolve_endpoint(conn, o), planner.resolve_endpoint(conn, d)) for o, d in PAIRS]
-    ends = [(o, d) for o, d in ends if o and d and o.stops and d.stops]
+    ends = [(planner.resolve_endpoint(conn, o), planner.resolve_endpoint(conn, d), f"{o} -> {d}") for o, d in PAIRS]
+    ends = [(o, d, label) for o, d, label in ends if o and d and o.stops and d.stops]
+    problems = [f"no feed covers {d}, or it runs no service that day" for d in (day, day + dt.timedelta(days=1))
+                if not (f := store.for_date(d)) or not schedule.service_ids_on(f.conn, d)]
     r0 = rss_mb()
-    worst = 0.0
+    worst, empty = 0.0, {}
     for mode, (window, arrive) in MODES.items():
-        lat, found = [], 0
+        lat, found, why = [], 0, Counter()
         for h, m in TIMES:
             when = dt.datetime.combine(day + dt.timedelta(days=1 if h < 4 else 0), dt.time(h, m), tzinfo=TZ)
-            for o, d in ends:
+            for o, d, label in ends:
                 t = time.perf_counter()
-                opts, _ = derived_tools._plan(feed, store, disr, o, d, when + dt.timedelta(hours=1) if arrive else when, 3, window, arrive, lambda s: True, limit=LIMIT)
+                opts, note = derived_tools._plan(feed, store, disr, o, d, when + dt.timedelta(hours=1) if arrive else when, 3, window, arrive,
+                                                 lambda s: True, limit=LIMIT)
                 lat.append((time.perf_counter() - t) * 1000)
                 found += bool(opts)
+                if not opts:
+                    kind = next((k for k in KINDS if (note or "").startswith(k)), "other")
+                    why[kind] += 1
+                    if kind not in ("arrive_by", "other"):
+                        empty.setdefault(label, Counter())[kind] += 1
         lat.sort()
         p95 = lat[max(0, int(len(lat) * 0.95) - 1)]
         worst = max(worst, p95)
         print(f"{mode:10s} found {found}/{len(lat)}  p50 {statistics.median(lat):6.1f} ms  p95 {p95:6.1f} ms  max {lat[-1]:6.1f} ms")
-    print(f"RSS {r0:.0f} -> {rss_mb():.0f} MB; budget {a.budget_ms:.0f} ms p95: {'PASS' if worst <= a.budget_ms else 'FAIL'}")
-    return 0 if worst <= a.budget_ms else 1
+        if why["arrive_by"]:
+            problems.append(f"{mode}: {why['arrive_by']} arrive-by targets were not after now, so they never planned")
+        if why["other"]:
+            problems.append(f"{mode}: {why['other']} answers came back empty without a planner note")
+    verdict = "PASS" if worst <= a.budget_ms else "FAIL"
+    print(f"RSS {r0:.0f} -> {rss_mb():.0f} MB; budget {a.budget_ms:.0f} ms p95: {verdict}; grid {day} and the night after")
+    for label, kinds in empty.items():
+        print(f"empty after a full search (counted, not a failure): {label}: {dict(kinds)}")
+    for line in problems:
+        print(f"INVALID: {line}")
+    return 0 if verdict == "PASS" and not problems else 1
 
 
 if __name__ == "__main__":

@@ -162,7 +162,9 @@ def closed_for(conn, disr: Disruptions, tt: raptor.Timetable):
     meta = tt.pattern_meta
 
     def closable(pid: int) -> bool:
-        return bool(disr.platform_closed or closing and closing & {meta[p]["route"] for s in tt.pattern_stops[pid] for p, _ in tt.stop_patterns.get(s, ()) if meta[p]["mode"] in RAIL})
+        if disr.platform_closed:
+            return True
+        return bool(closing and closing & {meta[p]["route"] for s in tt.pattern_stops[pid] for p, _ in tt.stop_patterns.get(s, ()) if meta[p]["mode"] in RAIL})
 
     def closed(pid: int) -> raptor.Closed:
         if pid not in memo:

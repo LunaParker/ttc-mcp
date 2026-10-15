@@ -370,7 +370,7 @@ WINDOW_DEFAULT_MIN, WINDOW_MAX_MIN, WINDOW_STEP_MIN = 30, 60, 5
 WINDOW_LONG_STEP_MIN = 10  # a window past the default steps every 10 minutes: 13 runs at 5 broke the 250 ms p95 budget on the live store
 ARRIVE_BY_STEP_MIN = 15  # arrive-by's window after its search steps every 15 minutes, the spec's fallback: 3 runs instead of 7
 ARRIVE_BY_SEARCH_H = 4
-ARRIVE_BY_RESOLUTION_S = 300  # six halvings of the four-hour span instead of nine keep arrive-by in budget; a departure within 5 min of the latest
+ARRIVE_BY_RESOLUTION_S = 300  # six halvings of the four-hour span instead of eight keep arrive-by in budget; a departure within 5 min of the latest
 
 
 def dedupe(q: Query, journeys: list[Journey], *, latest: bool = False) -> list[Journey]:

@@ -158,9 +158,9 @@ def register(mcp: FastMCP) -> None:
         timed (walking or station pathways plus a 2-minute change buffer), and the options are the Pareto set over arrival time and
         transfers, ranked by arrival. origin and destination are a stop number, a station id or alias, or {"lat", "lon"} from a geocoder.
         depart_at (ISO, Toronto when it has no offset; default now) with window_min (0 to 60, default 30) returns the journeys found
-        every five minutes of the window (every ten past 30 minutes), one per route sequence; arrive_by instead returns the latest
-        departures that arrive on time, latest first; give one or the other. max_transfers is 0 to 3, walk_m (metres to and from the
-        stops) 1 to 2000, limit 1 to 10.
+        every five minutes across the window (every ten when window_min is over 30), one per route sequence; arrive_by instead returns
+        the latest departures that arrive on time, latest first, the first within five minutes of the latest that does; give one or the
+        other. max_transfers is 0 to 3, walk_m (metres to and from the stops) 1 to 2000, limit 1 to 10.
         Each ride carries basis realtime (its trip has a trip update, applied within an hour of now), schedule, or estimate; the first
         ride lists the next departures in its direction. A closure masks the closed section; when its shuttle runs the shuttle is an
         estimated leg (assumed headway and speed, stated in its note) and the option is flagged estimate: true and ranked last. A

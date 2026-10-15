@@ -55,6 +55,15 @@ def test_closed_for_reads_no_positions_while_no_closure_is_active(conn, monkeypa
     assert tt.pattern_meta[54]["mode"] == "subway" and closed(54) == raptor.Closed.NONE and closed(59) == raptor.Closed.NONE and closed(3) == raptor.Closed.NONE
 
 
+def test_closed_for_reads_positions_when_gtfs_rt_lists_a_platform(conn):
+    tt = raptor.Timetable.load(conn, "S1000538")
+    # No closure is active, but a NO_SERVICE listing naming no routes closes Lawrence southbound (pattern 54, position 4) on its own.
+    listing = {"type": "closure", "source": "gtfsrt alerts", "alert_id": "RT1", "routes": [], "stations": [], "stops": [], "platforms": ["13793"],
+               "active_now": True}
+    closed = planner.closed_for(conn, Disruptions(conn, [], {"13793": [listing]}), tt)
+    assert tt.pattern_stops[54][4] == "13793" and closed(54) == raptor.Closed.from_spans([(4, 4)]) and closed(3) == raptor.Closed.NONE
+
+
 def test_materialize_writes_the_contract_legs_with_exact_and_typical_minutes(conn):
     tt = raptor.Timetable.load(conn, "S1000538")
     q = query(conn, tt, CHERRY_FRONT, "Union", NOW)

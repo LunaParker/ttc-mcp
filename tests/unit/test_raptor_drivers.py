@@ -76,6 +76,19 @@ def test_arrive_by_floor_never_runs_a_search_or_a_departure_before_it(conn, monk
     assert min(seen) >= secs(8, 35) and [(j.depart, j.arrive) for j in js] == [(secs(8, 38, 36), secs(8, 56, 30))]
 
 
+def test_arrive_by_finds_spent_patterns_at_the_earliest_instant_a_run_can_use(conn, monkeypatch):
+    tt = raptor.Timetable.load(conn, "S1000538")
+    q = query(conn, tt, "Finch", "Union", NOW)
+    seen, real = [], raptor.Slice.spent
+    monkeypatch.setattr(raptor.Slice, "spent", lambda self, t: seen.append(t) or real(self, t))
+    # The window steps back from the search's answer, which is never before the search's start: so the start less the window, floored.
+    assert raptor.plan_arrive_by(q, secs(9, 0), 30 * 60) and seen == [secs(9, 0) - raptor.ARRIVE_BY_SEARCH_H * 3600 - 30 * 60] * 2
+    seen.clear()
+    assert raptor.plan_arrive_by(q, secs(9, 0), 30 * 60, floor=secs(4, 40)) and seen == [secs(4, 40)] * 2
+    seen.clear()
+    assert raptor.plan_arrive_by(q, secs(9, 0), 30 * 60, floor=secs(4, 0)) and seen == [secs(4, 30)] * 2
+
+
 def test_a_window_never_scans_a_slice_whose_patterns_are_all_spent(conn, monkeypatch):
     tt = raptor.Timetable.load(conn, "S1000538")
     q = query(conn, tt, "Finch", "Union", NOW)
