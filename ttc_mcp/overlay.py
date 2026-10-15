@@ -1,11 +1,13 @@
 """What a connections query sees in front of the immutable timetable: patched groups, variant patterns, shuttle pseudo-routes (spec 6.10)."""
 from __future__ import annotations
 
+import datetime as dt
 from array import array
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
 from ttc_mcp.adapters.bustime_rt import TripUpdateRec
+from ttc_mcp.adapters.detour_feed import DetourEntity
 from ttc_mcp.domain.raptor import INF, Group, Timetable
 from ttc_mcp.static.timetable import split_overtaking
 
@@ -32,6 +34,11 @@ class Overlay:
 
     def meta_of(self, tt: Timetable, pattern: int) -> dict:
         return self.extra_meta[pattern] if pattern < 0 else tt.pattern_meta[pattern]
+
+    def add_variants(self, groups, extra, extra_stops, extra_meta, extra_at) -> None:
+        self.groups.update(groups), self.extra.update(extra), self.extra_stops.update(extra_stops), self.extra_meta.update(extra_meta)
+        for s, hits in extra_at.items():
+            self.extra_at.setdefault(s, []).extend(hits)
 
 
 def position_of(stops: list[str], stop: str, after: int = 0, seqs: list[int] | None = None, seq: int | None = None) -> int | None:
@@ -132,3 +139,62 @@ def patch_groups(tt: Timetable, recs: Iterable[TripUpdateRec], stop_of: Callable
             new = _resplit(pid, g.service_id, [(ids[i], array("i", (c[i] for c in cols))) for i in range(n)], by_id, {ids[ti] for ti in realtime})
         out[pid] = [x for i, x in enumerate(tt.groups[pid]) if i != gi] + new if pid not in out else [x for x in out[pid] if x is not g] + new
     return out
+
+
+VARIANT_BASE = -1000
+
+
+def _without(g: Group, drop: set[int]) -> Group:
+    keep = [i for i in range(g.n_trips) if i not in drop]
+    by = {old: new for new, old in enumerate(keep)}
+    return Group(g.pattern, g.service_id, [array("i", (c[i] for i in keep)) for c in g.cols], array("q", (g.trip_ids[i] for i in keep)),
+                 frozenset((by[t], p) for t, p in g.skip if t in by), frozenset(by[t] for t in g.realtime if t in by))
+
+
+def detour_variants(conn, tt: Timetable, entities: Iterable[DetourEntity], day: dt.date, base: dict[int, list[Group]] | None = None):
+    """Per entity active on `day` whose trips resolve: a pseudo pattern over the kept positions holding exactly its trips, with the
+    propagated delay added beyond each span; those trips leave their original groups (spec 6.10)."""
+    groups: dict[int, list[Group]] = dict(base or {})
+    extra, extra_stops, extra_meta, extra_at = {}, {}, {}, {}
+    key = day.strftime("%Y%m%d")
+    for n, e in enumerate(x for x in entities if key in x.service_dates):
+        slots = [(t, s) for t in e.trip_ids if (s := tt.trip_slot(conn, t))]
+        if not slots or len({s[0] for _, s in slots}) != 1:
+            continue
+        pid = slots[0][1][0]
+        current = groups.get(pid, tt.groups[pid])
+        # A real-time patch may have re-split this pattern's groups, so find each trip in the list in force, not by trip_slot's index.
+        located = [(i, list(g.trip_ids).index(int(t))) for t, _ in slots for i, g in enumerate(current) if int(t) in g.trip_ids]
+        seqs, stops = tt.pattern_seqs[pid], tt.pattern_stops[pid]
+        skipped, delay_after = set(), {}
+        for start, end, delay in e.spans:
+            span = [i for i, seq in enumerate(seqs) if start <= seq <= end]
+            skipped.update(span)
+            if span:
+                delay_after[max(span)] = delay_after.get(max(span), 0) + delay
+        keep = [i for i in range(len(stops)) if i not in skipped]
+        if not keep:
+            continue
+        vid = VARIANT_BASE - n
+        by_group: dict[int, list[int]] = {}
+        for gi, ti in located:
+            by_group.setdefault(gi, []).append(ti)
+        variant: list[Group] = []
+        for gi, tis in by_group.items():
+            g = current[gi]
+            rows = []
+            for ti in tis:
+                delay, times = 0, []
+                for pos in range(len(stops)):
+                    delay += delay_after.get(pos, 0)  # GTFS-RT: each span's delay adds to the earlier ones as the trip advances
+                    if pos not in skipped:
+                        times.append(g.cols[pos][ti] + delay)
+                rows.append((int(g.trip_ids[ti]), array("i", times)))
+            variant += _resplit(vid, g.service_id, rows, {}, set())
+            current = [(_without(x, set(tis)) if i == gi else x) for i, x in enumerate(current)]
+        groups[pid] = current
+        extra[vid], extra_stops[vid] = variant, [stops[i] for i in keep]
+        extra_meta[vid] = {**tt.pattern_meta[pid], "base_pattern": pid, "positions": keep, "detour_id": e.detour_id}
+        for pos, s in enumerate(extra_stops[vid]):
+            extra_at.setdefault(s, []).append((vid, pos))
+    return groups, extra, extra_stops, extra_meta, extra_at
