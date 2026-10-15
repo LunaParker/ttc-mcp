@@ -41,6 +41,19 @@ def test_footpaths_join_transfers_and_station_members_and_prefer_pathway_seconds
     assert all(secs > 0 and m > 0 for to, secs, m, via in tt.foot["13815"] if to != "13815")
 
 
+def test_sibling_platforms_walk_zero_only_when_the_feed_puts_them_at_one_point(conn):
+    tt = raptor.Timetable.load(conn, "S1000538")
+    xy = {sid: (lat, lon) for sid, lat, lon in conn.execute("SELECT stop_id, lat, lon FROM stops")}
+    parents: dict[str, list[str]] = {}
+    for st, sid in conn.execute("SELECT station_id, stop_id FROM station_members WHERE how='parent'"):
+        parents.setdefault(st, []).append(sid)
+    pairs = [(a, b) for mem in parents.values() for a in mem for b in mem if a != b]
+    foot = {a: {to: (secs, m) for to, secs, m, via in edges} for a, edges in tt.foot.items()}
+    assert pairs and not [p for p in pairs if p[1] not in foot.get(p[0], {})]
+    assert not [p for p in pairs if foot[p[0]][p[1]][0] == 0 and foot[p[0]][p[1]][1] != 0]
+    assert not [p for p in pairs if foot[p[0]][p[1]][1] == 0 and xy[p[0]] != xy[p[1]]]
+
+
 def test_timetable_for_caches_per_feed_and_reset_drops_it(app_env):
     feed = app_env.feed_for()
     a = raptor.timetable_for(feed)
