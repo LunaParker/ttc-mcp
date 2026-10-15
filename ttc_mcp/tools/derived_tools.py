@@ -118,10 +118,12 @@ def _plan(feed, store, disr, o, d, when: dt.datetime, max_transfers: int, window
     journeys = run(q)[:limit]
     note = None
     if not journeys:
+        # Widening helps only when the day runs a timetable at all; a date no loaded feed covers keeps the bare note.
+        widen = WIDEN if slices[0].service_ids else ""
         if not raptor.has_service(q, q.origin):
-            note = f"no service at the origin stops on {day.isoformat()}{WIDEN}"
+            note = f"no service at the origin stops on {day.isoformat()}{widen}"
         elif not raptor.has_service(q, q.dest):
-            note = f"no service at the destination stops on {day.isoformat()}{WIDEN}"
+            note = f"no service at the destination stops on {day.isoformat()}{widen}"
         elif run(dataclasses.replace(q, closed=lambda si, pid: raptor.Closed.NONE)):
             note = CLOSED
         elif arrive_by:
@@ -186,7 +188,7 @@ def register(mcp: FastMCP) -> None:
         every five minutes across the window (every ten when window_min is over 30), one per route sequence; arrive_by instead returns
         the latest departures that arrive on time, latest first, the first within five minutes of the latest that does; give one or the
         other. max_transfers is 0 to 3, walk_m (metres to and from the stops) 1 to 2000, limit 1 to 10.
-        Each ride carries basis realtime (its trip has a trip update, applied within an hour of now), schedule, or estimate; the first
+        Each ride carries basis realtime (an update was applied to its trip, within an hour of now), schedule, or estimate; the first
         ride lists the next departures in its direction. A closure masks the closed section; when its shuttle runs the shuttle is an
         estimated leg (assumed headway and speed, stated in its note) and the option is flagged estimate: true and ranked last. A
         detoured route's trips skip their stops with the published delay. Every option lists the disruptions it touches with the legs

@@ -78,7 +78,7 @@ Three things to notice:
 - St George is the end of the closure, so the westbound platform, facing the open part of the line, kept real predictions. The closure is tagged `shuttle_terminus`: this is where the shuttle buses start.
 - `meta` says the predictions were fetched live and are fresh, and that the disruption feeds answered.
 
-`connections` plans across a closure on the shuttle buses. The test timetable the unit suite runs on carries a nightly Line 1 closure between York Mills and Eglinton from 23:00, with shuttle buses (alert 77519). Asked at 23:30 for a trip from Finch to Union, the server answers (abridged the same way):
+`connections` plans across a closure on the shuttle buses. The unit suite's fixtures carry a real nightly Line 1 closure between York Mills and Eglinton from 23:00, with shuttle buses (alert 77519, captured 2026-10-05). Asked at 23:30 for a trip from Finch to Union, the server answers (abridged the same way):
 
 ```json
 {

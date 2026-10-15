@@ -11,12 +11,10 @@ from fastmcp import Client
 
 from ttc_mcp import runtime
 from ttc_mcp.server import create_app
-from ttc_mcp.tools.derived_tools import CLOSED
 
 CHERRY_FRONT = {"lat": 43.6527, "lon": -79.3581}
 VERDICTS = ("yes", "no", "unknown")
 SEEN: dict[str, int] = {}  # the unsimplified Line 1 point count, for the simplified check after it
-NOTES = ("no service", "no journey", "arrive_by", CLOSED)  # how an empty connections answer's note begins
 BY = (runtime.now() + dt.timedelta(minutes=90)).isoformat(timespec="minutes")
 
 
@@ -35,8 +33,13 @@ def minutes(o: dict) -> int:
 
 
 def planned(ok):
-    """ok over the options, or an empty answer that says why: late at night the subway has closed and some pairs have no trip at all."""
-    return lambda r: ok(r["options"]) if r["options"] else r.get("note", "").startswith(NOTES)
+    """ok over the options, which must exist: a depart-at query waits past its window for the first trip, and night routes serve these pairs."""
+    return lambda r: bool(r["options"]) and ok(r["options"])
+
+
+def arrived(ok):
+    """ok over the options, or none when nothing arrives by the target (late at night it can sit past the last trip)."""
+    return lambda r: ok(r["options"]) if r["options"] else r.get("note", "").startswith("no journey arriving by")
 
 
 CHECKS = [
@@ -48,7 +51,7 @@ CHECKS = [
     ("routes", {"series": "streetcar"}, lambda r: next(x for x in r["routes"] if x["route"] == "504")["service_level"]["ten_minute_network"] is True),
     ("routes", {"overnight": True}, lambda r: all((x["service_level"] or {}).get("name") == "Blue Night Network" for x in r["routes"])),
     ("connections", {"origin": CHERRY_FRONT, "destination": "Union"}, planned(lambda os: all(leads(o) for o in os))),
-    ("connections", {"origin": CHERRY_FRONT, "destination": "Union", "arrive_by": BY}, planned(lambda os: all(o["arrive_at"] <= BY and leads(o) for o in os))),
+    ("connections", {"origin": CHERRY_FRONT, "destination": "Union", "arrive_by": BY}, arrived(lambda os: all(o["arrive_at"] <= BY and leads(o) for o in os))),
     ("connections", {"origin": "Finch", "destination": "Union", "max_transfers": 0}, planned(lambda os: all(l["mode"] in ("ride", "shuttle") for l in os[0]["legs"] if l["mode"] != "walk"))),
     ("connections", {"origin": "Kipling", "destination": "Kennedy"}, planned(lambda os: minutes(os[0]) < 120)),
 ]

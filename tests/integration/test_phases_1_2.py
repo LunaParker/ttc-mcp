@@ -161,11 +161,7 @@ async def test_accessibility_agrees_with_station_and_alerts(server_url):
 @pytest.mark.anyio
 async def test_connections_use_live_arrivals_and_the_advisory_snapshot(server_url):
     r = await call(server_url, "connections", origin=CHERRY_FRONT, destination="Union")
-    assert r["meta"]["advisories"]["errors"] is None
-    if not r["options"]:
-        # Late at night a pair can have no trip at all; the planner then says why.
-        assert r["note"].startswith(("no service", "no journey", "every journey needs a closed section")), r["note"]
-        return
+    assert r["meta"]["advisories"]["errors"] is None and r["options"], r.get("note")
     first = next(o for o in r["options"] if next(l for l in o["legs"] if l["mode"] in ("ride", "shuttle"))["mode"] == "ride")
     ride = next(l for l in first["legs"] if l["mode"] == "ride")
     assert ride["trip_id"] and ride["next"] and first["basis"] in ("realtime", "schedule", "estimate")

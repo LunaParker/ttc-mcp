@@ -135,7 +135,7 @@
     <h1>ttc-mcp Architecture</h1>
     <p>How the server is layered, what each layer stores, how a request moves through it, and which parts are running. Phases 1 to 4 and 6 answer today as a local process on this Mac, phase 6 having made <code>connections</code> timetable-exact; phase 5 puts them on Cloud Run and phase 7 hardens them. The layers and the two requests are as of spec v0.6 (decisions a to j), with phase 6 marked where it changed them; the phase status follows spec v0.8 (decision k).</p>
   </header>
-  <div class="meta"><span><b>Spec</b> docs/spec.md v0.6</span><span><b>Runtime</b> Python 3.14, FastMCP 3.4.8</span><span><b>Store</b> SQLite, 116 MB a feed</span><span><b>Tests</b> 296 unit · 20 live</span><span><b>Updated</b> 2026-10-06</span></div>
+  <div class="meta"><span><b>Spec</b> docs/spec.md v0.6</span><span><b>Runtime</b> Python 3.14, FastMCP 3.4.8</span><span><b>Store</b> SQLite, 139 MB a feed</span><span><b>Tests</b> 296 unit · 20 live</span><span><b>Updated</b> 2026-10-06</span></div>
 
   <div class="line">
 
@@ -479,8 +479,8 @@ https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/mcp
 <span class="pb p1">1</span>│   │   ├── network.py, geo.py
 <span class="pb p2">2</span>│   │   ├── arrivals.py, trains.py, vehicles.py, crowding.py, freshness.py
 <span class="pb p3">3</span>│   │   ├── disruptions.py, detours.py, service_changes.py
-<span class="pb p4">4</span>│   │   └── planner.py, live.py, shapes.py, accessibility.py
-<span class="pb p6">6</span>│   │   └── raptor.py             # the Timetable, the scan, windows and arrive-by; overlay.py at the package root
+<span class="pb p4">4</span>│   │   ├── planner.py, live.py, shapes.py, accessibility.py
+<span class="pb p6">6</span>│   │   └── raptor.py         # the Timetable, the scan, windows and arrive-by; overlay.py at the package root
 <span class="pb none"></span>│   └── tools/                # one module per phase: static, realtime, advisory, derived
 <span class="pb p5 plan">5</span><span class="planned">├── cloud/                    # Dockerfile and deploy.md: OAuth client, secrets, SA, bucket, Job, Scheduler</span>
 <span class="pb none"></span>├── scripts/                  # four smoke scripts, validate_connections.py, the original probe

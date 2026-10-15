@@ -259,7 +259,7 @@ async def test_connections_explain_an_empty_answer(app_env, monkeypatch):
         r = (await c.call_tool("connections", {"origin": "4582", "destination": "15039", "walk_m": 1})).data
         assert r["options"] == [] and r["note"] == "every stop at the destination is skipped by a detour"
         r = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union", "depart_at": "2026-11-15T08:00"})).data
-        assert r["options"] == [] and r["note"] == "no service at the origin stops on 2026-11-15; raise walk_m or start from a stop"
+        assert r["options"] == [] and r["note"] == "no service at the origin stops on 2026-11-15"
 
 
 @pytest.mark.anyio
