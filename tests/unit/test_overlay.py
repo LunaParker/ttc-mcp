@@ -127,3 +127,18 @@ def test_two_patched_trips_that_cross_before_the_later_ones_first_update_split()
     recs = [rec(11, ("A", 1650, "SCHEDULED"), ("C", None, "NO_DATA")), rec(12, ("C", 1900, "SCHEDULED"))]
     out = overlay.patch_groups(tt, recs, lambda s: s, 1000, _slot(tt))
     assert [list(g.trip_ids) for g in out[1]] == [[12], [11]] and [[c[0] for c in g.cols] for g in out[1]] == [[600, 700, 900], [650, 750, 750]]
+
+
+def test_a_subway_update_past_its_drift_is_ignored_and_one_within_it_applies():
+    tt = _tt()
+    recs = [rec(11, ("B", 1000 + 100 + 20 * 60, "SCHEDULED")), rec(12, ("B", 1000 + 700 + 10 * 60, "SCHEDULED"))]
+    out = overlay.patch_groups(tt, recs, lambda s: s, 1000, _slot(tt), tt.pattern_seqs.get, drift=overlay.SUBWAY_DRIFT_S)
+    assert [list(c) for c in out[1][0].cols] == [[0, 600], [100, 1300], [200, 1400]] and out[1][0].realtime == frozenset({1})
+    assert overlay.patch_groups(tt, recs[:1], lambda s: s, 1000, _slot(tt))[1][0].cols[1][0] == 1300
+
+
+def test_a_second_call_chained_through_base_keeps_the_first_calls_replacements():
+    tt = _tt()
+    first = overlay.patch_groups(tt, [rec(11, ("B", 1160, "SCHEDULED"))], lambda s: s, 1000, _slot(tt))
+    both = overlay.patch_groups(tt, [rec(21, ("D", 1310, "SCHEDULED"))], lambda s: s, 1000, _slot(tt), drift=overlay.SUBWAY_DRIFT_S, base=first)
+    assert both[1] == first[1] and both[2][0].cols[1][0] == 310 and both[2][0].realtime == frozenset({0}) and 2 not in first

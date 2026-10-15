@@ -9,7 +9,8 @@ from ttc_mcp.adapters.bustime_rt import TripUpdateRec
 from ttc_mcp.domain.raptor import INF, Group, Timetable
 from ttc_mcp.static.timetable import split_overtaking
 
-MAX_DRIFT_S = 6 * 3600  # a prediction further than this from the scheduled time belongs to another day's instance of the trip
+MAX_DRIFT_S = 2 * 3600  # surface feed: past this an update is another day's run of the trip, since no bus runs two hours late (drifts split after the 2026-10-14 capture)
+SUBWAY_DRIFT_S = 15 * 60  # subway feed: a train genuinely late or early; the 2026-10-14 capture's trip ids sat in their slot for 5 of 55 trips, the rest far off
 
 
 @dataclass
@@ -60,18 +61,20 @@ def _resplit(pattern: int, service_id: str, trips: list[tuple[int, array]], skip
 
 
 def patch_groups(tt: Timetable, recs: Iterable[TripUpdateRec], stop_of: Callable[[str], str | None], origin_epoch: float,
-                 slot: Callable[[str], tuple[int, int, int] | None]) -> dict[int, list[Group]]:
-    """Replacement group lists for every pattern a trip update touches: predictions carried forward until NO_DATA restores the schedule,
-    SKIPPED stops and CANCELED trips masked, re-split only when a patched trip leaves its place. Unknown trips and other days are ignored."""
+                 slot: Callable[[str], tuple[int, int, int] | None], seqs_of: Callable[[int], list[int] | None] | None = None, *,
+                 drift: int = MAX_DRIFT_S, base: dict[int, list[Group]] | None = None) -> dict[int, list[Group]]:
+    """Replacement group lists, base's first, for every pattern a trip update touches: predictions carried forward until NO_DATA restores the
+    schedule, SKIPPED stops and CANCELED trips masked, re-split only when a trip leaves its place; unknown trips and updates past drift ignored."""
+    seqs_of = seqs_of or tt.pattern_seqs.get
     touched: dict[tuple[int, int], dict[int, TripUpdateRec]] = {}
     for rec in recs:
         found = slot(rec.trip_id)
         if found:
             pid, gi, ti = found
             touched.setdefault((pid, gi), {})[ti] = rec
-    out: dict[int, list[Group]] = {}
+    out: dict[int, list[Group]] = dict(base or {})
     for (pid, gi), by_trip in touched.items():
-        g, stops, seqs = tt.groups[pid][gi], tt.pattern_stops[pid], tt.pattern_seqs.get(pid)
+        g, stops, seqs = tt.groups[pid][gi], tt.pattern_stops[pid], seqs_of(pid)
         n_stops, n, sched = len(stops), g.n_trips, g.cols
         moved: dict[int, dict[int, int]] = {}
         skip: set[tuple[int, int]] = set()
@@ -94,7 +97,7 @@ def patch_groups(tt: Timetable, recs: Iterable[TripUpdateRec], stop_of: Callable
                     live = True
                 elif u.relationship == "NO_DATA":
                     delays[pos] = 0  # no prediction here: the schedule applies from this stop on
-                elif u.time is not None and -MAX_DRIFT_S <= (d := int(u.time - origin_epoch) - sched[pos][ti]) <= MAX_DRIFT_S:
+                elif u.time is not None and -drift <= (d := int(u.time - origin_epoch) - sched[pos][ti]) <= drift:
                     delays[pos], live = d, True
             if live:
                 realtime.add(ti)
