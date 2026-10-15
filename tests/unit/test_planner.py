@@ -1,6 +1,8 @@
 import datetime as dt
 
-from ttc_mcp.domain import planner
+from tests.unit.test_disruptions import NOW_NIGHT, build
+from tests.unit.test_raptor import query
+from ttc_mcp.domain import planner, raptor
 from ttc_mcp.static.schedule import TZ
 
 NOW = dt.datetime(2026, 10, 6, 8, 0, tzinfo=TZ)
@@ -144,3 +146,43 @@ def test_a_span_that_is_not_rideable_is_no_candidate_so_the_transfer_scan_routes
     opts = planner.search(conn, finch, union, now=NOW, limit=10, rideable=closed)
     assert opts and all(o["transfers"] == 1 for o in opts)
     assert [(r["route"], r["board"]["number"], r["alight"]["number"]) for r in _rides(opts[0])] == [("1", "14111", "13860"), ("121", "11169", "16754")]
+
+
+def test_closed_for_turns_the_night_closure_into_spans_on_line_1_only(conn):
+    closed = planner.closed_for(conn, build(conn, NOW_NIGHT))
+    south, north = closed(54), closed(59)
+    assert (south.no_board, south.no_alight, south.drop_after) == (frozenset({3, 4}), frozenset({4, 5}), frozenset({3}))
+    assert (north.no_board, north.no_alight, north.drop_after) == (frozenset({32, 33}), frozenset({33, 34}), frozenset({32}))
+    assert closed(3) == raptor.Closed.NONE and closed(-1) == raptor.Closed.NONE and closed(54) is south
+    assert planner.closed_for(conn, build(conn, NOW))(54) == raptor.Closed.NONE
+
+
+def test_materialize_writes_the_contract_legs_with_exact_and_typical_minutes(conn):
+    tt = raptor.Timetable.load(conn, "S1000538")
+    q = query(conn, tt, CHERRY_FRONT, "Union", NOW)
+    two = next(j for j in raptor.plan(q) if j.transfers == 1)
+    o = planner.materialize(conn, q, two, NOW.date())
+    assert set(o) == {"transfers", "depart_at", "arrive_at", "duration_min", "walk_m", "stops", "basis", "estimate", "legs"}
+    assert (o["transfers"], o["basis"], o["estimate"]) == (1, "schedule", False) and o["depart_at"] < o["arrive_at"]
+    modes = [l["mode"] for l in o["legs"]]
+    assert modes[:3] == ["walk", "ride", "transfer"] and modes.count("ride") == 2
+    walk, ride, xfer = o["legs"][:3]
+    assert set(walk) == {"mode", "to", "distance_m", "min", "depart", "arrive"} and walk["to"]["number"] == "4144"
+    assert (ride["route"], ride["trip_id"], ride["board"]["number"], ride["alight"]["name"], ride["stops"]) == ("504", "107845020", "4144", "King St West at Yonge St West Side - King Station", 6)
+    assert (ride["depart"], ride["arrive"], ride["min"], ride["basis"], ride["transit"]) == ("2026-10-06T08:06-04:00", "2026-10-06T08:16-04:00", 10, "schedule", "streetcar")
+    assert isinstance(ride["typical_min"], int) and ride["pattern_id"] == 2 and (ride["board_pos"], ride["alight_pos"]) == (two.rides[0].board_pos, two.rides[0].alight_pos)
+    assert (xfer["from"]["number"], xfer["to"]["number"], xfer["distance_m"], xfer["walk_min"], xfer["via"]) == ("15637", "13814", 98, 2, "walk")
+    assert xfer["depart"] == ride["arrive"] and xfer["arrive"] == o["legs"][3]["depart"] and xfer["min"] >= 3
+    assert o["stops"] == sum(l["stops"] for l in o["legs"] if l["mode"] == "ride") and o["walk_m"] == sum(l["distance_m"] for l in o["legs"] if l["mode"] in ("walk", "transfer"))
+    assert o["duration_min"] == (dt.datetime.fromisoformat(o["arrive_at"]) - dt.datetime.fromisoformat(o["depart_at"])).total_seconds() // 60
+
+
+def test_annotate_attaches_zones_delays_and_route_alerts_with_the_legs_they_touch(conn):
+    tt = raptor.Timetable.load(conn, "S1000538")
+    disr = build(conn, NOW)
+    q = query(conn, tt, "Finch", "Union", NOW)
+    o = planner.materialize(conn, q, raptor.plan(q)[0], NOW.date())
+    out = planner.annotate(conn, disr, [o])[0]
+    ids = {d["alert_id"]: d for d in out["disruptions"]}
+    assert "77535" in ids and ids["77535"]["type"] == "rsz" and ids["77535"]["affects"] == [1]
+    assert all("affects" in d for d in out["disruptions"]) and "77519" not in ids

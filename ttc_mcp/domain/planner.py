@@ -7,10 +7,12 @@ import re
 from dataclasses import dataclass
 from functools import partial
 
+from ttc_mcp.domain import raptor
 from ttc_mcp.domain.arrivals import stop_row
 from ttc_mcp.domain.disruptions import UNIT_KINDS, Disruptions, element_key, station_by_name, station_row
 from ttc_mcp.domain.geo import bbox, haversine_m, walk_minutes
 from ttc_mcp.static import schedule
+from ttc_mcp.static.schedule import wall_clock
 
 WALK_M = 400
 TRANSFER_M = 150
@@ -416,3 +418,94 @@ def overlay(conn, disr: Disruptions, options: list[dict]) -> list[dict]:
     for i, o in enumerate(kept, 1):
         o["rank"] = i
     return kept
+
+
+def closed_for(conn, disr: Disruptions):
+    """closed(pattern_id) -> raptor.Closed: each closure's lowest and highest position on a rail pattern is a span (6.7 item 4)."""
+    memo: dict[int, raptor.Closed] = {}
+
+    def closed(pid: int) -> raptor.Closed:
+        if pid not in memo:
+            spans: dict[tuple, list[int]] = {}
+            m = pattern_meta(conn, pid) if pid >= 0 else None
+            if m and m["mode"] in RAIL:
+                for pos, el in _closed_positions(conn, disr, pid, m["route"]):
+                    spans.setdefault(element_key(el), []).append(pos)
+            memo[pid] = raptor.Closed.from_spans([(min(p), max(p)) for p in spans.values()])
+        return memo[pid]
+    return closed
+
+
+def _stop(number: str, names: dict) -> dict:
+    return {"number": number, "name": names.get(number)}
+
+
+def _minutes(a: int, b: int) -> int:
+    return round((b - a) / 60)
+
+
+def materialize(conn, q: raptor.Query, j: raptor.Journey, day: dt.date) -> dict:
+    """A journey as the spec 4.4 option, rank, next and disruptions left to the caller; rides keep base-pattern positions for annotate."""
+    def iso(s: int) -> str:
+        return wall_clock(day, s).isoformat(timespec="minutes")
+    names = stop_names(conn, [x for l in j.legs for x in (l.frm, l.to) if x])
+    legs: list[dict] = []
+    for i, l in enumerate(j.legs):
+        if l.kind == "walk":
+            prev = j.legs[i - 1] if i and j.legs[i - 1].kind != "walk" else None
+            nxt = j.legs[i + 1] if i + 1 < len(j.legs) and j.legs[i + 1].kind != "walk" else None
+            if prev and nxt:
+                legs.append({"mode": "transfer", "from": _stop(l.frm, names), "to": _stop(l.to, names), "distance_m": l.metres, "walk_min": _minutes(l.depart, l.arrive),
+                             "via": l.via, "depart": iso(prev.arrive), "arrive": iso(nxt.depart), "min": _minutes(prev.arrive, nxt.depart)})
+            else:
+                end = {"to": _stop(l.to, names)} if nxt else {"from": _stop(l.frm, names)}
+                legs.append({"mode": "walk", **end, "distance_m": l.metres, "min": _minutes(l.depart, l.arrive), "depart": iso(l.depart), "arrive": iso(l.arrive)})
+            continue
+        sl = q.slices[l.slice_idx]
+        meta = sl.meta_of(l.pattern)
+        if legs and legs[-1]["mode"] in ("ride", "shuttle"):
+            # Two vehicles at one stop: the change still takes the buffer, and the slack is shown like any other transfer.
+            prev = j.legs[i - 1]
+            legs.append({"mode": "transfer", "from": _stop(l.frm, names), "to": _stop(l.frm, names), "distance_m": 0, "walk_min": 0, "via": "walk",
+                         "depart": iso(prev.arrive), "arrive": iso(l.depart), "min": _minutes(prev.arrive, l.depart)})
+        if l.kind == "shuttle":
+            legs.append({"mode": "shuttle", "line": meta["line"], "from": meta["station_of"][l.frm], "to": meta["station_of"][l.to], "depart": iso(l.depart),
+                         "arrive": iso(l.arrive), "min": _minutes(l.depart, l.arrive), "basis": "estimate", "alert_id": meta["alert_id"], "note": meta["note"]})
+            continue
+        base, positions = meta.get("base_pattern", l.pattern), meta.get("positions")
+        board_b, alight_b = (positions[l.board_pos], positions[l.alight_pos]) if positions else (l.board_pos, l.alight_pos)
+        rows = pattern_rows(conn, base)
+        g = sl.groups_for(l.pattern)[l.group]
+        legs.append({"mode": "ride", "route": meta["route"], "direction_id": meta["direction_id"], "headsign": meta["headsign"], "transit": meta["mode"],
+                     "pattern_id": base, "trip_id": str(g.trip_ids[l.trip]), "board": _stop(l.frm, names), "alight": _stop(l.to, names),
+                     "stops": l.alight_pos - l.board_pos, "depart": iso(l.depart), "arrive": iso(l.arrive), "min": _minutes(l.depart, l.arrive),
+                     "typical_min": _minutes(rows[board_b][2], rows[alight_b][2]), "basis": l.basis, "board_pos": board_b, "alight_pos": alight_b,
+                     **({"detour_id": meta["detour_id"]} if meta.get("detour_id") else {})})
+    rides = j.rides
+    # duration_min is the span between the minutes shown, so depart_at, arrive_at and it always agree.
+    return {"transfers": j.transfers, "depart_at": iso(j.depart), "arrive_at": iso(j.arrive), "duration_min": j.arrive // 60 - j.depart // 60, "walk_m": j.walk_m,
+            "stops": sum(l["stops"] for l in legs if l["mode"] == "ride"), "basis": rides[0].basis if rides else "schedule", "estimate": j.estimate, "legs": legs}
+
+
+def annotate(conn, disr: Disruptions, options: list[dict]) -> list[dict]:
+    """Decision h's annotations on contract options: zones, delays and route-level alerts on rides, the closure on a shuttle, the detour on a variant ride."""
+    for opt in options:
+        found, affects = {}, {}
+        touch = partial(_touch, found, affects)
+        for n, leg in enumerate(opt["legs"], 1):
+            if leg["mode"] == "ride":
+                for el in _annotations(conn, disr, leg, pattern_rows(conn, leg["pattern_id"])):
+                    touch(el, [n])
+                for el in disr.by_route.get(leg["route"], []):
+                    if el["active_now"] and not el["stations"] and not el["stops"] and el["type"] not in (*UNIT_KINDS, "rsz"):
+                        touch(el, [n])
+                if leg.get("detour_id"):
+                    for el in disr.elements:
+                        if el.get("detour_id") == leg["detour_id"] and el.get("direction_id") == leg["direction_id"]:
+                            touch(el, [n])
+            elif leg["mode"] == "shuttle":
+                for el in disr.elements:
+                    if el.get("alert_id") == leg["alert_id"]:
+                        touch(el, [n])
+        opt["disruptions"] = [{**el, "affects": affects[key]} for key, el in found.items()]
+    return options
