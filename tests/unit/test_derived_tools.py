@@ -23,6 +23,10 @@ def minutes_between(a: str, b: str) -> int:
     return int((dt.datetime.fromisoformat(b) - dt.datetime.fromisoformat(a)).total_seconds() // 60)
 
 
+# From 02:00 the search runs past the end of closure 77519's first night (spec 6.10's closure note).
+ENDS = "closure 77519 on line 1 ends at 2026-10-06T02:30-04:00 inside this search; options after it are planned as if it were in force"
+
+
 def no_variants(monkeypatch):
     """The variant builder drops every entity, so detour 9001 falls back to decision h's stop-level mask."""
     from ttc_mcp import overlay
@@ -169,7 +173,8 @@ async def test_connections_wait_past_the_window_for_the_first_trip(app_env):
     async with Client(make_app([])) as c:
         r = (await c.call_tool("connections", {"origin": "15246", "destination": "Union", "max_transfers": 0, "depart_at": "2026-10-06T02:00"})).data
     ride = rides(r["options"][0])[0]
-    assert "note" not in r and (ride["route"], ride["depart"]) == ("121", "2026-10-06T06:23-04:00") and r["options"][0]["depart_at"] == "2026-10-06T06:23-04:00"
+    assert (ride["route"], ride["depart"]) == ("121", "2026-10-06T06:23-04:00") and r["options"][0]["depart_at"] == "2026-10-06T06:23-04:00"
+    assert r["note"] == ENDS
     assert ride["next"][0]["scheduled_at"].startswith("2026-10-06T06:23") and "next_note" not in ride and r["meta"]["cache"] == "static"
 
 
@@ -294,9 +299,9 @@ async def test_connections_explain_an_empty_answer(app_env, monkeypatch):
         assert r["options"] == [] and r["note"] == "no journey with up to 0 transfers from 2026-10-06T08:00-04:00" and "gtfsrt trips/subway" in r["meta"]["source"]
         # Only the 400 serves these two stops, and it runs Mondays, Wednesdays and Thursdays: Monday's trips are over by Tuesday 02:00.
         r = (await c.call_tool("connections", {"origin": "15547", "destination": "15602", "max_transfers": 0, "depart_at": "2026-10-06T02:00"})).data
-        assert r["options"] == [] and r["note"] == "no service at the origin stops on 2026-10-06; raise walk_m or start from a stop"
+        assert r["options"] == [] and r["note"] == "no service at the origin stops on 2026-10-06; raise walk_m or start from a stop; " + ENDS
         r = (await c.call_tool("connections", {"origin": "15461", "destination": "15547", "max_transfers": 0, "depart_at": "2026-10-06T02:00"})).data
-        assert r["options"] == [] and r["note"] == "no service at the destination stops on 2026-10-06; raise walk_m or start from a stop"
+        assert r["options"] == [] and r["note"] == "no service at the destination stops on 2026-10-06; raise walk_m or start from a stop; " + ENDS
         r = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union", "arrive_by": "2026-10-06T07:30"})).data
         assert r["options"] == [] and r["note"] == "arrive_by 2026-10-06T07:30-04:00 is not after now"
         monkeypatch.setattr("ttc_mcp.runtime.now", lambda: NIGHT)
@@ -469,6 +474,28 @@ async def test_connections_cross_a_night_closure_on_an_estimated_shuttle(app_env
     assert shuttle["note"].startswith("assumed 5-minute headway and 15 km/h over 4.4 km of track")
     assert next(d for d in o["disruptions"] if d.get("alert_id") == "77519")["affects"] == [3] and o["duration_min"] == minutes_between(o["depart_at"], o["arrive_at"])
     assert all(x["estimate"] for x in r["options"]) or r["options"].index(next(x for x in r["options"] if x["estimate"])) > 0
+
+
+STARTS = "closure 77519 on line 1 starts at 2026-10-06T23:00-04:00 inside this search; "
+
+
+@pytest.mark.anyio
+async def test_connections_name_a_closure_that_starts_inside_the_search(app_env):
+    """Closures are evaluated at the query instant (spec 6.10): from 22:50 the trains run through York Mills to Eglinton all window long,
+    and arriving by 23:30 rides the shuttle for the whole four hours, so each answer names the 23:00 start."""
+    async with Client(make_app([])) as c:
+        depart = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union", "depart_at": "2026-10-06T22:50"})).data
+        arrive = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union", "arrive_by": "2026-10-06T23:30"})).data
+    assert depart["options"] and depart["note"] == STARTS + "options after it are planned as if it were not in force"
+    assert arrive["options"] and arrive["note"] == STARTS + "options before it are planned as if it were in force"
+
+
+@pytest.mark.anyio
+async def test_connections_name_no_closure_when_the_search_sits_wholly_inside_or_outside_it(app_env):
+    async with Client(make_app([])) as c:
+        inside = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union", "depart_at": "2026-10-06T23:30"})).data
+        outside = (await c.call_tool("connections", {"origin": "Finch", "destination": "Union", "depart_at": "2026-10-06T20:00"})).data
+    assert inside["options"] and outside["options"] and "note" not in inside and "note" not in outside
 
 
 @pytest.mark.anyio

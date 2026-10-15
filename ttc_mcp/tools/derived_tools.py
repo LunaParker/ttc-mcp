@@ -27,6 +27,7 @@ LIVE_WINDOW = dt.timedelta(minutes=60)
 WALK_MAX_M, LIMIT_MAX = 2000, 10
 CLOSED = "every journey needs a closed section with no shuttle service"
 WIDEN = "; raise walk_m or start from a stop"  # the High Park origin's only stops within 400 m are the seasonal 203's (spec 11, phase 6d)
+SEARCH_TAIL_S = 3600  # a depart-at search reaches an hour past its window's last instant for the closure notes (spec 6.10)
 
 
 def _input_error(origin, destination, walk_m: int, limit: int, depart_at: str | None, arrive_by: str | None = None,
@@ -68,6 +69,23 @@ def _around_skipped(conn, disr: Disruptions, e: planner.Endpoint, which: str, wa
     return planner.Endpoint(e.label, served)
 
 
+def _closure_notes(disr: Disruptions, lo: float, hi: float, arrive_by: bool) -> list[str]:
+    """Closures are evaluated once, at the query instant (hi for arrive-by, else lo): a closure that starts or ends in (lo, hi] is named at
+    the edge nearest that instant, with the state the options beyond the edge were planned in (spec 6.10)."""
+    out = []
+    for el in disr.elements:
+        if el["type"] != "closure" or not el["routes"]:
+            continue
+        edges = sorted((x, t, edge) for s, e in (el["windows"] or [el["period"]]) for t, edge in ((s, "starts"), (e, "ends"))
+                       if t and lo < (x := dt.datetime.fromisoformat(t).timestamp()) <= hi)
+        if edges:
+            _, stamp, edge = edges[-1] if arrive_by else edges[0]
+            side, state = ("before", edge == "starts") if arrive_by else ("after", edge == "ends")
+            out.append(f"closure {el['alert_id']} on line {el['route']} {edge} at {stamp} inside this search; "
+                       f"options {side} it are planned as if it were {'in force' if state else 'not in force'}")
+    return out
+
+
 async def _trip_feeds(rt, use_live: bool) -> tuple[TripFeed | None, TripFeed | None, list[Hit]]:
     """Both trip-update feeds, only inside the live window; a failed one is simply absent (realtime.attempt)."""
     if not use_live:
@@ -92,9 +110,9 @@ def _plan(feed, store, disr, o, d, when: dt.datetime, max_transfers: int, window
     """In a worker thread: the slices' overlays, decision h's mask for stops a detour with no variant skips (an endpoint gives way to the served
     stops around it), the engine, then the first limit options through this thread's connections; usable (or None) is a further predicate."""
     conn, day, stamp = feed.conn, when.date(), when.isoformat(timespec="minutes")
-    t = schedule.service_secs(day, when)
+    t, now = schedule.service_secs(day, when), runtime.now()
     # Arrive-by never asks the rider to have left already: now, on the query day's clock, floors the search.
-    floor = schedule.service_secs(day, runtime.now())
+    floor = schedule.service_secs(day, now)
     if arrive_by and floor >= t:
         return [], f"arrive_by {stamp} is not after now"
     # Each slice reads its own service day's overlay: after midnight the trips running are yesterday's, and their updates match only on its clock.
@@ -130,8 +148,11 @@ def _plan(feed, store, disr, o, d, when: dt.datetime, max_transfers: int, window
             note = f"no journey arriving by {stamp} within {raptor.ARRIVE_BY_SEARCH_H} hours before it"
         else:
             note = f"no journey with up to {max_transfers} transfers from {stamp}"
+    at = when.timestamp()
+    span = (max(at - raptor.ARRIVE_BY_SEARCH_H * 3600, now.timestamp()), at) if arrive_by else (at, at + window_min * 60 + SEARCH_TAIL_S)
+    notes += ([note] if note else []) + _closure_notes(disr, *span, arrive_by)
     options = planner.annotate(q, disr, [planner.materialize(conn, q, j, day) for j in journeys])
-    return options, "; ".join(notes + ([note] if note else [])) or None
+    return options, "; ".join(notes) or None
 
 
 def register(mcp: FastMCP) -> None:
@@ -192,7 +213,8 @@ def register(mcp: FastMCP) -> None:
         ride lists the next departures in its direction. A closure masks the closed section; when its shuttle runs the shuttle is an
         estimated leg (assumed headway and speed, stated in its note) and the option is flagged estimate: true and ranked last. A
         detoured route's trips skip their stops with the published delay. Every option lists the disruptions it touches with the legs
-        they affect, and an empty answer says why. Live departures and disruptions are best effort, from the TTC's own site endpoints."""
+        they affect, and an empty answer says why. Closures are judged at the query instant, so the note names one that starts or ends
+        inside the search. Live departures and disruptions are best effort, from the TTC's own site endpoints."""
         async def run(feed):
             if err := _input_error(origin, destination, walk_m, limit, depart_at, arrive_by, window_min):
                 return {"error": err}, [], ""
