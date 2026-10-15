@@ -426,3 +426,16 @@ async def test_connections_board_the_next_undetoured_trip_to_a_skipped_stop(app_
     ride = rides(through["options"][0])[0]
     assert (ride["trip_id"], ride["stops"], ride["depart"], ride["arrive"]) == ("100677020", 1, "2026-10-06T10:58-04:00", "2026-10-06T11:05-04:00") and "detour_id" not in ride
     assert next(d for d in through["options"][0]["disruptions"] if d.get("detour_id") == "9001")["affects"] == [1]
+
+
+@pytest.mark.anyio
+async def test_connections_after_midnight_apply_the_prediction_of_yesterdays_late_train(app_env, monkeypatch):
+    from tests import mockttc
+    monkeypatch.setattr("ttc_mcp.runtime.now", lambda: dt.datetime(2026, 10, 7, 0, 30, tzinfo=TZ))
+    # Trip 134929451 runs on Tuesday's service day (service 1) and leaves Finch at 24:33:22, 00:33 on Wednesday: yesterday's train at 00:30.
+    late = int(dt.datetime(2026, 10, 7, 0, 36, 22, tzinfo=TZ).timestamp())
+    monkeypatch.setattr(mockttc, "SUBWAY_TRIPS", [{"trip": "134929451", "route": "1", "stops": [("14111", 1, late)]}])
+    async with Client(make_app([])) as c:
+        r = (await c.call_tool("connections", {"origin": "14111", "destination": "13792", "max_transfers": 0, "window_min": 0})).data
+    ride = rides(r["options"][0])[0]
+    assert (ride["trip_id"], ride["depart"], ride["arrive"], ride["basis"]) == ("134929451", "2026-10-07T00:36-04:00", "2026-10-07T00:43-04:00", "realtime")

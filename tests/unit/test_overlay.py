@@ -365,3 +365,23 @@ def test_build_chains_surface_and_subway_patches_and_puts_a_predicted_detoured_t
     sub = next(x for x in ov.groups[pid] if 134929152 in x.trip_ids)
     j = list(sub.trip_ids).index(134929152)
     assert j in sub.realtime and sub.cols[tt.pattern_stops[pid].index("13814")][j] == 8 * 3600 + 19 * 60 and set(ov.extra) == {-1000}
+
+
+def test_build_keeps_an_overlay_per_service_day_prepares_a_fetch_once_and_drops_the_oldest_day(app_env, conn, monkeypatch):
+    from tests.rtfeeds import make_trip_feed
+    from tests.unit.test_disruptions import build as disr_at
+    from ttc_mcp.adapters.bustime_rt import parse_trips
+    feed = app_env.feed_for()
+    tt, disr = raptor.timetable_for(feed), disr_at(conn, NOW_DAY)
+    # Trip 134929451 (service 1) leaves Finch at 24:33:22 of Monday's service day; this prediction, 00:36:22 on Tuesday, is Monday's run.
+    late = int(dt.datetime(2026, 10, 6, 0, 36, 22, tzinfo=schedule.TZ).timestamp())
+    subway = parse_trips(make_trip_feed(1, [{"trip": "134929451", "route": "1", "stops": [("14111", 1, late)]}]), {}).value
+    made, real = [], overlay.Locator
+    monkeypatch.setattr(overlay, "Locator", lambda *a: made.append(a) or real(*a))
+    tue, mon = (overlay.build(feed, tt, disr, None, None, subway, dt.date(2026, 10, d)) for d in (6, 5))
+    assert tue is not mon and len(made) == 1
+    assert overlay.build(feed, tt, disr, None, None, subway, dt.date(2026, 10, 6)) is tue and overlay.build(feed, tt, disr, None, None, subway, dt.date(2026, 10, 5)) is mon
+    g = next(g for g in mon.groups[54] if 134929451 in g.trip_ids)
+    assert list(g.trip_ids).index(134929451) in g.realtime and g.cols[0][list(g.trip_ids).index(134929451)] == 88402 + 180 and 54 not in tue.groups
+    overlay.build(feed, tt, disr, None, None, subway, dt.date(2026, 10, 7))
+    assert overlay.build(feed, tt, disr, None, None, subway, dt.date(2026, 10, 6)) is tue and overlay.build(feed, tt, disr, None, None, subway, dt.date(2026, 10, 5)) is not mon

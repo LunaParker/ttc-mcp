@@ -77,12 +77,12 @@ async def _trip_feeds(rt, use_live: bool) -> tuple[TripFeed | None, TripFeed | N
 
 def _slices(store, feed, day: dt.date, make_overlay=None) -> list[raptor.Slice]:
     """Today's feed with today's service ids, then yesterday's with yesterday's on today's clock; a day no feed covers reads the feed in hand.
-    Each slice carries its feed's connection on this (the planning) thread, since pattern ids are per feed, and make_overlay(feed, timetable)'s overlay."""
+    Each slice carries its feed's connection on this (the planning) thread, since pattern ids are per feed, and make_overlay(feed, timetable, day)'s overlay."""
     out = []
     for d, off in ((day, 0), (day - dt.timedelta(days=1), raptor.day_offset(day - dt.timedelta(days=1), day))):
         f = store.for_date(d) or feed
         tt = raptor.timetable_for(f)
-        out.append(raptor.Slice(tt, frozenset(schedule.service_ids_on(f.conn, d)), off, make_overlay(f, tt) if make_overlay else None, f.conn))
+        out.append(raptor.Slice(tt, frozenset(schedule.service_ids_on(f.conn, d)), off, make_overlay(f, tt, d) if make_overlay else None, f.conn))
     return out
 
 
@@ -97,8 +97,8 @@ def _plan(feed, store, disr, o, d, when: dt.datetime, max_transfers: int, window
     floor = int((runtime.now() - schedule.wall_clock(day, 0)).total_seconds())
     if arrive_by and floor >= t:
         return [], f"arrive_by {stamp} is not after now"
-    # Both slices read the query day's overlay of their feed, so slices on one feed share it (the memo keeps one per feed version).
-    slices = _slices(store, feed, day, lambda f, tt: overlay_mod.build(f, tt, disr, detour_feed, trips, subway, day))
+    # Each slice reads its own service day's overlay: after midnight the trips running are yesterday's, and their updates match only on its clock.
+    slices = _slices(store, feed, day, lambda f, tt, d: overlay_mod.build(f, tt, disr, detour_feed, trips, subway, d))
     modeled = frozenset().union(*(sl.overlay.variants for sl in slices))
     masked = frozenset(s for s in disr.by_stop if disr.stop_skipped(s, modeled))
     ok = (lambda s: s not in masked) if usable is None else (lambda s: s not in masked and usable(s)) if masked else usable

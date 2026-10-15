@@ -319,11 +319,13 @@ def shuttle_routes(conn, tt: Timetable, disr: Disruptions):
     return extra, extra_stops, extra_meta, extra_at
 
 
-_memo: dict[str, tuple] = {}
+MEMO_DAYS = 2  # a query reads its own service day and yesterday's
+_memo: dict[str, dict[dt.date, tuple]] = {}
+_prep: dict[str, tuple] = {}
 
 
 def reset() -> None:
-    _memo.clear()
+    _memo.clear(), _prep.clear()
 
 
 def public_updates(conn, trips: TripFeed | None) -> list[TripUpdateRec]:
@@ -340,25 +342,41 @@ def public_updates(conn, trips: TripFeed | None) -> list[TripUpdateRec]:
     return out
 
 
-def build(feed, tt: Timetable, disr: Disruptions, detour_feed: DetourFeed | None, trips: TripFeed | None, subway: TripFeed | None, day: dt.date) -> Overlay:
-    """One overlay per feed, day and set of inputs; the memo holds the latest per feed version, so the two slices of one query (both read
-    the query day's overlay) and the next query inside the same minute and fetch share it. It holds its inputs, so their ids stay theirs."""
-    held = (tt, disr, trips, subway, detour_feed)
-    key = (day, *map(id, held))
-    hit = _memo.get(feed.version)
+def _prepared(feed, tt: Timetable, trips: TripFeed | None, subway: TripFeed | None, detour_feed: DetourFeed | None):
+    """What a fetch gives every service day alike: the crosswalked surface records, the subway records and the locator over all their trips and
+    the detour feed's; one per feed, holding its inputs so their ids stay theirs. The locator's maps are per group object, so days share the base ones."""
+    held = (tt, trips, subway, detour_feed)
+    key = tuple(map(id, held))
+    hit = _prep.get(feed.version)
     if hit and hit[0] == key:
         return hit[2]
-    conn, stamp = feed.conn, day.strftime("%Y%m%d")
-    surface, under = public_updates(conn, trips), list(subway.trips.values()) if subway else []
+    surface, under = public_updates(feed.conn, trips), list(subway.trips.values()) if subway else []
+    ids = [*(r.trip_id for r in surface), *(r.trip_id for r in under), *(t for e in (detour_feed.entities if detour_feed else []) for t in e.trip_ids)]
+    out = surface, under, Locator(feed.conn, tt, ids)
+    _prep[feed.version] = (key, held, out)
+    return out
+
+
+def build(feed, tt: Timetable, disr: Disruptions, detour_feed: DetourFeed | None, trips: TripFeed | None, subway: TripFeed | None, day: dt.date) -> Overlay:
+    """One overlay per feed, service day and set of inputs: each day slice reads its own day's, since a trip update matches the run of its own
+    service day. The memo keeps the latest per feed and day for MEMO_DAYS days, holding its inputs so their ids stay theirs."""
+    held = (tt, disr, trips, subway, detour_feed)
+    key = tuple(map(id, held))
+    days = _memo.setdefault(feed.version, {})
+    hit = days.get(day)
+    if hit and hit[0] == key:
+        return hit[2]
+    surface, under, loc = _prepared(feed, tt, trips, subway, detour_feed)
+    stamp, origin = day.strftime("%Y%m%d"), wall_clock(day, 0).timestamp()
     entities = [e for e in (detour_feed.entities if detour_feed else []) if stamp in e.service_dates]
-    loc = Locator(conn, tt, [*(r.trip_id for r in surface), *(r.trip_id for r in under), *(t for e in entities for t in e.trip_ids)])
-    origin = wall_clock(day, 0).timestamp()
     # Each feed has its own drift (Task 13's ruling), and the feeds' patterns are disjoint, so the subway chains on the surface patches.
     patched = patch_groups(tt, surface, lambda s: s, origin, loc.slot, tt.pattern_seqs.get) if surface else {}
     if under:
         patched = patch_groups(tt, under, lambda s: s, origin, loc.slot, tt.pattern_seqs.get, drift=SUBWAY_DRIFT_S, base=patched)
     ov = Overlay()
-    ov.add_variants(*detour_variants(conn, tt, entities, day, base=patched, locate=loc))  # its groups start from the patched ones
-    ov.add_shuttles(*shuttle_routes(conn, tt, disr))
-    _memo[feed.version] = (key, held, ov)
+    ov.add_variants(*detour_variants(feed.conn, tt, entities, day, base=patched, locate=loc))  # its groups start from the patched ones
+    ov.add_shuttles(*shuttle_routes(feed.conn, tt, disr))
+    days[day] = (key, held, ov)
+    if len(days) > MEMO_DAYS:
+        days.pop(min(days), None)
     return ov
