@@ -261,11 +261,24 @@ def test_a_headway_group_is_boarded_after_the_buffer_and_the_full_headway(conn):
     assert ride2.depart >= shuttle.arrive + raptor.CHANGE_S and raptor.journey_key(q, j)[1] == ("1", "13791", "13795")
 
 
-def test_a_headway_route_is_boarded_downstream_when_that_leaves_before_the_shuttle_already_ridden_passes():
+def _abc():
+    """A slice holding only headway route -7 over stops A, B, C: a 300 s headway, cum (0, 600, 1200)."""
     from ttc_mcp import overlay as ov_mod
     ov = ov_mod.Overlay(extra={-7: [raptor.Headway(-7, 300, (0, 600, 1200))]}, extra_stops={-7: ["A", "B", "C"]},
                         extra_meta={-7: {"route": "1", "direction_id": "0", "headsign": "shuttle", "mode": "shuttle"}}, extra_at={"A": [(-7, 0)], "B": [(-7, 1)], "C": [(-7, 2)]})
-    q = raptor.Query({"A": (0, 0), "B": (400, 400)}, {"C": (0, 0)}, 0, [raptor.Slice(raptor.Timetable("T", {}, {}, {}, {}), frozenset(), 0, ov)])
+    return raptor.Slice(raptor.Timetable("T", {}, {}, {}, {}), frozenset(), 0, ov)
+
+
+def test_a_headway_route_is_boarded_downstream_when_that_leaves_before_the_shuttle_already_ridden_passes():
+    q = raptor.Query({"A": (0, 0), "B": (400, 400)}, {"C": (0, 0)}, 0, [_abc()])
     # From A the shuttle leaves at 300 and passes B at 900; walking to B and waiting the headway leaves B at 700, so C is reached at 1300, not 1500.
     j = raptor.plan(q)[0]
-    assert [(l.kind, l.frm, l.to, l.depart, l.arrive) for l in j.legs] == [("walk", None, "B", 300, 700), ("shuttle", "B", "C", 700, 1300)]
+    assert [(l.kind, l.frm, l.to, l.depart, l.arrive) for l in j.legs] == [("walk", None, "B", 0, 400), ("shuttle", "B", "C", 700, 1300)] and j.depart == q.t0
+
+
+def test_a_shuttle_first_journey_departs_at_the_query_instant_with_the_wait_inside_it():
+    j = raptor.plan(raptor.Query({"A": (200, 250)}, {"C": (0, 0)}, 1000, [_abc()]))[0]
+    assert (j.depart, j.arrive) == (1000, 2700)
+    assert [(l.kind, l.frm, l.to, l.depart, l.arrive, l.metres) for l in j.legs] == [("walk", None, "A", 1000, 1200, 250), ("shuttle", "A", "C", 1500, 2700, 0)]
+    bare = raptor.plan(raptor.Query({"A": (0, 0)}, {"C": (0, 0)}, 1000, [_abc()]))[0]
+    assert (bare.depart, [(l.kind, l.depart, l.arrive) for l in bare.legs]) == (1000, [("shuttle", 1300, 2500)])

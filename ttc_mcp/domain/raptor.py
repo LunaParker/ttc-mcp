@@ -178,7 +178,7 @@ class Slice:
     def stops_of(self, pattern: int) -> list[str]:
         return self.overlay.stops_of(self.tt, pattern) if self.overlay else self.tt.pattern_stops[pattern]
 
-    def groups_for(self, pattern: int) -> Sequence[Group]:
+    def groups_for(self, pattern: int) -> Sequence[Group | Headway]:
         return self.overlay.groups_for(self.tt, pattern) if self.overlay else self.tt.groups.get(pattern, ())
 
     def meta_of(self, pattern: int) -> dict:
@@ -371,7 +371,8 @@ def plan(q: Query, t0: int | None = None) -> list[Journey]:
 
 
 def _journey(q: Query, tau: list[dict], parent: list[dict], rode: list[dict], rparent: list[dict], k: int, s: str) -> Journey:
-    """Walk the parents back from s; a walk continues from the ride that reached its start, and the origin walk ends as the first ride leaves."""
+    """Walk the parents back from s; a walk continues from the ride that reached its start, and the origin walk ends as the first ride leaves,
+    or at the stop's label before a first shuttle, whose full headway is an unknown bus time a later start cannot dodge (spec 6.10)."""
     legs: list[Leg] = []
     w, m = q.dest[s]
     if w or m:
@@ -379,8 +380,10 @@ def _journey(q: Query, tau: list[dict], parent: list[dict], rode: list[dict], rp
     p = parent[k][s]
     while True:
         if p[0] == "origin":
+            end = tau[0][s] if legs[-1].kind == "shuttle" else legs[-1].depart
             if p[1] or p[2]:
-                legs.append(Leg("walk", None, s, legs[-1].depart - p[1], legs[-1].depart, metres=p[2], via="walk"))
+                legs.append(Leg("walk", None, s, end - p[1], end, metres=p[2], via="walk"))
+            depart = end - p[1]
             break
         if p[0] == "shuttle":
             _, si, pid, gi, dep, board, pos = p
@@ -409,7 +412,7 @@ def _journey(q: Query, tau: list[dict], parent: list[dict], rode: list[dict], rp
             a = merged.pop()
             l = Leg("walk", a.frm, l.to, a.depart, l.arrive, metres=a.metres + l.metres, via="walk" if "walk" in (a.via, l.via) else l.via)
         merged.append(l)
-    return Journey(merged[0].depart, merged[-1].arrive, tuple(merged))
+    return Journey(depart, merged[-1].arrive, tuple(merged))
 
 
 def journey_key(q: Query, j: Journey) -> tuple:

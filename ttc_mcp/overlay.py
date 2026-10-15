@@ -218,8 +218,9 @@ SHUTTLE_BASE = -2000
 SHUTTLE_HEADWAY_MIN, SHUTTLE_KMH, SHUTTLE_DWELL_MIN = 5, 15, 1  # spec 6.10's constants, checked by validation item 19
 
 
-def _line_stations(conn, tt: Timetable, line: str, stations: list[str]) -> list[tuple[str, str, str, float]]:
-    """(station, name, lowest platform of the line, distance along the line's rank-1 pattern) in line order; none when the feed lacks the line."""
+def _line_stations(conn, line: str, stations: list[str]) -> list[tuple[str, str, str, float]]:
+    """(station, name, lowest platform of the line, distance along the line's rank-1 pattern) in line order; none when the feed lacks the line.
+    A platform with no shape distance (dist_m is nullable) places nothing, so its station drops out."""
     row = conn.execute("SELECT pattern_id FROM patterns WHERE route_id=? AND direction_id=0 AND rank=1", (line,)).fetchone()
     if row is None:
         return []
@@ -227,8 +228,8 @@ def _line_stations(conn, tt: Timetable, line: str, stations: list[str]) -> list[
     out = []
     for sid in stations:
         platforms = sorted(r[0] for r in conn.execute(LINE_PLATFORMS, (sid, line)))
-        on_line = [p for p in platforms if p in dist]
-        if platforms and on_line:
+        on_line = [p for p in platforms if dist.get(p) is not None]
+        if on_line:
             name = conn.execute("SELECT name FROM stops WHERE stop_id=?", (sid,)).fetchone()[0]
             out.append((sid, name, platforms[0], dist[on_line[0]]))
     return sorted(out, key=lambda x: x[3])
@@ -242,7 +243,7 @@ def shuttle_routes(conn, tt: Timetable, disr: Disruptions):
         if el["type"] != "closure" or not el["active_now"] or not _shuttle_runs(el) or len(el["stations"]) < 2:
             continue
         for line in (r for r in el["routes"] if r in RAIL):
-            chain = _line_stations(conn, tt, line, el["stations"])
+            chain = _line_stations(conn, line, el["stations"])
             if len(chain) < 2:
                 continue
             km = (chain[-1][3] - chain[0][3]) / 1000

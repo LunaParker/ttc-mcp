@@ -1,7 +1,9 @@
 import dataclasses
 import datetime as dt
+import sqlite3
 from array import array
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -9,7 +11,7 @@ from tests.unit.test_disruptions import NOW_DAY, NOW_NIGHT, build
 from ttc_mcp import overlay
 from ttc_mcp.adapters.bustime_rt import StopUpdate, TripUpdateRec
 from ttc_mcp.adapters.detour_feed import parse_detours
-from ttc_mcp.domain import raptor
+from ttc_mcp.domain import planner, raptor
 from ttc_mcp.static import schedule
 
 
@@ -250,3 +252,51 @@ def test_the_night_closure_becomes_two_shuttle_pseudo_routes_over_its_stations_i
     assert m["note"] == "assumed 5-minute headway and 15 km/h over 4.4 km of track with a 1-minute stop per station; the TTC publishes no shuttle timetable (alert 77519)"
     assert at["13793"] == [(-2000, 1), (-2001, 1)]
     assert overlay.shuttle_routes(conn, tt, build(conn, NOW_DAY))[0] == {}
+
+
+def test_a_platform_without_a_shape_distance_drops_out_of_the_shuttle_chain():
+    db = sqlite3.connect(":memory:")
+    db.executescript("""
+        CREATE TABLE patterns (pattern_id INTEGER, route_id TEXT, direction_id INTEGER, rank INTEGER);
+        CREATE TABLE pattern_stops (pattern_id INTEGER, stop_id TEXT, dist_m REAL);
+        CREATE TABLE stops (stop_id TEXT, name TEXT, parent_station TEXT, location_type INTEGER);
+        CREATE TABLE stop_routes (stop_id TEXT, route_id TEXT);
+        INSERT INTO patterns VALUES (1, '1', 0, 1);
+        INSERT INTO pattern_stops VALUES (1, 'a1', 100), (1, 'b1', NULL), (1, 'c1', 2100);
+        INSERT INTO stops VALUES ('A', 'Alpha', NULL, 1), ('B', 'Beta', NULL, 1), ('C', 'Gamma', NULL, 1), ('a1', 'Alpha P', 'A', 0), ('b1', 'Beta P', 'B', 0), ('c1', 'Gamma P', 'C', 0);
+        INSERT INTO stop_routes VALUES ('a1', '1'), ('b1', '1'), ('c1', '1');
+    """)
+    el = {"type": "closure", "active_now": True, "shuttle": "Will Operate", "stations": ["A", "B", "C"], "routes": ["1"], "alert_id": "x"}
+    extra, stops, meta, _ = overlay.shuttle_routes(db, None, SimpleNamespace(elements=[el]))
+    assert stops == {-2000: ["a1", "c1"], -2001: ["c1", "a1"]} and extra[-2000][0].cum == (0, 540) and "over 2.0 km of track" in meta[-2000]["note"]
+
+
+def _night(conn, origin, dest):
+    """A query at NOW_NIGHT under closure 77519 with its shuttle pseudo-routes on both day slices."""
+    from tests.unit.test_raptor import query
+    tt, disr = raptor.Timetable.load(conn, "S1000538"), build(conn, NOW_NIGHT)
+    ov, closer = overlay.Overlay(), planner.closed_for(conn, disr, tt)
+    ov.add_shuttles(*overlay.shuttle_routes(conn, tt, disr))
+    q = query(conn, tt, origin, dest, NOW_NIGHT, closed=lambda si, pid: closer(pid))
+    q.slices = [raptor.Slice(s.tt, s.service_ids, s.offset, ov, s.conn) for s in q.slices]
+    return q
+
+
+def test_a_journey_from_inside_the_closure_starts_on_the_shuttle_and_departs_at_the_query_instant(conn):
+    q = _night(conn, "Lawrence", "Union")
+    j = raptor.plan(q)[0]
+    shuttle, ride = j.rides
+    assert j.legs[0] == shuttle and (shuttle.kind, shuttle.pattern, shuttle.frm, shuttle.to, ride.frm) == ("shuttle", -2000, "13793", "13795", "13795")
+    # The first boarding takes no change buffer, so the shuttle leaves a full headway after the origin label and the option keeps that wait.
+    assert j.depart == q.t0 and shuttle.depart == q.t0 + q.origin["13793"][0] + 300 and shuttle.arrive == shuttle.depart + 619
+    assert ride.depart >= shuttle.arrive + raptor.CHANGE_S and planner.materialize(conn, q, j, NOW_NIGHT.date())["depart_at"] == "2026-10-06T23:30-04:00"
+
+
+def test_the_reverse_shuttle_carries_a_northbound_journey_on_its_own_cumulative_seconds(conn):
+    to_lawrence = raptor.plan(_night(conn, "Eglinton", "Lawrence"))[0]
+    assert [(l.kind, l.pattern, l.frm, l.to, l.arrive - l.depart) for l in to_lawrence.legs] == [("shuttle", -2001, "13795", "13793", 619)]
+    q = _night(conn, "Eglinton", "Finch")
+    j = raptor.plan(q)[0]
+    shuttle, ride = j.rides
+    assert (shuttle.pattern, shuttle.frm, shuttle.to, shuttle.depart, shuttle.arrive - shuttle.depart) == (-2001, "13795", "13791", q.t0 + 300, 1166)
+    assert ride.frm == "13791" and ride.depart >= shuttle.arrive + raptor.CHANGE_S and j.depart == q.t0
