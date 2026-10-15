@@ -100,7 +100,7 @@ Every variable the code reads (`grep -rn os.environ ttc_mcp/`; the gate reads a 
 - Comments at most two lines; the why belongs in the commit body. Pull request descriptions: at most one paragraph and five bullets.
 - Spec edits ride with the change that needs them; a live finding gets a dated line in section 11.
 - CI (`.github/workflows/ci.yml`, pushes to main and pull requests) is four jobs: unit (`uv sync --frozen --extra cloud`, `pytest tests/unit`), lint (`ruff check`), build (sdist and wheel, both entry points called from a clean venv) and image (`scripts/smoke_image.sh`); all four green is the merge rule. Dependabot (`.github/dependabot.yml`) watches GitHub Actions, uv (grouped) and the Docker base image weekly.
-- The SDD workflow: phase plans are committed under `docs/superpowers/plans/`; task briefs, reports and ledgers sit under `.superpowers/`, which git ignores (its `sdd/.gitignore` is `*`).
+- The SDD workflow: phase plans are working documents and are not committed; task briefs, reports and ledgers sit under `.superpowers/`, which git ignores (its `sdd/.gitignore` is `*`). The decisions and evidence a phase produces land in the spec (sections 6, 7 and 11).
 
 ### Testing conventions
 
@@ -122,5 +122,4 @@ Every variable the code reads (`grep -rn os.environ ttc_mcp/`; the gate reads a 
 
 - `docs/spec.md` section 11: the dated verification log, with the live counts and what each phase gate proved.
 - `docs/architecture.html`: the layer picture, two requests end to end, the package layout and the table of what lives where. It predates phase 5a: the Dockerfile sits at the repo root and the runbook in `docs/`, not under a `cloud/` directory, and its test counts are phase-4 numbers.
-- The phase plans under `docs/superpowers/plans/` (phases 1 to 4 dated 2026-10-05, phase 5a dated 2026-10-11).
 - `scripts/validate_connections.py` for how `connections` is judged; `docs/investigation-2026-09-13.md`, `docs/detours-addendum.md` and `scripts/ttc_transit_probe.py` for the source survey the adapters came from.
