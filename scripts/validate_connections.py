@@ -1,9 +1,12 @@
-"""Twenty origin-destination pairs across the city for a reviewer to compare with the TTC trip planner (spec validation item 8).
+"""Twenty origin-destination pairs across the city (spec validation items 8 and 18).
 
-Run: TTC_MCP_SKIP_REFRESH=1 uv run python scripts/validate_connections.py
-Exit 0 when at least 18 pairs return an option under 150 typical minutes (known_min for an option with a shuttle leg).
+Run: TTC_MCP_SKIP_REFRESH=1 uv run python scripts/validate_connections.py [--before docs/superpowers/plans/2026-10-14-phase-6-before.json] [--depart 2026-10-14T08:00]
+Exit 0 when at least 18 pairs return a journey under 150 minutes door to door; with --before, prints the pattern search's typical
+minutes beside the exact ones and fails when a pair that had an option has none now.
 """
+import argparse
 import asyncio
+import json
 import sys
 
 from fastmcp import Client
@@ -25,27 +28,38 @@ PAIRS = [
 ]
 
 
+def label(x):
+    return x if isinstance(x, str) else f"({x['lat']}, {x['lon']})"
+
+
 async def main() -> int:
-    ok = shuttles = 0
+    p = argparse.ArgumentParser()
+    p.add_argument("--before")
+    p.add_argument("--depart")
+    a = p.parse_args()
+    before = {(json.dumps(r["origin"]), json.dumps(r["destination"])): r for r in json.load(open(a.before))} if a.before else {}
+    ok = estimates = lost = 0
     async with Client(create_app()) as c:
         for origin, destination in PAIRS:
-            r = (await c.call_tool("connections", {"origin": origin, "destination": destination})).data
-            label = f"{origin if isinstance(origin, str) else (origin['lat'], origin['lon'])} -> {destination if isinstance(destination, str) else (destination['lat'], destination['lon'])}"
+            args = {"origin": origin, "destination": destination, **({"depart_at": a.depart} if a.depart else {})}
+            r = (await c.call_tool("connections", args)).data
+            old = before.get((json.dumps(origin), json.dumps(destination)))
+            old_min = old["options"][0]["typical_min"] if old and old["options"] else None
             if "error" in r or not r["options"]:
-                print(f"NONE    {label}: {r.get('error', 'no option')}")
+                print(f"NONE    {label(origin)} -> {label(destination)}: {r.get('error') or r.get('note')}" + (f" (was {old_min} typical)" if old_min is not None else ""))
+                lost += old_min is not None
                 continue
             o = r["options"][0]
-            legs = " > ".join(f"{l['route']} ({l['board']['name']} to {l['alight']['name']})" if l["mode"] == "ride" else l["mode"] for l in o["legs"])
-            shuttle = o["typical_min"] is None
-            mins = o["known_min"] if shuttle else o["typical_min"]
-            good = mins < 150
+            legs = " > ".join(f"{l['route']} {l['depart'][11:16]} {l['board']['name']} to {l['alight']['name']} {l['arrive'][11:16]}" if l["mode"] == "ride" else l["mode"] for l in o["legs"])
+            good = o["duration_min"] < 150
             ok += good
-            shuttles += shuttle
-            tag = "SHUTTLE" if shuttle else ("OK     " if good else "SLOW   ")
-            print(f"{tag} {label}: {mins} min{' known, shuttle leg unknown' if shuttle else ''}, {o['transfers']} transfer(s), {len(r['options'])} options, basis={o.get('basis')}")
+            estimates += o["estimate"]
+            tag = "EST    " if o["estimate"] else ("OK     " if good else "SLOW   ")
+            print(f"{tag} {label(origin)} -> {label(destination)}: {o['depart_at'][11:16]} to {o['arrive_at'][11:16]}, {o['duration_min']} min, {o['transfers']} transfer(s), "
+                  f"{len(r['options'])} options, basis={o['basis']}" + (f", was {old_min} typical" if old_min is not None else ""))
             print(f"       {legs}")
-    print(f"{ok}/{len(PAIRS)} pairs with an option under 150 min; {shuttles} with a shuttle leg (counted by known_min)")
-    return 0 if ok >= 18 else 1
+    print(f"{ok}/{len(PAIRS)} pairs under 150 min; {estimates} with an estimated leg; {lost} lost since the capture")
+    return 0 if ok >= 18 and lost == 0 else 1
 
 
 if __name__ == "__main__":
