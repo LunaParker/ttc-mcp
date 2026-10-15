@@ -444,6 +444,11 @@ def _minutes(a: int, b: int) -> int:
     return round((b - a) / 60)
 
 
+def _span(a: int, b: int) -> int:
+    """Minutes between two printed times (seconds truncated), so the numbers a reader adds up agree with the clocks beside them."""
+    return b // 60 - a // 60
+
+
 def materialize(conn, q: raptor.Query, j: raptor.Journey, day: dt.date) -> dict:
     """A journey as the spec 4.4 option, rank, next and disruptions left to the caller; rides keep base-pattern positions for annotate."""
     def iso(s: int) -> str:
@@ -455,11 +460,11 @@ def materialize(conn, q: raptor.Query, j: raptor.Journey, day: dt.date) -> dict:
             prev = j.legs[i - 1] if i and j.legs[i - 1].kind != "walk" else None
             nxt = j.legs[i + 1] if i + 1 < len(j.legs) and j.legs[i + 1].kind != "walk" else None
             if prev and nxt:
-                legs.append({"mode": "transfer", "from": _stop(l.frm, names), "to": _stop(l.to, names), "distance_m": l.metres, "walk_min": _minutes(l.depart, l.arrive),
-                             "via": l.via, "depart": iso(prev.arrive), "arrive": iso(nxt.depart), "min": _minutes(prev.arrive, nxt.depart)})
+                legs.append({"mode": "transfer", "from": _stop(l.frm, names), "to": _stop(l.to, names), "distance_m": l.metres, "walk_min": walk_minutes(l.metres),
+                             "via": l.via, "depart": iso(prev.arrive), "arrive": iso(nxt.depart), "min": _span(prev.arrive, nxt.depart)})
             else:
                 end = {"to": _stop(l.to, names)} if nxt else {"from": _stop(l.frm, names)}
-                legs.append({"mode": "walk", **end, "distance_m": l.metres, "min": _minutes(l.depart, l.arrive), "depart": iso(l.depart), "arrive": iso(l.arrive)})
+                legs.append({"mode": "walk", **end, "distance_m": l.metres, "min": walk_minutes(l.metres), "depart": iso(l.depart), "arrive": iso(l.arrive)})
             continue
         sl = q.slices[l.slice_idx]
         meta = sl.meta_of(l.pattern)
@@ -467,10 +472,10 @@ def materialize(conn, q: raptor.Query, j: raptor.Journey, day: dt.date) -> dict:
             # Two vehicles at one stop: the change still takes the buffer, and the slack is shown like any other transfer.
             prev = j.legs[i - 1]
             legs.append({"mode": "transfer", "from": _stop(l.frm, names), "to": _stop(l.frm, names), "distance_m": 0, "walk_min": 0, "via": "walk",
-                         "depart": iso(prev.arrive), "arrive": iso(l.depart), "min": _minutes(prev.arrive, l.depart)})
+                         "depart": iso(prev.arrive), "arrive": iso(l.depart), "min": _span(prev.arrive, l.depart)})
         if l.kind == "shuttle":
             legs.append({"mode": "shuttle", "line": meta["line"], "from": meta["station_of"][l.frm], "to": meta["station_of"][l.to], "depart": iso(l.depart),
-                         "arrive": iso(l.arrive), "min": _minutes(l.depart, l.arrive), "basis": "estimate", "alert_id": meta["alert_id"], "note": meta["note"]})
+                         "arrive": iso(l.arrive), "min": _span(l.depart, l.arrive), "basis": "estimate", "alert_id": meta["alert_id"], "note": meta["note"]})
             continue
         base, positions = meta.get("base_pattern", l.pattern), meta.get("positions")
         board_b, alight_b = (positions[l.board_pos], positions[l.alight_pos]) if positions else (l.board_pos, l.alight_pos)
@@ -478,12 +483,11 @@ def materialize(conn, q: raptor.Query, j: raptor.Journey, day: dt.date) -> dict:
         g = sl.groups_for(l.pattern)[l.group]
         legs.append({"mode": "ride", "route": meta["route"], "direction_id": meta["direction_id"], "headsign": meta["headsign"], "transit": meta["mode"],
                      "pattern_id": base, "trip_id": str(g.trip_ids[l.trip]), "board": _stop(l.frm, names), "alight": _stop(l.to, names),
-                     "stops": l.alight_pos - l.board_pos, "depart": iso(l.depart), "arrive": iso(l.arrive), "min": _minutes(l.depart, l.arrive),
+                     "stops": l.alight_pos - l.board_pos, "depart": iso(l.depart), "arrive": iso(l.arrive), "min": _span(l.depart, l.arrive),
                      "typical_min": _minutes(rows[board_b][2], rows[alight_b][2]), "basis": l.basis, "board_pos": board_b, "alight_pos": alight_b,
                      **({"detour_id": meta["detour_id"]} if meta.get("detour_id") else {})})
     rides = j.rides
-    # duration_min is the span between the minutes shown, so depart_at, arrive_at and it always agree.
-    return {"transfers": j.transfers, "depart_at": iso(j.depart), "arrive_at": iso(j.arrive), "duration_min": j.arrive // 60 - j.depart // 60, "walk_m": j.walk_m,
+    return {"transfers": j.transfers, "depart_at": iso(j.depart), "arrive_at": iso(j.arrive), "duration_min": _span(j.depart, j.arrive), "walk_m": j.walk_m,
             "stops": sum(l["stops"] for l in legs if l["mode"] == "ride"), "basis": rides[0].basis if rides else "schedule", "estimate": j.estimate, "legs": legs}
 
 
