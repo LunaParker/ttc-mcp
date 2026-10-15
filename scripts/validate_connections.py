@@ -1,8 +1,9 @@
 """Twenty origin-destination pairs across the city (spec validation items 8 and 18).
 
-Run: TTC_MCP_SKIP_REFRESH=1 uv run python scripts/validate_connections.py [--before docs/superpowers/plans/2026-10-14-phase-6-before.json] [--depart 2026-10-14T08:00]
-Exit 0 when at least 18 pairs return a journey under 150 minutes door to door; with --before, prints the pattern search's typical
-minutes beside the exact ones and fails when a pair that had an option has none now.
+Run: TTC_MCP_SKIP_REFRESH=1 uv run python scripts/validate_connections.py [--before CAPTURE.json] [--depart 2026-10-14T08:00]
+Exit 0 when at least 18 pairs return a journey under 150 minutes door to door. --before takes an earlier capture of the pairs' answers
+in the v0.7 contract (a JSON list of {origin, destination, options}, typical_min on each option), prints its minutes beside the exact
+ones and fails when a pair that had an option has none now.
 """
 import argparse
 import asyncio

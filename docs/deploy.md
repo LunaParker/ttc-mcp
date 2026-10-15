@@ -1,6 +1,6 @@
 # Deploying ttc-mcp to Cloud Run (the phase 5b runbook)
 
-**What is deployed:** nothing, as of 2026-10-11. Phase 5a built the container and everything the service needs in code (spec 6.9, "Implemented"); phase 5b is the GCP provisioning and the first deploy, and this document is its runbook. Each step is one code block to paste into a terminal, in order, from the repository root with `gcloud` signed in as the project owner. Nothing here has run yet, so the first run is also this document's test: fix the step that fails, then commit the fix. When the deploy is done, update the line above and close validation items 14 to 16 in spec 6.9 with a dated line in section 11.
+**What is deployed:** nothing, as of 2026-10-15. Phase 5a built the container and everything the service needs in code (spec 6.9, "Implemented"); phase 5b is the GCP provisioning and the first deploy, `docs/cloud-run.md` is its build specification, and this document is its runbook. Each step is one code block to paste into a terminal, in order, from the repository root with `gcloud` signed in as the project owner. Nothing here has run yet, so the first run is also this document's test: fix the step that fails, then commit the fix. When the deploy is done, update the line above and close validation items 14 to 16 in spec 6.9 with a dated line in section 11.
 
 ## Values (spec 6.9)
 
@@ -157,11 +157,11 @@ gcloud run jobs executions list --job ttc-mcp-static --region us-east1
 
 ## 13. Every TTC host from us-east1 (validation item 14)
 
-None of the TTC's hosts publish access rules, and four of them 403 the default Python User-Agent; the service sends `ttc-mcp/<version> (+https://github.com/LunaParker/ttc-mcp)` (`TTC_MCP_UA` is not set). Through any of the three clients, call `feed_status` with `probe: true`: that is one live request per source (bustime.ttc.ca's per-stop XML and its two GTFS-RT feeds, ntas.ttc.ca, alerts.ttc.ca, gtfsrt.ttc.ca's alerts and detour feeds, www.ttc.ca's route detail). Every `probed` entry must be `null` and no `sources` row may carry `403` or `429` in `status_counts`. Then call `arrivals` for a stop, `next_trains` for a station, `detours` and `service_changes` once each. The Job's log (step 9) already proved CKAN and ttc.ca's route-detail call from the same region. Record the result as a dated line in spec section 11 and close item 14 in 6.9.
+None of the TTC's hosts publish access rules, and four of them 403 the default Python User-Agent; the service sends `ttc-mcp/<version> (+https://github.com/LunaParker/ttc-mcp)` (`TTC_MCP_UA` is not set). Through any of the three clients, call `feed_status` with `probe: true`: that is one live request per source (bustime.ttc.ca's per-stop XML and its two GTFS-RT feeds, ntas.ttc.ca, alerts.ttc.ca, gtfsrt.ttc.ca's alerts, detour and subway trip feeds, www.ttc.ca's route detail). Every `probed` entry must be `null` and no `sources` row may carry `403` or `429` in `status_counts`. Then call `arrivals` for a stop, `next_trains` for a station, `detours` and `service_changes` once each. The Job's log (step 9) already proved CKAN and ttc.ca's route-detail call from the same region. Record the result as a dated line in spec section 11 and close item 14 in 6.9.
 
 ## 14. Cold start with the real store (validation item 15)
 
-With `--min-instances 0` the instance goes away after idling; wait fifteen minutes after the last call, then time the first request. The 401 is produced only once the container is up and the pull is done, so an unauthenticated POST measures the cold start. Spec 6.9 expects 3 to 8 s (container start, manifest read, one regional download of about 116 MB per feed); if it is well above that, 6.9's alternative is a gen2 GCS volume mount of the bucket with SQLite opened read-only. Record the number in section 11 either way and close item 15.
+With `--min-instances 0` the instance goes away after idling; wait fifteen minutes after the last call, then time the first request. The 401 is produced only once the container is up and the pull is done, so an unauthenticated POST measures the cold start. Spec 6.9 expects 3 to 8 s (container start, manifest read, one regional download of about 139 MB per feed); if it is well above that, 6.9's alternative is a gen2 GCS volume mount of the bucket with SQLite opened read-only. Record the number in section 11 either way and close item 15.
 
 ```bash
 curl -s -o /dev/null -w '%{http_code} %{time_total}s\n' -X POST https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
@@ -174,8 +174,9 @@ A new tag per deploy; the service keeps its environment and secrets across deplo
 
 ```bash
 gcloud builds submit --tag us-east1-docker.pkg.dev/$PROJECT_ID/ttc-mcp/ttc-mcp:v2
-gcloud run deploy ttc-mcp --image us-east1-docker.pkg.dev/$PROJECT_ID/ttc-mcp/ttc-mcp:v2 --region us-east1
 gcloud run jobs update ttc-mcp-static --image us-east1-docker.pkg.dev/$PROJECT_ID/ttc-mcp/ttc-mcp:v2 --region us-east1
+gcloud run jobs execute ttc-mcp-static --region us-east1 --wait   # after a schema bump; otherwise the daily run is enough
+gcloud run deploy ttc-mcp --image us-east1-docker.pkg.dev/$PROJECT_ID/ttc-mcp/ttc-mcp:v2 --region us-east1
 gcloud run revisions list --service ttc-mcp --region us-east1
 gcloud run services update-traffic ttc-mcp --region us-east1 --to-revisions PREVIOUS-REVISION-NAME=100
 ```

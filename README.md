@@ -2,7 +2,7 @@
 
 Live answers about Toronto's transit network, for Claude and other MCP clients.
 
-ttc-mcp is a [Model Context Protocol](https://modelcontextprotocol.io) server for the Toronto Transit Commission (TTC). It lets an assistant answer the questions riders actually ask: when the next streetcar comes, whether a subway line is closed and where the shuttle buses run, how to get across town around a closure, whether a station is step-free today. It reads the TTC's timetables and live feeds when you ask, says how fresh each answer is, and attaches service disruptions to every answer they touch.
+ttc-mcp is a [Model Context Protocol](https://modelcontextprotocol.io) server for the Toronto Transit Commission (TTC). It lets an assistant answer the questions riders actually ask: when the next streetcar comes, whether a subway line is closed and where the shuttle buses run, how to get across town by a given time and around a closure, whether a station is step-free today. It reads the TTC's timetables and live feeds when you ask, says how fresh each answer is, and attaches service disruptions to every answer they touch.
 
 It is an independent, single-user project, not affiliated with or endorsed by the TTC or the City of Toronto.
 
@@ -28,6 +28,7 @@ You ask in plain language and the client picks the tools. Some examples:
 |---|---|---|
 | How do I get from Spadina to Pape? | `connections` | Timetable-exact trips: real departures and arrivals on every leg, up to three transfers, a departure window or an arrival time, the next departures of the first ride, and every disruption on the way with the legs it affects |
 | I'm at the Distillery District. How do I get to Union? | a maps tool to geocode, then `connections` | The same, starting from the place's coordinates |
+| I have to be at Union by 9. When do I leave Kipling? | `connections` with `arrive_by` | The latest trips that still arrive in time, each with its exact times |
 | When's the next 504 at King and Spadina? | `find_stops`, `arrivals` | Predicted minutes with crowding, or timetable minutes and a note when nothing is predicted |
 | When's the next train at Bloor-Yonge? | `next_trains` | Minutes for every platform, by line and direction |
 | Is anything wrong on the subway? | `service_status` | Closures with their hours and shuttles, reduced speed zones, suspended or detoured surface routes, elevators and escalators out of service |
@@ -167,7 +168,7 @@ Every answer carries `meta`:
 - `static_feed`: the timetable version in use.
 - `advisories`: the same for the disruption feeds when the answer includes disruptions, with `errors` naming any feed that failed. The four disruption tools (`alerts`, `service_status`, `detours`, `service_changes`) describe those feeds in `meta` itself and name failed ones in `meta.errors`.
 
-Rows that give times also carry `basis`: `realtime` or `schedule`, and `estimate` on a `connections` shuttle leg. `meta` describes the fetch, so a source that answered with no predictions reads `live` and `fresh` while its rows fall back to `basis: schedule`.
+Rows that give times also carry `basis`: `realtime` or `schedule`, and `estimate` on a `connections` shuttle leg. In `connections` a ride is `realtime` when a live trip update moved its trip, and the trip as a whole carries its first ride's `basis`. `meta` describes the fetch, so a source that answered with no predictions reads `live` and `fresh` while its rows fall back to `basis: schedule`.
 
 ## Design
 
@@ -175,11 +176,12 @@ The [specification](docs/spec.md) records each decision with its evidence; secti
 
 - **It fetches only when asked.** There is no background polling. A question triggers the requests it needs, each source is cached for its own refresh interval (from 10 seconds for train predictions to 10 minutes for service changes), and simultaneous questions share one request. An idle server sends nothing, which is light on the TTC's servers and lets a hosted copy scale to zero.
 - **It says how fresh every answer is.** A stale cached answer is never labelled fresh, and timetable minutes always carry `basis: schedule` (see `meta` above).
-- **Disruptions travel with the answer.** Closures, detours, reduced speed zones, delays and elevator outages are attached to the stops, stations, arrivals and trips they affect, and the trip planner never boards, drops off or transfers you at a closed station, never stops a detoured bus at a stop its detour skips, and never puts you on a train across a closed section.
+- **Disruptions travel with the answer.** Closures, detours, reduced speed zones, delays and elevator outages are attached to the stops, stations, arrivals and trips they affect, and the trip planner never boards, drops off or transfers you at a station closed at the time you ask about, never stops a detoured bus at a stop its detour skips, and never puts you on a train across a section closed at that time.
+- **Trips are planned on the timetable itself.** `connections` searches the trips the TTC actually runs (the RAPTOR algorithm, over an index built with the timetable and loaded into memory once per timetable), so every ride is a real trip with its own departure and arrival. A change between vehicles costs the walk, timed through the station's mapped passageways where the TTC publishes them, plus a two-minute buffer. The answer is the fastest trip for each number of transfers, from one moment, across a departure window, or by an arrival time. For a question within an hour of now it reads the TTC's live trip updates for buses, streetcars and the subway, so the trips it boards run at their predicted times; Lines 5 and 6 publish no trip updates and stay on the timetable.
 - **Closures follow how the TTC runs them.** Stations inside a closure have no trains. Each end station keeps running on the platform facing the open part of the line, and that is where the shuttle buses start. A train prediction for a closed platform is set aside, not trusted.
 - **It says which numbers are estimates:** a shuttle leg's minutes assume a headway and a bus speed, the note states them, and the trip is flagged `estimate`. Every ride is a real trip, at its timetable times or, near now, at the times the TTC's live trip updates predict. Crowding reads "No info" without data. A step-free verdict is `unknown` when a station's elevators aren't fully mapped. Timetable fallbacks say `basis: schedule`.
-- **Timetables come from the TTC's published GTFS**, built into a local SQLite file and rebuilt only when the City of Toronto's portal publishes a new one. During a board-period changeover both timetables stay loaded, so trips from either resolve.
-- **Live data comes from the TTC's own feeds**: BusTime for buses and streetcars, NTAS for the subway and LRT, and the TTC's alert and GTFS-Realtime feeds. Every request names the project in its User-Agent, and a failing source is backed off (see below).
+- **Timetables come from the TTC's published GTFS**, built into a local SQLite file, with the trip planner's index, and rebuilt only when the City of Toronto's portal publishes a new one. During a board-period changeover both timetables stay loaded, so trips from either resolve.
+- **Live data comes from the TTC's own feeds**: BusTime for buses and streetcars, NTAS for the subway and LRT, and the TTC's alert and GTFS-Realtime feeds (alerts, detours, and trip updates for buses, streetcars and the subway). Every request names the project in its User-Agent, and a failing source is backed off (see below).
 - **Lines 5 and 6 are rapid transit** everywhere: stations, platforms, closures and train predictions.
 - **Accessibility reads the rail platforms**, not the station's own flag (which the feed sets on every station) and not its bus bays, and takes elevator status from live alerts.
 - **No geocoding.** Addresses are a maps tool's job, so the server needs no maps API key.
@@ -195,7 +197,8 @@ Two kinds of trouble: a data source failing, and the transit network itself bein
 | Source | Fetched at most every | Last good answer kept for | Called stale after |
 |---|---|---|---|
 | Bus and streetcar predictions (BusTime) | 30 s | 10 min | 90 s |
-| Vehicle positions and trips (BusTime GTFS-Realtime) | 30 s | 10 min | 90 s |
+| Vehicle positions and trip updates (BusTime GTFS-Realtime) | 30 s | 10 min | 90 s |
+| Subway trip updates (GTFS-Realtime) | 30 s | 10 min | 60 s |
 | Train predictions (NTAS) | 10 s | 5 min | 60 s |
 | alerts.ttc.ca | 25 s | 1 h | 10 min |
 | GTFS-Realtime alerts | 60 s | 1 h | 10 min |
@@ -204,6 +207,7 @@ Two kinds of trouble: a data source failing, and the transit network itself bein
 
 - **A request fails or times out** (after 10 seconds, or 5 for the alert, detour and service-change feeds): the source's last good answer is used, marked `cache: stale_fallback` and `staleness: stale`, for as long as the table allows.
 - **Past that window**, live answers fall back to the timetable: `arrivals` and `next_trains` give scheduled minutes with `basis: schedule` and a note naming the failure, and `vehicles` returns no vehicles with a note. A disruption feed that fails is named in `meta.advisories.errors`, or in `meta.errors` for the four disruption tools; the answer still comes, but read "no disruptions" there as unknown, not as all clear.
+- **A trip-update feed fails:** `connections` plans that part of the network on the timetable, its rides read `basis: schedule`, and `meta.source` names only the feeds that answered. The trip-update feeds are fetched only for questions within an hour of now.
 - **A source that keeps failing is put on hold.** After each failure it isn't asked again for a pause that doubles with every consecutive failure, starting at twice its refresh interval and capped at a quarter of how long its last good answer is kept, so a struggling TTC server isn't hammered. Holds are per request: per stop for bus and streetcar predictions, per platform for train predictions, per feed otherwise. `feed_status` shows each source's failures, when it will next be tried (`retry_after`) and how many HTTP 403 or 429 refusals it has seen; `feed_status` with `probe: true` asks every source once, hold or not.
 - **No prediction isn't no service.** An empty answer from NTAS (common on Line 6, and normal late at night) reads `service: no_prediction` with timetable minutes. BusTime's own messages are passed on in the note the same way.
 - **Rail lines publish no vehicle positions or crowding**, so `vehicles` answers that the rail lines (1, 2, 4, 5 and 6) are unavailable and points to `next_trains`.
@@ -211,7 +215,7 @@ Two kinds of trouble: a data source failing, and the transit network itself bein
 ### The network is disrupted
 
 - **A subway or LRT closure.** Platforms inside the closed section, and each end station's platform facing into it, are `suspended`: no minutes, with whatever NTAS still predicts set aside in `ntas_min`, as in the example above. The end stations keep real minutes on the platform facing the open line (`service: normal` in `next_trains`, while `station` reads that line as `reduced`), and the closure is tagged `shuttle_terminus`. A closure that ends at a terminal, or covers one station, closes both platforms there. Trips across the gap become ride, shuttle, ride with the shuttle estimated and flagged: the shuttle leg's minutes come from an assumed headway and bus speed that its note states, the trip carries `estimate: true`, and it ranks after every trip that needs no estimate. The shuttle stop is placed at one platform of each station, so a trip can show a walk between two platforms of an end station: that walk stands for reaching the shuttle buses. When the TTC runs no shuttle, `connections` routes around the closure on other lines or says why it found nothing.
-- **Planned and nightly closures** carry their windows, and `active_now` says whether one applies at this minute. `connections` with a future `depart_at` or an `arrive_by` plans against the closures in force at that time.
+- **Planned and nightly closures** carry their windows, and `active_now` says whether one applies at this minute. `connections` with a future `depart_at` or an `arrive_by` plans against the closures in force at the time you give. A departure window or an arrive-by search can span an hour or more, so when a closure on a line one of the trips rides starts or ends inside it, the answer's note names the closure and the time: trips on the far side of that moment were still planned with the closure as it stood at the time you gave.
 - **A surface detour.** Skipped stops show as `skipped_by_detour` in `route_stops` and arrival rows carry the detour's id. In `connections` the detoured route's trips skip them with the published delay; other routes keep serving the stop. When a detour can't be matched to its route's trips, `connections` avoids its skipped stops altogether: it plans from the served stops nearby and says so.
 - **Reduced speed zones**, in their direction of travel, **and delays** are attached to the legs of a trip that they affect, and `affects` names those legs.
 - **An elevator out of service** shows in `accessibility` with its alert, and the step-free verdict turns to `no`, noting that another elevator may still give a step-free path. Outages announced for later are listed under `upcoming` and leave today's verdict alone.
@@ -219,7 +223,7 @@ Two kinds of trouble: a data source failing, and the transit network itself bein
 ### The timetable is missing or old
 
 - **No timetable yet:** every tool except `feed_status` answers with an error asking you to run `ttc-mcp-build`; the live and disruption tools need the timetable too, to resolve stops, stations and routes.
-- **A timetable built by an older version of the server** is skipped (the server's log names it) and the tools answer with the same error; `ttc-mcp-build` rebuilds it.
+- **A timetable built by an older version of the server** is skipped (the server's log names it) and the tools answer with the same error; `ttc-mcp-build` rebuilds it, and so does a local stdio server's startup check. The trip planner's index, added in October 2026, is one such change.
 - **An ageing timetable:** within three days of its end date, with no newer one loaded, `staleness` reads `expiring`. Once no loaded timetable covers today, the tools answer with the same error, with `staleness: expired`, until a build loads the next one. The TTC publishes each board period's timetable shortly before it starts (in September 2026, two days ahead once and on the day itself once), and the daily check picks it up.
 - **The City's portal is unreachable:** a local server's startup check, its 24-hour recheck and the hosted daily Job log the failure and keep the timetable they have. A check gives up connecting after 10 seconds, so the server still starts promptly, and with no timetable on disk yet it starts anyway and its tools say the timetable isn't built yet.
 - **Hosted, the bucket can't be read:** a new instance exits at startup and Cloud Run reports the failed start; an empty bucket starts a server whose tools, `feed_status` aside, say the timetable isn't built yet. A failed pull on the six-hour timer keeps the timetable already loaded.
@@ -230,6 +234,7 @@ Two kinds of trouble: a data source failing, and the transit network itself bein
 
 - [uv](https://docs.astral.sh/uv/), which installs Python 3.14 for you.
 - About 450 MB of disk: each timetable is a 139 MB SQLite file, two of them during a board-period changeover, plus the 170 MB of GTFS zips the last build downloaded. Ended timetables stay on disk after a build drops them from `manifest.json`; delete those `static-*.sqlite` files by hand.
+- About 70 MB of memory for each loaded timetable's trip planner index, on top of the server itself.
 - Network access to the City of Toronto's open data portal, to build the timetable, and to the TTC's servers, for live answers.
 
 ### Locally, with Claude Code or Claude Desktop
@@ -299,9 +304,9 @@ The hosted shape, specified in [docs/spec.md](docs/spec.md) section 6.9, uses th
 - A **Cloud Run Job**, started daily at 04:30 Toronto time by Cloud Scheduler, runs `ttc-mcp-build --bucket`: it pulls the bucket's timetable, checks the City's portal, and builds and pushes a new timetable only when the TTC has published one.
 - **Google sign-in** runs inside the server: FastMCP's Google OAuth provider with dynamic client registration, then an email allowlist checked on every request. The OAuth state is kept, encrypted, in Firestore so sign-ins survive scaling to zero, and its three secrets live in Secret Manager.
 
-For one person this is sized to stay within Google Cloud's free tiers (the estimate is in spec 6.9); check your project's billing before you start.
+For one person this is sized to stay within Google Cloud's free tiers (the estimate is in spec 6.9); check your project's billing before you start. [docs/cloud-run.md](docs/cloud-run.md) is the build specification for the hosted copy: what gets provisioned, how it is sized now that the trip planner keeps its index in memory, the order deploys must follow when the timetable format changes, and the checks that say it works.
 
-[docs/deploy.md](docs/deploy.md) is the complete runbook, one block of commands per step: billing headroom, APIs, service accounts, the bucket, the secrets, the OAuth client, Firestore, the image, the Job (run once so the bucket has a timetable), the service, the scheduler, then the connectors and the post-deploy checks. It hasn't been run end to end yet. It is written with this project's own values (project, region, names and allowlist), uses `pbpaste` (macOS) to keep secrets out of the terminal, and assumes the project already has an OAuth consent screen; substitute yours.
+[docs/deploy.md](docs/deploy.md) is the complete runbook, one block of commands per step: billing headroom, APIs, service accounts, the bucket, the secrets, the OAuth client, Firestore, the image, the Job (run once so the bucket has a timetable), the service, the scheduler, then the connectors and the post-deploy checks. It hasn't been run end to end yet. It is written with this project's names and region and an example allowlist address, uses `pbpaste` (macOS) to keep secrets out of the terminal, and assumes the project already has an OAuth consent screen; substitute yours.
 
 Once it is deployed, connect a client to `https://<your-service-url>/mcp`:
 
@@ -353,8 +358,8 @@ ttc-mcp reads two kinds of TTC data: open data the TTC publishes on the City of 
 |---|---|---|
 | Timetables: routes, stops, schedules, shapes and station layouts | [Merged GTFS - TTC Routes and Schedules](https://open.toronto.ca/dataset/merged-gtfs-ttc-routes-and-schedules/) | Open data |
 | Bus and streetcar stop ids used by the live feeds | [Surface Routes and Schedules for BusTime](https://open.toronto.ca/dataset/surface-routes-and-schedules-for-bustime/) | Open data |
-| Vehicle positions, crowding and trips | `bustime.ttc.ca/gtfsrt`, listed as [TTC BusTime Real-Time Next Vehicle Arrival (NVAS)](https://open.toronto.ca/dataset/ttc-bustime-real-time-next-vehicle-arrival-nvas/) | Open data |
-| Service alerts with closures' nightly windows, and detours | `gtfsrt.ttc.ca`, listed as [TTC GTFS-Realtime (GTFS-RT) Service Disruptions](https://open.toronto.ca/dataset/ttc-gtfs-realtime-gtfs-rt/) | Open data |
+| Vehicle positions, crowding and trip updates | `bustime.ttc.ca/gtfsrt`, listed as [TTC BusTime Real-Time Next Vehicle Arrival (NVAS)](https://open.toronto.ca/dataset/ttc-bustime-real-time-next-vehicle-arrival-nvas/) | Open data |
+| Service alerts with closures' nightly windows, detours, and subway trip updates | `gtfsrt.ttc.ca`, listed as [TTC GTFS-Realtime (GTFS-RT) Service Disruptions](https://open.toronto.ca/dataset/ttc-gtfs-realtime-gtfs-rt/) | Open data |
 | Bus and streetcar predictions at a stop | the BusTime web map, `bustime.ttc.ca/bustime/map/getStopPredictions.jsp` | Behind the TTC's website |
 | Subway and LRT predictions | NTAS, `ntas.ttc.ca` | Behind the TTC's website |
 | Closures with their spans and shuttles, reduced speed zones, elevator and escalator outages | `alerts.ttc.ca` | Behind the TTC's website |
@@ -383,6 +388,7 @@ Contributor documentation lives beside the code:
 - [docs/data-quirks.md](docs/data-quirks.md): the quirks of the TTC's live data that the code encodes.
 - [docs/architecture.html](docs/architecture.html): the architecture page; open it in a browser. It predates the container work, so its hosting and layout notes are out of date.
 - [docs/deploy.md](docs/deploy.md): the Cloud Run runbook.
+- [docs/cloud-run.md](docs/cloud-run.md): the Cloud Run build specification the runbook carries out.
 - [docs/investigation-2026-09-13.md](docs/investigation-2026-09-13.md) and [docs/detours-addendum.md](docs/detours-addendum.md): the original survey of the TTC's data sources.
 
 ```bash
@@ -391,6 +397,8 @@ uv run pytest                          # the unit suite: offline, on a small fix
 uv run ruff check .                    # lint
 uv run pytest tests/integration        # live: boots the server and asks the TTC; needs a timetable (uv run ttc-mcp-build)
 TTC_MCP_SKIP_REFRESH=1 uv run python scripts/smoke_derived.py   # one of the live smoke scripts in scripts/
+TTC_MCP_SKIP_REFRESH=1 uv run python scripts/validate_connections.py   # the 20 trips connections is judged on
+TTC_MCP_SKIP_REFRESH=1 uv run python scripts/bench_raptor.py   # the trip planner's 250 ms latency budget
 scripts/smoke_image.sh                 # the container smoke test (needs Docker)
 ```
 
