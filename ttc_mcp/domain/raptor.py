@@ -329,3 +329,46 @@ def _journey(q: Query, tau: list[dict], parent: list[dict], rode: list[dict], rp
 def journey_key(q: Query, j: Journey) -> tuple:
     """What makes two journeys the same option: the route sequence with its board and alight stops."""
     return tuple((q.slices[l.slice_idx].meta_of(l.pattern)["route"], l.frm, l.to) for l in j.rides)
+
+
+WINDOW_DEFAULT_MIN, WINDOW_MAX_MIN, WINDOW_STEP_MIN = 30, 60, 5
+ARRIVE_BY_SEARCH_H = 4
+
+
+def dedupe(q: Query, journeys: list[Journey], *, latest: bool = False) -> list[Journey]:
+    kept: dict[tuple, Journey] = {}
+    for j in journeys:
+        key = journey_key(q, j)
+        if key not in kept or (j.depart > kept[key].depart if latest else j.depart < kept[key].depart):
+            kept[key] = j
+    return list(kept.values())
+
+
+def rank(journeys: list[Journey], *, latest: bool = False) -> list[Journey]:
+    """Arrival first, then transfers, then walking, estimates last; with latest, the latest departure first (arrive-by)."""
+    return sorted(journeys, key=lambda j: (j.estimate, -j.depart if latest else j.arrive, j.transfers, j.walk_m))
+
+
+def plan_window(q: Query, window_s: int, step_s: int = WINDOW_STEP_MIN * 60) -> list[Journey]:
+    found = [j for t in range(q.t0, q.t0 + window_s + 1, step_s) for j in plan(q, t)]
+    return rank(dedupe(q, found))
+
+
+def _earliest(q: Query, t: int) -> int:
+    js = plan(q, t)
+    return min(j.arrive for j in js) if js else INF
+
+
+def plan_arrive_by(q: Query, target: int, window_s: int, step_s: int = WINDOW_STEP_MIN * 60) -> list[Journey]:
+    """The latest departure whose earliest arrival is on time, by bisection to the minute, then a window stepping back from it."""
+    lo, hi = target - ARRIVE_BY_SEARCH_H * 3600, target
+    if _earliest(q, lo) > target:
+        return []
+    while hi - lo > 60:
+        mid = (lo + hi) // 2
+        if _earliest(q, mid) <= target:
+            lo = mid
+        else:
+            hi = mid
+    found = [j for t in range(lo, lo - window_s - 1, -step_s) for j in plan(q, t) if j.arrive <= target]
+    return rank(dedupe(q, found, latest=True), latest=True)
