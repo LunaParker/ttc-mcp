@@ -29,6 +29,11 @@ def wall_clock(day: dt.date, secs: int) -> dt.datetime:
     return (noon - dt.timedelta(hours=12) + dt.timedelta(seconds=secs)).astimezone(TZ)
 
 
+def service_secs(day: dt.date, at: dt.datetime) -> int:
+    """Seconds from day's origin (noon minus 12 h) to at, in UTC: two datetimes in one zone subtract as wall times, an hour off across a clock change."""
+    return int((at.astimezone(UTC) - wall_clock(day, 0).astimezone(UTC)).total_seconds())
+
+
 def gtfs_hhmm(secs: int) -> str:
     return f"{secs // 3600:02d}:{(secs % 3600) // 60:02d}"
 
@@ -42,7 +47,7 @@ def departures_at(conn: sqlite3.Connection, stop_id: str, at: dt.datetime, *, li
         sids = service_ids_on(conn, day)
         if not sids:
             continue
-        since = int((at - wall_clock(day, 0)).total_seconds())
+        since = service_secs(day, at)
         marks = ",".join("?" * len(sids))
         sql = ("SELECT d.trip_id, d.dep_secs, d.stop_sequence, t.route_id, t.direction_id, t.headsign, t.pattern_id "
                "FROM departures d JOIN trips t ON t.trip_id = CAST(d.trip_id AS TEXT) "
@@ -56,13 +61,15 @@ def departures_at(conn: sqlite3.Connection, stop_id: str, at: dt.datetime, *, li
                   + ([int(direction_id)] if direction_id is not None else []) + [limit])
         for r in conn.execute(sql, params):
             when = wall_clock(day, r["dep_secs"])
-            if horizon_min is not None and (when - at).total_seconds() // 60 > horizon_min:
+            ahead = when.timestamp() - at.timestamp()
+            if horizon_min is not None and ahead // 60 > horizon_min:
                 continue
             out.append({"trip_id": str(r["trip_id"]), "route": r["route_id"], "direction_id": str(r["direction_id"]),
                         "headsign": r["headsign"], "pattern_id": r["pattern_id"], "stop_sequence": r["stop_sequence"],
                         "service_day": day.isoformat(), "dep_secs": r["dep_secs"], "gtfs_time": gtfs_hhmm(r["dep_secs"]),
-                        "when": when.isoformat(), "in_min": int((when - at).total_seconds() // 60)})
-    out.sort(key=lambda r: r["when"])
+                        "when": when.isoformat(), "in_min": int(ahead // 60)})
+    # Elapsed order: across fall-back the ISO stamps of the repeated hour do not sort as strings.
+    out.sort(key=lambda r: dt.datetime.fromisoformat(r["when"]))
     return out[:limit]
 
 

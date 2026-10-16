@@ -19,7 +19,7 @@ CHECKS = [
     ("station", {"query": "York Mills"}, lambda r: all(s["service"] in ("normal", "reduced", "suspended") for s in r["station"]["service"]) and all("status" in p for p in r["station"]["platforms"])),
     ("next_trains", {"query": "York Mills"}, lambda r: all(p["service"] in ("normal", "no_prediction", "suspended") for p in r["platforms"]) and "disruptions" in r),
     ("arrivals", {"stop": "15461"}, lambda r: "disruptions" in r and all("detour_id" in a for a in r["arrivals"])),
-    ("feed_status", {}, lambda r: len(r["sources"]) == 8),
+    ("feed_status", {}, lambda r: len(r["sources"]) == 9),
 ]
 
 

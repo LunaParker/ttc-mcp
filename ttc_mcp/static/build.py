@@ -19,6 +19,7 @@ from ttc_mcp.domain import geo
 from ttc_mcp.static import gtfs
 from ttc_mcp.static.aliases import SUFFIX, SUFFIX_RADIUS_M, build_aliases, normalize
 from ttc_mcp.static.schema import SCHEMA, SCHEMA_VERSION
+from ttc_mcp.static.timetable import GroupAccumulator, station_paths
 
 DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 BATCH = 50_000
@@ -39,6 +40,8 @@ class FeedMeta:
     shapes: int
     path: Path
     bytes: int
+    splits: int = 0
+    unequal_times: int = 0
 
 
 def _log(log, msg):
@@ -68,6 +71,8 @@ def build_sqlite(merged_zip: Path, out_path: Path, surface_zip: Path | None = No
         trips = {t["trip_id"]: t for t in gtfs.read_rows(z, "trips.txt")}
         _log(log, f"[build] {info['feed_version']}: {len(trips)} trips, {n_stops} stops; streaming stop_times ...")
         counts = _stream_stop_times(conn, z, trips, routes, service_levels or {})
+        _log(log, f"[check] patterns split for overtaking: {counts['splits']}")
+        _log(log, f"[check] stop_times with arrival != departure: {counts['unequal_times']}")
         counts["shapes"], scales = _load_shapes(conn, z) if gtfs.has(z, "shapes.txt") else (0, {})
         _normalize_pattern_dists(conn, scales)
         if gtfs.has(z, "pathways.txt"):
@@ -81,6 +86,7 @@ def build_sqlite(merged_zip: Path, out_path: Path, surface_zip: Path | None = No
     _build_units(conn)
     _build_station_members(conn)
     _build_transfers(conn)
+    conn.executemany("INSERT INTO station_paths VALUES (?,?,?)", station_paths(conn))
     conn.execute(
         "INSERT INTO feed_info VALUES (?,?,?,?,?,?,?,?,?,?)",
         (info["feed_version"], info["feed_start_date"], info["feed_end_date"], info.get("feed_publisher_name"),
@@ -92,7 +98,7 @@ def build_sqlite(merged_zip: Path, out_path: Path, surface_zip: Path | None = No
     size = out_path.stat().st_size
     _log(log, f"[build] done in {time.monotonic() - t0:.0f}s: {out_path} ({size / 1e6:.1f} MB)")
     return FeedMeta(info["feed_version"], info["feed_start_date"], info["feed_end_date"], len(trips), n_stops,
-                    counts["patterns"], counts["departures"], counts["shapes"], out_path, size)
+                    counts["patterns"], counts["departures"], counts["shapes"], out_path, size, counts["splits"], counts["unequal_times"])
 
 
 def _load_stops(conn, z) -> int:
@@ -143,7 +149,8 @@ def _stream_stop_times(conn, z, trips: dict[str, dict], routes: dict[str, dict],
     patterns: dict[int, _Pattern] = {}
     trip_rows, dep_batch, stop_routes = [], [], Counter()
     seen: set[str] = set()
-    state = {"cur": None, "rows": [], "deps": 0}
+    groups = GroupAccumulator()
+    state = {"cur": None, "rows": [], "deps": 0, "unequal": 0}
 
     def flush():
         cur, rows = state["cur"], state["rows"]
@@ -167,6 +174,7 @@ def _stream_stop_times(conn, z, trips: dict[str, dict], routes: dict[str, dict],
                           t.get("shape_id") or None, start, rows[-1][2]))
         routes[t["route_id"]]["hist"][(start % 86400) // 1800] += 1
         tid = _digits(cur, "trip_id")
+        groups.add(pid, t["service_id"], tid, [s for _, _, s, _ in rows])
         for seq, sid, s, _ in rows:
             dep_batch.append((_digits(sid, "stop_id"), s, tid, seq))
             stop_routes[(sid, t["route_id"], direction, t["trip_headsign"])] += 1
@@ -185,11 +193,14 @@ def _stream_stop_times(conn, z, trips: dict[str, dict], routes: dict[str, dict],
             state["cur"], state["rows"] = tid, []
         state["rows"].append((int(st["stop_sequence"]), st["stop_id"], gtfs.secs(st.get("departure_time") or st["arrival_time"]),
                               float(st["shape_dist_traveled"]) if st.get("shape_dist_traveled") else None))
+        if st.get("arrival_time") and st.get("departure_time") and st["arrival_time"] != st["departure_time"]:
+            state["unequal"] += 1
     flush()
     if dep_batch:
         conn.executemany("INSERT INTO departures VALUES (?,?,?,?)", dep_batch)
     conn.executemany("INSERT INTO trips VALUES (?,?,?,?,?,?,?,?,?)", trip_rows)
     conn.executemany("INSERT INTO stop_routes VALUES (?,?,?,?,?)", [(*k, n) for k, n in stop_routes.items()])
+    conn.executemany("INSERT INTO raptor_groups VALUES (?,?,?,?,?,?,?)", groups.rows())
     ranks: dict[tuple, int] = defaultdict(int)
     prow, ps_rows = [], []
     for key, pid in sorted(pattern_ids.items(), key=lambda kv: (-patterns[kv[1]].trip_count, kv[1])):
@@ -211,7 +222,7 @@ def _stream_stop_times(conn, z, trips: dict[str, dict], routes: dict[str, dict],
                            r.get("route_text_color"), r["series"], r["mode"], json.dumps(r["hist"]), lv.get("name"), lv.get("description"),
                            lv.get("frequency"), (1 if lv.get("ten_minute") else 0) if lv else None, lv.get("map_url")))
     conn.executemany("INSERT INTO routes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", route_rows)
-    return {"patterns": len(pattern_ids), "departures": state["deps"]}
+    return {"patterns": len(pattern_ids), "departures": state["deps"], "splits": groups.splits, "unequal_times": state["unequal"]}
 
 
 def _dist_scale(last: float | None, length_m: float) -> float | None:

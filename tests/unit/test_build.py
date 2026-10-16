@@ -83,4 +83,27 @@ def test_build_rejects_non_numeric_ids(tmp_path):
 def test_feed_info_records_the_schema_version(conn):
     from ttc_mcp.static.schema import SCHEMA_VERSION
 
-    assert conn.execute("SELECT schema_version FROM feed_info").fetchone()[0] == SCHEMA_VERSION == 2
+    assert conn.execute("SELECT schema_version FROM feed_info").fetchone()[0] == SCHEMA_VERSION
+
+
+def test_raptor_groups_cover_every_trip_once_with_sorted_columns(conn):
+    from ttc_mcp.static.timetable import unpack
+
+    rows = conn.execute("SELECT pattern_id, split, service_id, n_trips, n_stops, times, trip_ids FROM raptor_groups").fetchall()
+    assert sum(r["n_trips"] for r in rows) == conn.execute("SELECT count(*) FROM trips").fetchone()[0] and all(r["split"] == 0 for r in rows)
+    pid, sid = rows[0]["pattern_id"], rows[0]["service_id"]
+    cols, ids = unpack(rows[0]["n_stops"], rows[0]["times"], rows[0]["trip_ids"])
+    assert len(cols) == conn.execute("SELECT json_array_length(stops) FROM patterns WHERE pattern_id=?", (pid,)).fetchone()[0]
+    assert all(list(c) == sorted(c) for c in cols) and len(ids) == rows[0]["n_trips"]
+    assert {str(t) for t in ids} == {r[0] for r in conn.execute("SELECT trip_id FROM trips WHERE pattern_id=? AND service_id=?", (pid, sid))}
+    first = conn.execute("SELECT dep_secs FROM departures WHERE trip_id=? ORDER BY stop_sequence LIMIT 1", (ids[0],)).fetchone()[0]
+    assert cols[0][0] == first
+
+
+def test_build_logs_the_index_checks_and_reports_them(tmp_path):
+    from ttc_mcp.static.build import build_sqlite
+
+    lines = []
+    meta = build_sqlite(FIX / "gtfs-mini.zip", tmp_path / "s.sqlite", FIX / "surface-mini.zip", log=lines.append)
+    assert "[check] patterns split for overtaking: 0" in lines and "[check] stop_times with arrival != departure: 0" in lines
+    assert (meta.splits, meta.unequal_times) == (0, 0)

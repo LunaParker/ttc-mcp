@@ -40,3 +40,17 @@ def test_parses_trip_feed_vehicle_and_route_maps():
     assert (p.feed_timestamp, p.entities, p.value.timestamp) == (TS, 3, TS)
     assert p.value.vehicle_trip == {"4617": "100677020", "8520": "x"}
     assert p.value.trip_route == {"100677020": "504", "-5": "7", "x": "121"}
+
+
+def test_parses_stop_time_updates_per_trip_with_their_relationship():
+    from tests.rtfeeds import make_trip_feed
+    from ttc_mcp.adapters.bustime_rt import StopUpdate, parse_trips
+
+    body = make_trip_feed(1791300000, [
+        {"trip": "100677020", "route": "504", "vehicle": "4617", "stops": [("4282", 12, 1791300120), ("4283", 13, 1791300300, "SKIPPED"), ("4284", 14, None, "NO_DATA")]},
+        {"trip": "-5", "route": "121", "relationship": "ADDED", "stops": [("4100", 1, 1791300060)]}])
+    feed = parse_trips(body, {}).value
+    rec = feed.trips["100677020"]
+    assert (rec.route, rec.vehicle_id, rec.relationship) == ("504", "4617", "SCHEDULED")
+    assert rec.updates == (StopUpdate("4282", 12, 1791300120, "SCHEDULED"), StopUpdate("4283", 13, 1791300300, "SKIPPED"), StopUpdate("4284", 14, None, "NO_DATA"))
+    assert feed.trips["-5"].relationship == "ADDED" and feed.vehicle_trip["4617"] == "100677020" and feed.trip_route["-5"] == "121"

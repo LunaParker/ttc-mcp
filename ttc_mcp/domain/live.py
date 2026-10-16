@@ -5,14 +5,14 @@ import asyncio
 import datetime as dt
 
 from ttc_mcp.domain import arrivals as arr
-from ttc_mcp.domain.planner import HORIZON_MIN
 from ttc_mcp.realtime import Realtime, attempt
 
+HORIZON_MIN = 120
 SURFACE = "bustime getStopPredictions.jsp + gtfsrt/vehicles"
 NEXT_KEYS = ("eta_min", "vehicle_id", "crowding", "basis", "scheduled_at", "headsign")
 SCAN = 12  # live rows read before the direction filter, so a two-way stop still yields three
 NO_DIRECTION = "no real-time prediction in this direction right now; times are from the timetable"
-NONE_LATER = "no real-time prediction in this direction from depart_at on; times are from the timetable"
+NONE_LATER = "no real-time prediction in this direction from the planned departure on; times are from the timetable"
 NO_SCHEDULE = f"no scheduled departure in this direction within {HORIZON_MIN} minutes"
 
 

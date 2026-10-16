@@ -16,7 +16,7 @@ def test_advisory_sources_carry_spec_ttls():
     assert (DETOURS.ttl, DETOURS.max_stale, DETOURS.stale_after) == (300, 3600, 1800)
     assert (SERVICE_CHANGES.ttl, SERVICE_CHANGES.max_stale, SERVICE_CHANGES.stale_after) == (600, 3600, 1800)
     assert (TRIPS.ttl, TRIPS.max_stale, TRIPS.stale_after) == (30, 600, 90)
-    assert [s.key for s in SOURCES] == ["stop_xml", "vehicles", "ntas", "alerts", "rt_alerts", "detours", "service_changes", "trips"]
+    assert [s.key for s in SOURCES] == ["stop_xml", "vehicles", "ntas", "alerts", "rt_alerts", "detours", "service_changes", "trips", "subway_trips"]
     assert RT_ALERTS.url.endswith("?format=binary") and ALERTS.url == "https://alerts.ttc.ca/api/alerts/list"
 
 

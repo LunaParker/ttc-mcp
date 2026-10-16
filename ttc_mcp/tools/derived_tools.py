@@ -1,66 +1,163 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import datetime as dt
 from typing import Literal
 
 from fastmcp import FastMCP
 
 from ttc_mcp import advisory, runtime
+from ttc_mcp import overlay as overlay_mod
+from ttc_mcp.adapters.bustime_rt import TripFeed
+from ttc_mcp.cache import Hit
 from ttc_mcp.domain import accessibility as acc
-from ttc_mcp.domain import live, planner, shapes
+from ttc_mcp.domain import geo, live, planner, raptor, shapes
 from ttc_mcp.domain.arrivals import stop_row
 from ttc_mcp.domain.disruptions import Disruptions, station_row
+from ttc_mcp.realtime import attempt
+from ttc_mcp.static import schedule
 from ttc_mcp.static.schedule import TZ
 from ttc_mcp.tools.realtime_tools import _aguard
 from ttc_mcp.tools.static_tools import _guard, _with_advisories
 
-SOURCE = "static patterns + bustime getStopPredictions.jsp + ntas"
+SOURCE = "static timetable + bustime getStopPredictions.jsp + ntas"
+SOURCE_LIVE = "static timetable + bustime trips + gtfsrt trips/subway + bustime getStopPredictions.jsp + ntas"  # both trip feeds fetched
 LIVE_WINDOW = dt.timedelta(minutes=60)
 WALK_MAX_M, LIMIT_MAX = 2000, 10
-CLOSED = "every option is cut by a closure (no shuttle service, or a bypassed boarding or alighting station)"
+CLOSED = "every journey needs a closed section with no shuttle service"
+WIDEN = "; raise walk_m or start from a stop"  # the High Park origin's only stops within 400 m are the seasonal 203's (spec 11, phase 6d)
+SEARCH_TAIL_S = 3600  # a depart-at search reaches an hour past its window's last instant for the closure notes (spec 6.10)
 
 
-def _input_error(origin, destination, walk_m: int, limit: int, depart_at: str | None) -> str | None:
-    """The planner runs synchronously in a worker thread, so walk_m and limit are bounded and bad input never reaches it."""
+def _input_error(origin, destination, walk_m: int, limit: int, depart_at: str | None, arrive_by: str | None = None,
+                 window_min: int = raptor.WINDOW_DEFAULT_MIN) -> str | None:
+    """The planner runs synchronously in a worker thread, so every input is bounded before it reaches it."""
     if not 1 <= limit <= LIMIT_MAX:
         return f"limit must be between 1 and {LIMIT_MAX}"
     if not 1 <= walk_m <= WALK_MAX_M:
         return f"walk_m must be between 1 and {WALK_MAX_M}"
+    if not 0 <= window_min <= raptor.WINDOW_MAX_MIN:
+        return f"window_min must be between 0 and {raptor.WINDOW_MAX_MIN}"
+    if depart_at and arrive_by:
+        return "give depart_at or arrive_by, not both"
     for which, spec in (("origin", origin), ("destination", destination)):
         try:
             if isinstance(spec, dict):
                 float(spec["lat"]), float(spec["lon"])
         except (KeyError, TypeError, ValueError):
             return f"{which} needs numeric lat and lon"
-    if depart_at:
-        try:
-            dt.datetime.fromisoformat(depart_at)
-        except ValueError:
-            return "depart_at must be an ISO date-time such as 2026-10-06T08:30"
+    for name, value, example in (("depart_at", depart_at, "2026-10-06T08:30"), ("arrive_by", arrive_by, "2026-10-06T09:00")):
+        if value:
+            try:
+                dt.datetime.fromisoformat(value)
+            except ValueError:
+                return f"{name} must be an ISO date-time such as {example}"
     return None
 
 
-def _around_skipped(conn, disr: Disruptions, e: planner.Endpoint, which: str, walk_m: int, notes: list[str]) -> planner.Endpoint:
-    """Spec decision h: a detour-skipped stop number is planned from the served stops within walk_m of it."""
-    el = disr.stop_skipped(e.label["stop"]) if "stop" in e.label else None
+def _around_skipped(conn, disr: Disruptions, e: planner.Endpoint, which: str, walk_m: int, notes: list[str],
+                    modeled=frozenset()) -> planner.Endpoint:
+    """Spec decision h: a stop number skipped by a detour with no variant pattern (an entity not in modeled) is planned from the served
+    stops within walk_m of it."""
+    el = disr.stop_skipped(e.label["stop"], modeled) if "stop" in e.label else None
     if el is None:
         return e
     row = stop_row(conn, e.label["stop"])
     near = planner.resolve_endpoint(conn, {"lat": row["lat"], "lon": row["lon"]}, walk_m=walk_m)
-    served = {s: w for s, w in near.stops.items() if disr.stop_skipped(s) is None}
+    served = {s: w for s, w in near.stops.items() if disr.stop_skipped(s, modeled) is None}
     if served:
         notes.append(f"{which} stop {e.label['stop']} is skipped by detour {el['detour_id']}; using the served stops within {walk_m} m of it")
     return planner.Endpoint(e.label, served)
 
 
-def _plan(feed, disr, o, d, now, max_transfers, limit, usable):
-    """Runs in a worker thread, so it queries through that thread's own connection, never the loop's."""
-    conn = feed.conn
-    verdict = planner.closure_verdicts(conn, disr)
-    found = planner.search(conn, o, d, now=now, max_transfers=max_transfers, limit=limit * 3, usable=usable,
-                           rideable=lambda pid, a, b: verdict(pid, a, b) != "drop")
-    return found, planner.overlay(conn, disr, found)[:limit]
+def _closure_notes(disr: Disruptions, lo: float, hi: float, arrive_by: bool, lines: set[str]) -> list[str]:
+    """Closures are evaluated once, at the query instant (hi for arrive-by, else lo): a closure on a line an option rides that starts or ends
+    in (lo, hi] is named at the edge nearest that instant, with the state the options beyond the edge were planned in (spec 6.10)."""
+    out = []
+    for el in disr.elements:
+        if el["type"] != "closure" or not el["routes"] or el["route"] not in lines:
+            continue
+        edges = sorted((x, t, edge) for s, e in (el["windows"] or [el["period"]]) for t, edge in ((s, "starts"), (e, "ends"))
+                       if t and lo < (x := dt.datetime.fromisoformat(t).timestamp()) <= hi)
+        if edges:
+            _, stamp, edge = edges[-1] if arrive_by else edges[0]
+            side, state = ("before", edge == "starts") if arrive_by else ("after", edge == "ends")
+            out.append(f"closure {el['alert_id']} on line {el['route']} {edge} at {stamp} inside this search; "
+                       f"options {side} it are planned as if it were {'in force' if state else 'not in force'}")
+    return out
+
+
+async def _trip_feeds(rt, use_live: bool) -> tuple[TripFeed | None, TripFeed | None, list[Hit]]:
+    """Both trip-update feeds, only inside the live window; a failed one is simply absent (realtime.attempt)."""
+    if not use_live:
+        return None, None, []
+    (th, _), (sh, _) = await asyncio.gather(attempt(rt.trips()), attempt(rt.subway_trips()))
+    return (th.parsed if th else None), (sh.parsed if sh else None), [h for h in (th, sh) if h]
+
+
+def _slices(store, feed, day: dt.date, make_overlay=None) -> list[raptor.Slice]:
+    """Today's feed with today's service ids, then yesterday's with yesterday's on today's clock; a day no feed covers reads the feed in hand.
+    Each slice carries its feed's connection on this (the planning) thread, since pattern ids are per feed, and make_overlay(feed, timetable, day)'s overlay."""
+    out = []
+    for d, off in ((day, 0), (day - dt.timedelta(days=1), raptor.day_offset(day - dt.timedelta(days=1), day))):
+        f = store.for_date(d) or feed
+        tt = raptor.timetable_for(f)
+        out.append(raptor.Slice(tt, frozenset(schedule.service_ids_on(f.conn, d)), off, make_overlay(f, tt, d) if make_overlay else None, f.conn))
+    return out
+
+
+def _plan(feed, store, disr, o, d, when: dt.datetime, max_transfers: int, window_min: int, arrive_by: bool, usable,
+          limit: int | None = None, *, walk_m: int = planner.WALK_M, detour_feed=None, trips=None, subway=None) -> tuple[list[dict], str | None]:
+    """In a worker thread: the slices' overlays, decision h's mask for stops a detour with no variant skips (an endpoint gives way to the served
+    stops around it), the engine, then the first limit options through this thread's connections; usable (or None) is a further predicate."""
+    conn, day, stamp = feed.conn, when.date(), when.isoformat(timespec="minutes")
+    t, now = schedule.service_secs(day, when), runtime.now()
+    # Arrive-by never asks the rider to have left already: now, on the query day's clock, floors the search.
+    floor = schedule.service_secs(day, now)
+    if arrive_by and floor >= t:
+        return [], f"arrive_by {stamp} is not after now"
+    # Each slice reads its own service day's overlay: after midnight the trips running are yesterday's, and their updates match only on its clock.
+    slices = _slices(store, feed, day, lambda f, tt, d: overlay_mod.build(f, tt, disr, detour_feed, trips, subway, d))
+    modeled = frozenset().union(*(sl.overlay.variants for sl in slices))
+    masked = frozenset(s for s in disr.by_stop if disr.stop_skipped(s, modeled))
+    ok = (lambda s: s not in masked) if usable is None else (lambda s: s not in masked and usable(s)) if masked else usable
+    notes: list[str] = []
+    o, d = _around_skipped(conn, disr, o, "origin", walk_m, notes, modeled), _around_skipped(conn, disr, d, "destination", walk_m, notes, modeled)
+    for which, e in (("origin", o), ("destination", d)):
+        if all(s in masked for s in e.stops):
+            return [], "; ".join(notes + [f"every stop at the {which} is skipped by a detour"])
+    ends = [{s: (geo.walk_seconds(m), m) for s, m in e.stops.items()} for e in (o, d)]
+    closers = [planner.closed_for(sl.conn, disr, sl.tt) for sl in slices]
+    q = raptor.Query(ends[0], ends[1], t, slices, max_transfers=max_transfers, usable=ok, closed=lambda si, pid: closers[si](pid))
+    def run(query: raptor.Query) -> list[raptor.Journey]:
+        if arrive_by:
+            return raptor.plan_arrive_by(query, t, window_min * 60, step_s=raptor.ARRIVE_BY_STEP_MIN * 60, floor=floor)
+        long = window_min > raptor.WINDOW_DEFAULT_MIN
+        return raptor.plan_window(query, window_min * 60, (raptor.WINDOW_LONG_STEP_MIN if long else raptor.WINDOW_STEP_MIN) * 60)
+    journeys = run(q)[:limit]
+    note = None
+    if not journeys:
+        # Widening helps only when the day runs a timetable at all; a date no loaded feed covers keeps the bare note.
+        widen = WIDEN if slices[0].service_ids else ""
+        if not raptor.has_service(q, q.origin):
+            note = f"no service at the origin stops on {day.isoformat()}{widen}"
+        elif not raptor.has_service(q, q.dest):
+            note = f"no service at the destination stops on {day.isoformat()}{widen}"
+        elif run(dataclasses.replace(q, closed=lambda si, pid: raptor.Closed.NONE)):
+            note = CLOSED
+        elif arrive_by:
+            # Now floors the search (plan_arrive_by), so a near target was searched from now, not over the whole span.
+            reach = "between now and it" if floor > t - raptor.ARRIVE_BY_SEARCH_H * 3600 else f"within {raptor.ARRIVE_BY_SEARCH_H} hours before it"
+            note = f"no journey arriving by {stamp} {reach}"
+        else:
+            note = f"no journey with up to {max_transfers} transfers from {stamp}"
+    at = when.timestamp()
+    span = (max(at - raptor.ARRIVE_BY_SEARCH_H * 3600, now.timestamp()), at) if arrive_by else (at, at + window_min * 60 + SEARCH_TAIL_S)
+    options = planner.annotate(q, disr, [planner.materialize(conn, q, j, day) for j in journeys])
+    lines = {l["route"] if l["mode"] == "ride" else l["line"] for o in options for l in o["legs"] if l["mode"] in ("ride", "shuttle")}
+    notes += ([note] if note else []) + _closure_notes(disr, *span, arrive_by, lines)
+    return options, "; ".join(notes) or None
 
 
 def register(mcp: FastMCP) -> None:
@@ -108,28 +205,29 @@ def register(mcp: FastMCP) -> None:
         return await _with_advisories(run)
 
     @mcp.tool
-    async def connections(origin: str | dict, destination: str | dict, max_transfers: Literal[0, 1] = 1, walk_m: int = 400,
-                          depart_at: str | None = None, limit: int = 4) -> dict:
-        """Trip options between two places on the TTC: direct and one-transfer rides over the scheduled stop patterns with typical
-        minutes, walking legs and a transfer penalty, ranked by transfers then time. origin and destination are a stop number, a
-        station id or alias, or {"lat", "lon"} from a geocoder; depart_at is ISO, Toronto time when it has no offset (default now);
-        walk_m (metres to and from the stops) is 1 to 2000 and limit 1 to 10.
-        The first leg, when it is a ride, carries next departures in its direction: live (basis realtime, or schedule with next_note)
-        when depart_at is within an hour of now, else from the timetable. Closures cut rail legs into ride, shuttle, ride: the
-        shuttle's minutes are unknown, so such an option has typical_min null with known_min for its other legs and ranks after
-        complete options with the same transfers; every vehicle change counts as a transfer, and max_transfers bounds only the
-        search over scheduled patterns, so a ride, shuttle, ride option reports 2 transfers under max_transfers=1.
-        Detour-skipped stops are never used (a skipped stop number plans from the served stops within walk_m of it, with a note);
-        every option lists the disruptions it touches, including route-level delays, each naming the legs it affects, and an
-        empty answer says why. Typical minutes come from the timetable, not from live data; live departures and disruptions are
-        best effort, from the TTC's own site endpoints."""
+    async def connections(origin: str | dict, destination: str | dict, max_transfers: Literal[0, 1, 2, 3] = 3, walk_m: int = 400,
+                          depart_at: str | None = None, arrive_by: str | None = None, window_min: int = raptor.WINDOW_DEFAULT_MIN, limit: int = 4) -> dict:
+        """Timetable-exact trips between two places on the TTC: every ride is a real trip with its departure and arrival, transfers are
+        timed (walking or station pathways plus a 2-minute change buffer), and the options are the Pareto set over arrival time and
+        transfers, ranked by arrival. origin and destination are a stop number, a station id or alias, or {"lat", "lon"} from a geocoder.
+        depart_at (ISO, Toronto when it has no offset; default now) with window_min (0 to 60, default 30) returns the journeys found
+        every five minutes across the window (every ten when window_min is over 30), one per route sequence; arrive_by instead returns
+        the latest departures that arrive on time, latest first, the first within five minutes of the latest that does; give one or the
+        other. max_transfers is 0 to 3, walk_m (metres to and from the stops) 1 to 2000, limit 1 to 10.
+        Each ride carries basis realtime (an update was applied to its trip, within an hour of now), schedule, or estimate; the first
+        ride lists the next departures in its direction. A closure masks the closed section; when its shuttle runs the shuttle is an
+        estimated leg (assumed headway and speed, stated in its note) and the option is flagged estimate: true and ranked last. A
+        detoured route's trips skip their stops with the published delay. Every option lists the disruptions it touches with the legs
+        they affect, and an empty answer says why. Closures are judged at the query instant, so the note names one that starts or ends
+        inside the search. Live departures and disruptions are best effort, from the TTC's own site endpoints."""
         async def run(feed):
-            if err := _input_error(origin, destination, walk_m, limit, depart_at):
+            if err := _input_error(origin, destination, walk_m, limit, depart_at, arrive_by, window_min):
                 return {"error": err}, [], ""
             conn, rt = feed.conn, runtime.get_realtime()
-            now = dt.datetime.fromisoformat(depart_at) if depart_at else runtime.now()
-            if now.tzinfo is None:
-                now = now.replace(tzinfo=TZ)
+            when = dt.datetime.fromisoformat(arrive_by or depart_at) if (arrive_by or depart_at) else runtime.now()
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=TZ)
+            when = when.astimezone(TZ)
             ends = {"origin": planner.resolve_endpoint(conn, origin, walk_m=walk_m), "destination": planner.resolve_endpoint(conn, destination, walk_m=walk_m)}
             for which, e in ends.items():
                 if e is None:
@@ -137,45 +235,36 @@ def register(mcp: FastMCP) -> None:
                 if not e.stops:
                     return {"error": f"no stop within {walk_m} m of the {which}; raise walk_m or start from a stop"}, [], ""
             o, d = ends["origin"], ends["destination"]
-            head = {"from": o.label, "to": d.label, "depart_at": now.isoformat(timespec="minutes")}
+            stamp = when.isoformat(timespec="minutes")
+            head = {"from": o.label, "to": d.label, **({"arrive_by": stamp} if arrive_by else {"depart_at": stamp, "window_min": window_min})}
             if o.stops.keys() & d.stops.keys():
                 return {**head, "options": [], "note": "origin and destination are within walking distance of the same stop; no ride is needed"}, [], ""
             snap = await advisory.snapshot(feed)
-            # The snapshot is evaluated at the clock; a given depart_at re-evaluates its alerts at that time.
-            disr = Disruptions.build(lambda: feed.conn, snap.alerts, snap.rt, snap.detours, now) if depart_at else snap.disruptions
-
-            def usable(sid: str) -> bool:
-                return disr.stop_skipped(sid) is None
-            notes: list[str] = []
-            o, d = _around_skipped(conn, disr, o, "origin", walk_m, notes), _around_skipped(conn, disr, d, "destination", walk_m, notes)
-            for which, e in (("origin", o), ("destination", d)):
-                if not any(usable(s) for s in e.stops):
-                    return {**head, "options": [], "note": "; ".join(notes + [f"every stop at the {which} is skipped by a detour"])}, [], "", snap
-            found, opts = await asyncio.to_thread(_plan, feed, disr, o, d, now, max_transfers, limit, usable)
-            use_live = depart_at is None or abs(now - runtime.now()) <= LIVE_WINDOW
-            rides = [(opt, leg) for opt in opts if (leg := next((l for l in opt["legs"] if l["mode"] != "walk"), None)) and leg["mode"] == "ride"]
-            nexts = await asyncio.gather(*(live.next_for_leg(feed, rt, leg, now=now, use_live=use_live, clock=runtime.now()) for _, leg in rides))
-            for opt in opts:
-                opt["basis"] = "schedule"
-            for (opt, leg), (rows, _, note) in zip(rides, nexts, strict=True):
+            # The snapshot is evaluated at the clock; a given time re-evaluates its alerts at that time.
+            disr = Disruptions.build(lambda: feed.conn, snap.alerts, snap.rt, snap.detours, when) if (depart_at or arrive_by) else snap.disruptions
+            # Trip updates move the timetable only near now (spec 6.10): the feeds are fetched when the query instant is within the live window.
+            trips, subway, feed_hits = await _trip_feeds(rt, abs(when.timestamp() - runtime.now().timestamp()) <= LIVE_WINDOW.total_seconds())
+            opts, note = await asyncio.to_thread(_plan, feed, runtime.get_store(), disr, o, d, when, max_transfers, window_min, bool(arrive_by), None, limit,
+                                                 walk_m=walk_m, detour_feed=snap.detour_feed, trips=trips, subway=subway)
+            for i, opt in enumerate(opts, 1):
+                opt["rank"] = i
+            firsts = [leg for opt in opts if (leg := next((l for l in opt["legs"] if l["mode"] in ("ride", "shuttle")), None)) and leg["mode"] == "ride"]
+            # Each first ride lists the departures from its own departure on, live when that is within an hour of now.
+            ats = [dt.datetime.fromisoformat(leg["depart"]) for leg in firsts]
+            lives = [abs(at - runtime.now()) <= LIVE_WINDOW for at in ats]
+            nexts = await asyncio.gather(*(live.next_for_leg(feed, rt, leg, now=at, use_live=li, clock=runtime.now())
+                                           for leg, at, li in zip(firsts, ats, lives, strict=True)))
+            for leg, (rows, _, nnote) in zip(firsts, nexts, strict=True):
                 leg["next"] = rows
-                if note:
-                    leg["next_note"] = note
-                opt["basis"] = rows[0]["basis"] if rows else "schedule"
-            # Pattern positions index a private table and the departure record is the timetable's; neither is part of the answer.
+                if nnote:
+                    leg["next_note"] = nnote
+            # Pattern positions, the slice index and a variant's detour id are the planner's own; they served annotate and are not part of the answer.
             for opt in opts:
                 for leg in opt["legs"]:
-                    for key in ("board_pos", "alight_pos"):
-                        leg.pop(key, None)
-                dep = opt["first_departure"]
-                opt["first_departure"] = {k: dep[k] for k in ("when", "in_min", "trip_id")} if dep else None
-            # Closed spans are pruned inside search; an unconstrained search tells a closure from an empty timetable.
-            if not opts and (found or planner.search(conn, o, d, now=now, max_transfers=max_transfers, limit=1, usable=usable)):
-                notes.append(CLOSED)
-            elif not opts:
-                trip = "direct" if max_transfers == 0 else "direct or one-transfer"
-                notes.append(f"no {trip} trip with a scheduled departure within {planner.HORIZON_MIN} minutes")
-            out = {**head, "options": opts, **({"note": "; ".join(notes)} if notes else {})}
-            # Only a live fetch earns real-time meta; timetable-only answers keep static meta plus advisories.
-            return out, [h for _, hits, _ in nexts for h in hits], SOURCE if use_live and rides else "", snap
+                    leg.pop("board_pos", None), leg.pop("alight_pos", None), leg.pop("slice", None), leg.pop("detour_id", None)
+            out = {**head, "options": opts, **({"note": note} if note else {})}
+            # The source names the trip feeds that answered (spec 6.10's contract); both make SOURCE_LIVE.
+            fetched = [h.source.name for h in feed_hits]
+            source = SOURCE.replace("static timetable", " + ".join(["static timetable", *fetched]), 1) if fetched else SOURCE if any(lives) else ""
+            return out, feed_hits + [h for _, hits, _ in nexts for h in hits], source, snap
         return await _aguard(run)

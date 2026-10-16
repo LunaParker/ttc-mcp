@@ -14,6 +14,10 @@ def walk_minutes(m: float) -> int:
     return round(m * 1.3 / 80)
 
 
+def walk_seconds(m: float) -> int:
+    return round(m * 1.3 / 80 * 60)
+
+
 def bbox(lat: float, lon: float, radius_m: float):
     dlat = radius_m / 111320
     dlon = radius_m / (111320 * max(math.cos(math.radians(lat)), 0.01))

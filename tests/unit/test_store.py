@@ -83,6 +83,7 @@ def test_stores_with_another_schema_version_are_skipped(tmp_path, fixture_db):
     import sqlite3
 
     from ttc_mcp.static.manifest import FeedEntry, Manifest
+    from ttc_mcp.static.schema import SCHEMA_VERSION
     from ttc_mcp.static.store import StaticStore, schema_version
 
     shutil.copy(fixture_db, tmp_path / "new.sqlite")
@@ -95,7 +96,7 @@ def test_stores_with_another_schema_version_are_skipped(tmp_path, fixture_db):
     Manifest([FeedEntry("S1", "20260906", "20261031", "new.sqlite", None, "u", "t"),
               FeedEntry("S0", "20260801", "20260905", "old.sqlite", None, "u", "t"),
               FeedEntry("SX", "20260101", "20260131", "empty.sqlite", None, "u", "t")]).save(tmp_path)
-    assert (schema_version(tmp_path / "new.sqlite"), schema_version(tmp_path / "old.sqlite"), schema_version(tmp_path / "empty.sqlite")) == (2, 1, 0)
+    assert (schema_version(tmp_path / "new.sqlite"), schema_version(tmp_path / "old.sqlite"), schema_version(tmp_path / "empty.sqlite")) == (SCHEMA_VERSION, 1, 0)
     store = StaticStore.from_manifest(tmp_path)
     assert [f.version for f in store.feeds] == ["S1"]
     store.close()
@@ -107,6 +108,7 @@ def test_an_old_or_unreadable_schema_is_skipped_with_a_rebuild_hint(tmp_path, fi
     import pytest
 
     from ttc_mcp import runtime
+    from ttc_mcp.static.schema import SCHEMA_VERSION
     from ttc_mcp.static.store import schema_version
 
     cache = _cache(tmp_path, fixture_db, entry("S0", "20260906", "20261031", "old.sqlite"), entry("SX", "20260906", "20261031", "odd.sqlite"))
@@ -121,7 +123,7 @@ def test_an_old_or_unreadable_schema_is_skipped_with_a_rebuild_hint(tmp_path, fi
     assert schema_version(cache / "odd.sqlite") == 0
     assert StaticStore.from_manifest(cache).feeds == []
     err = capsys.readouterr().err
-    assert "[store] skipping old.sqlite: its schema 1 is old (this server reads 2); the next ttc-mcp-build (or ttc-mcp-build --from-zip for a local feed) rebuilds it" in err
+    assert f"[store] skipping old.sqlite: its schema 1 is old (this server reads {SCHEMA_VERSION}); the next ttc-mcp-build (or ttc-mcp-build --from-zip for a local feed) rebuilds it" in err
     assert "skipping odd.sqlite: its schema 0 is old" in err
     monkeypatch.setenv("TTC_MCP_CACHE", str(cache))
     runtime.reset()

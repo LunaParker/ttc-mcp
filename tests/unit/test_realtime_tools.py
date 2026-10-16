@@ -99,7 +99,7 @@ async def test_feed_status_reports_static_and_sources_and_probes(app_env):
         p = (await c.call_tool("feed_status", {"probe": True})).data
         assert p["probed"] == {n: None for n in NAMES}
         assert all(s["verdict"] == "fresh" and s["cache"] == "ttl" for s in p["sources"]) and p["ntas_coverage"] == {"1": {"platforms": 1, "with_prediction": 1}}
-    assert len(calls) == 8
+    assert len(calls) == 9
 
 
 def test_feed_status_without_a_store(tmp_path, monkeypatch):

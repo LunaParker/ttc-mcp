@@ -4,10 +4,11 @@ import datetime as dt
 import os
 from pathlib import Path
 
+from ttc_mcp import overlay
 from ttc_mcp.adapters.http import make_async_client
 from ttc_mcp.cache import Hit
 from ttc_mcp.config import settings
-from ttc_mcp.domain import freshness
+from ttc_mcp.domain import freshness, raptor
 from ttc_mcp.realtime import Realtime
 from ttc_mcp.static.manifest import Manifest
 from ttc_mcp.static.schedule import TZ
@@ -37,6 +38,8 @@ def reset() -> None:
     if _store:
         _store.close()
     _store, _store_key, _realtime = None, None, None
+    raptor.reset()
+    overlay.reset()
 
 
 def get_store(cache_dir: Path | None = None) -> StaticStore:
@@ -49,6 +52,8 @@ def get_store(cache_dir: Path | None = None) -> StaticStore:
     if _store is None or _store_key != key:
         if _store:
             _store.close()
+        # The overlay memo holds timetables per feed version, so a retired feed would outlive the store through it.
+        raptor.reset(), overlay.reset()
         _store, _store_key = StaticStore.from_manifest(cache_dir), key
     _store.checked_at, _store.ckan_last_modified = m.checked_at, m.ckan_last_modified
     return _store

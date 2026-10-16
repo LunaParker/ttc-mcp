@@ -55,26 +55,52 @@ def parse_vehicles(body: bytes, headers: dict[str, str]) -> Parsed:
 
 
 @dataclass(frozen=True)
+class StopUpdate:
+    stop_id: str
+    seq: int | None
+    time: int | None
+    relationship: str
+
+
+@dataclass(frozen=True)
+class TripUpdateRec:
+    trip_id: str
+    route: str | None
+    vehicle_id: str | None
+    relationship: str
+    updates: tuple[StopUpdate, ...]
+
+
+@dataclass(frozen=True)
 class TripFeed:
     timestamp: int
     vehicle_trip: dict[str, str]
     trip_route: dict[str, str]
+    trips: dict[str, TripUpdateRec]
 
 
 def parse_trips(body: bytes, headers: dict[str, str]) -> Parsed:
-    """bustime.ttc.ca/gtfsrt/trips, used only to map a vehicle id to its live trip id for detour flags."""
+    """bustime.ttc.ca/gtfsrt/trips (and gtfsrt.ttc.ca/trips/subway, the same shape with public platform ids): per-trip stop-time updates,
+    arrival time first, departure when that is all there is; plus the vehicle -> trip map the detour flags use."""
     feed = pb.FeedMessage()
     feed.ParseFromString(body)
-    vehicle_trip: dict[str, str] = {}
-    trip_route: dict[str, str] = {}
-    n = 0
+    vehicle_trip, trip_route, trips = {}, {}, {}
     for ent in feed.entity:
         if not ent.HasField("trip_update"):
             continue
-        n += 1
         tu = ent.trip_update
-        if tu.trip.trip_id:
-            trip_route[tu.trip.trip_id] = tu.trip.route_id
-            if tu.vehicle.id:
-                vehicle_trip[tu.vehicle.id] = tu.trip.trip_id
-    return Parsed(TripFeed(feed.header.timestamp, vehicle_trip, trip_route), feed.header.timestamp or None, n)
+        tid = tu.trip.trip_id
+        if not tid:
+            continue
+        trip_route[tid] = tu.trip.route_id
+        if tu.vehicle.id:
+            vehicle_trip[tu.vehicle.id] = tid
+        ups = []
+        for stu in tu.stop_time_update:
+            t = (stu.arrival.time if stu.HasField("arrival") and stu.arrival.time
+                 else stu.departure.time if stu.HasField("departure") and stu.departure.time else None)
+            ups.append(StopUpdate(stu.stop_id, stu.stop_sequence if stu.HasField("stop_sequence") else None, t,
+                                  pb.TripUpdate.StopTimeUpdate.ScheduleRelationship.Name(stu.schedule_relationship)))
+        trips[tid] = TripUpdateRec(tid, tu.trip.route_id or None, tu.vehicle.id or None,
+                                   pb.TripDescriptor.ScheduleRelationship.Name(tu.trip.schedule_relationship), tuple(ups))
+    return Parsed(TripFeed(feed.header.timestamp, vehicle_trip, trip_route, trips), feed.header.timestamp or None, len(trips))

@@ -25,4 +25,5 @@ DETOURS = Source("detour feed", "detours", "https://gtfsrt.ttc.ca/trips/detour",
 SERVICE_CHANGES = Source("ttcapi service changes", "service_changes",
                          "https://www.ttc.ca/ttcapi/routedetail/getallroutesandstopsalerts", 600, 3600, 1800, timeout=5.0)
 TRIPS = Source("bustime trips", "trips", "https://bustime.ttc.ca/gtfsrt/trips", 30, 600, 90)
-SOURCES = (STOP_XML, VEHICLES, NTAS, ALERTS, RT_ALERTS, DETOURS, SERVICE_CHANGES, TRIPS)
+SUBWAY_TRIPS = Source("gtfsrt trips/subway", "subway_trips", "https://gtfsrt.ttc.ca/trips/subway?format=binary", 30, 600, 60)
+SOURCES = (STOP_XML, VEHICLES, NTAS, ALERTS, RT_ALERTS, DETOURS, SERVICE_CHANGES, TRIPS, SUBWAY_TRIPS)

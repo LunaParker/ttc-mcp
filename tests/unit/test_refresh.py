@@ -69,9 +69,10 @@ def test_store_built_with_an_older_schema_is_rebuilt_even_when_etags_match(tmp_p
     rep = ensure_static(tmp_path, client(calls=calls), today=dt.date(2026, 10, 5), ttcapi=False)
     assert rep["changed"] is True and rep["reason"] == "schema changed"
     assert any(c[0] == "GET" and c[1].endswith("merged.zip") for c in calls)
+    from ttc_mcp.static.schema import SCHEMA_VERSION
     from ttc_mcp.static.store import schema_version
 
-    assert schema_version(store) == 2
+    assert schema_version(store) == SCHEMA_VERSION
     rep = ensure_static(tmp_path, client(), today=dt.date(2026, 10, 5), ttcapi=False)
     assert rep["changed"] is False and rep["reason"] == "etags unchanged"
 
@@ -113,7 +114,7 @@ def test_every_run_records_the_check_time_and_ckans_last_modified(tmp_path):
 
 
 def test_a_build_runs_the_static_checks_and_the_live_ones_when_alerts_answer(tmp_path):
-    """Spec 8 items 3 and 9: every rebuild logs the suffix, alert-station and unit-code checks; an unchanged store runs none."""
+    """Spec 8 items 3, 9 and 20: every rebuild logs the suffix, alert-station, unit-code and two index checks; an unchanged store runs none."""
     lines = []
     base = client()
     handler = base._transport.handler  # noqa: SLF001
@@ -125,7 +126,7 @@ def test_a_build_runs_the_static_checks_and_the_live_ones_when_alerts_answer(tmp
     live = httpx.Client(transport=httpx.MockTransport(routed), headers={"User-Agent": "t/1"})
     rep = ensure_static(tmp_path, live, today=dt.date(2026, 10, 5), ttcapi=False, log=lines.append)
     assert rep["checks"]["suffixes"] == [] and [u["value"] for u in rep["checks"]["alert_stations"]] == ["4917"] and rep["checks"]["unit_codes"]["codes"] == 2
-    assert sum(l.startswith("[check]") for l in lines) == 3
+    assert sum(l.startswith("[check]") for l in lines) == 5
     assert "checks" not in ensure_static(tmp_path, live, today=dt.date(2026, 10, 5), ttcapi=False, log=lines.append)
     lines.clear()
     rep = ensure_static(tmp_path, client(etag_merged='"m2"'), today=dt.date(2026, 10, 5), ttcapi=False, log=lines.append)
