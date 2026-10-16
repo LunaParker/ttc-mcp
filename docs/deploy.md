@@ -8,7 +8,7 @@
 |---|---|
 | Project | `$PROJECT_ID`, number `$PROJECT_NUMBER`: step 1 sets both, so run every step in that shell |
 | Region | `us-east1` for everything: service, Job, bucket, Artifact Registry, Scheduler |
-| Service | Cloud Run `ttc-mcp`: `--allow-unauthenticated` (the gate is the app), min 0 / max 1, 1 GiB, 1 CPU, cpu-boost, timeout 300 s, gen2, CPU allocated only during requests (the default) |
+| Service | Cloud Run `ttc-mcp`: `--allow-unauthenticated` (the gate is the app), min 0 / max 1, 2 GiB, 1 CPU, cpu-boost, timeout 300 s, gen2, CPU allocated only during requests (the default) |
 | URL | `https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app`; the MCP endpoint is `/mcp`; the OAuth redirect URI is `/auth/callback` |
 | Service accounts | `ttc-mcp-sa` (the service: reads the bucket, the three secrets and Firestore); `ttc-mcp-job-sa` (the Job: writes the bucket; the Scheduler runs the Job as it) |
 | Secrets | `ttc-mcp-oauth-client-secret`, `ttc-mcp-jwt-signing-key`, `ttc-mcp-storage-fernet-key` |
@@ -124,7 +124,7 @@ Expected, first execution (empty bucket), in time order (the log prints newest f
 `BASE_URL` is the origin, no path. `$CLIENT_ID` comes from step 6 (set it again if this is a new shell). One email is one value; to allow a second, `--set-env-vars` needs gcloud's delimiter syntax (`--set-env-vars '^;^ALLOWED_EMAILS=a@x,b@y;BASE_URL=...'`) because it splits on commas.
 
 ```bash
-gcloud run deploy ttc-mcp --image us-east1-docker.pkg.dev/$PROJECT_ID/ttc-mcp/ttc-mcp:v1 --region us-east1 --allow-unauthenticated --min-instances 0 --max-instances 1 --memory 1Gi --cpu 1 --cpu-boost --timeout 300 --execution-environment gen2 --service-account ttc-mcp-sa@$PROJECT_ID.iam.gserviceaccount.com --set-env-vars BASE_URL=https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app,ALLOWED_EMAILS=lunaparker33@gmail.com,GOOGLE_OAUTH_CLIENT_ID=$CLIENT_ID,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,TTC_MCP_STATIC_BUCKET=ttc-mcp-static-$PROJECT_NUMBER --set-secrets GOOGLE_OAUTH_CLIENT_SECRET=ttc-mcp-oauth-client-secret:latest,JWT_SIGNING_KEY=ttc-mcp-jwt-signing-key:latest,STORAGE_ENCRYPTION_KEY=ttc-mcp-storage-fernet-key:latest
+gcloud run deploy ttc-mcp --image us-east1-docker.pkg.dev/$PROJECT_ID/ttc-mcp/ttc-mcp:v1 --region us-east1 --allow-unauthenticated --min-instances 0 --max-instances 1 --memory 2Gi --cpu 1 --cpu-boost --timeout 300 --execution-environment gen2 --service-account ttc-mcp-sa@$PROJECT_ID.iam.gserviceaccount.com --set-env-vars BASE_URL=https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app,ALLOWED_EMAILS=lunaparker33@gmail.com,GOOGLE_OAUTH_CLIENT_ID=$CLIENT_ID,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,TTC_MCP_STATIC_BUCKET=ttc-mcp-static-$PROJECT_NUMBER --set-secrets GOOGLE_OAUTH_CLIENT_SECRET=ttc-mcp-oauth-client-secret:latest,JWT_SIGNING_KEY=ttc-mcp-jwt-signing-key:latest,STORAGE_ENCRYPTION_KEY=ttc-mcp-storage-fernet-key:latest
 gcloud run services describe ttc-mcp --region us-east1 --format='value(status.url)'
 curl -s https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/.well-known/oauth-protected-resource/mcp; echo
 curl -s -o /dev/null -w '%{http_code}\n' -X POST https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'

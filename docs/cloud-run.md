@@ -34,7 +34,7 @@ Roles keep the split spec 6.9 sets: `roles/storage.objectAdmin` on the bucket fo
 
 ## Sizing
 
-### Service: 1 GiB, 1 vCPU, min 0, max 1
+### Service: 2 GiB, 1 vCPU, min 0, max 1
 
 Cloud Run's container filesystem lives in memory, so the timetable files in `/data` count against the instance's memory. The worst case is a board-period changeover, when two timetables are loaded:
 
@@ -44,7 +44,9 @@ Cloud Run's container filesystem lives in memory, so the timetable files in `/da
 | A pull's `.part` file while a new feed lands | 139 MB, transient | only when a feed changes; same-size files are kept |
 | Two planner indexes | 2 x 66 MB | loader measurement, 2026-10-14 |
 | The process: caches, live feeds, both day overlays | about 150 MB | the live benchmark peaked at 217 MB with one index loaded (2026-10-15) |
-| **Total** | **about 700 MB** | about 300 MB of headroom under 1 GiB |
+| **Total** | **about 700 MB** | about 1.4 GB of headroom under 2 GiB |
+
+That would fit 1 GiB with about 300 MB to spare, but the service runs with 2 GiB, the same size as the Job (the maintainer's call, 2026-10-15). At 1 vCPU, 2 GiB uses up the free tier's GiB-seconds (360,000) at the same rate as its vCPU-seconds (180,000), so the free tier covers the same number of instance-hours as it did at 1 GiB. Past the free tier, an instance-second costs about 10% more.
 
 Latency the service should show:
 
@@ -109,7 +111,7 @@ Sized for one person inside Google Cloud's free tiers (figures to re-check at de
 4. **Every TTC host answers from us-east1 (item 14).** `feed_status` with `probe: true` shows every `probed` entry `null` and no 403 or 429 in any `status_counts`, the two trip-update feeds (`bustime trips`, `gtfsrt trips/subway`) included; `arrivals`, `next_trains`, `detours` and `service_changes` each answer once.
 5. **Cold start is measured (item 15).** The first request after 15 idle minutes, timed; 3 to 8 s expected. Well above that, consider spec 6.9's alternative, a GCS volume mount with SQLite opened read-only.
 6. **The trip planner works hosted.** During service hours, `connections` from Cherry St and Front St East (43.6527, -79.3581) to Union answers options with exact times, `meta.source` names `bustime trips`, and the first call after a cold start answers well inside the timeout.
-7. **Memory holds through a changeover.** The service's memory utilisation stays under about 70% of 1 GiB while two timetables are loaded (the next changeover is due around 2026-10-31).
+7. **Memory holds through a changeover.** The service's memory utilisation stays under about 35% of 2 GiB (the 700 MB estimate above) while two timetables are loaded (the next changeover is due around 2026-10-31).
 8. **It costs nothing.** After a week, the billing report shows no charge for Cloud Run, Cloud Storage, Scheduler, Artifact Registry or Firestore beyond the free tiers.
 
 Each result goes into spec section 11 as a dated line, and items 14 to 16 close in spec 6.9.
