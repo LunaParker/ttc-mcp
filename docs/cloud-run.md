@@ -1,6 +1,6 @@
 # Cloud Run build specification
 
-**Status:** not built. Nothing is deployed as of 2026-10-15. The code side is done: phase 5a gave the image, the in-process Google sign-in gate and the bucket-backed timetable, and phase 6 added the trip planner's index (store schema 3) and its live overlays. Phase 5b is the build this document specifies: provisioning Google Cloud, the first deploy, and the checks that say it works.
+**Status:** built 2026-10-18. Phase 5a gave the image, the in-process Google sign-in gate and the bucket-backed timetable, phase 6 added the trip planner's index (store schema 3) and its live overlays, and phase 5b, the build this document specifies, provisioned Google Cloud and deployed the service, the Job and its Scheduler on image `v2`. Of "Done means" below, items 1, 2 and 4 hold, 6 held in a one-off Job on the image but not yet through a client, and 5 was measured at 12.4 s, over the expectation (spec section 11); 3 waits for the connectors, 7 for the board-period changeover around 2026-10-31 and 8 for a week of billing.
 
 How the documents divide the work:
 
@@ -119,10 +119,10 @@ Each result goes into spec section 11 as a dated line, and items 14 to 16 close 
 ## Open risks
 
 - **The 6-hour pull on a warm instance.** The pull runs in a worker thread outside any request, and with CPU allocated only during requests Cloud Run throttles that work. The instance usually scales to zero long before 6 hours and the next cold start pulls anyway; check in the logs that pulls complete. If they stall, decide then between living with it (a warm instance catches up at its next cold start) and CPU always allocated, which bills.
-- **The TTC's hosts from cloud addresses.** None publish access rules, and four refuse Python's default User-Agent. If one refuses Google's egress addresses, its tools degrade as the README's "When service is degraded" describes; there is no workaround in scope.
+- **The TTC's hosts from cloud addresses.** None publish access rules, and four refuse Python's default User-Agent. If one refuses Google's egress addresses, its tools degrade as the README's "When service is degraded" describes; there is no workaround in scope. On 2026-10-18 every source answered the service's calls from us-east1, but `www.ttc.ca`'s firewall refused all but about 35 of the Job's 235 route-detail requests, so a rebuild keeps refused routes' service levels from the pulled store and runbook step 9b reseeds them once from a home connection.
 - **The overlay's cold build.** Each fresh fetch of the trip feeds costs about 100 ms before planning. Acceptable for one person; CLAUDE.md lists three levers not taken.
 - **Old feed objects in the bucket** accumulate until cleaned by hand.
-- **Cloud Build and BuildKit cache mounts.** If Cloud Build rejects the Dockerfile's cache mounts, the runbook's step 8b builds for amd64 locally and pushes.
+- **Cloud Build and BuildKit cache mounts.** Cloud Build rejected them on 2026-10-18, so images build locally for amd64 and push (runbook step 8).
 - **Free-tier figures** change; re-check them before the deploy.
 
 ## Not part of this build
