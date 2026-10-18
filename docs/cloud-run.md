@@ -1,6 +1,6 @@
 # Cloud Run build specification
 
-**Status:** built 2026-10-18. Phase 5a gave the image, the in-process Google sign-in gate and the bucket-backed timetable, phase 6 added the trip planner's index (store schema 3) and its live overlays, and phase 5b, the build this document specifies, provisioned Google Cloud and deployed the service, the Job and its Scheduler on image `v2`. Of "Done means" below, items 1, 2 and 4 hold, 6 held in a one-off Job on the image but not yet through a client, and 5 was measured at 12.4 s, over the expectation (spec section 11); 3 waits for the connectors, 7 for the board-period changeover around 2026-10-31 and 8 for a week of billing.
+**Status:** built 2026-10-18. Phase 5a gave the image, the in-process Google sign-in gate and the bucket-backed timetable, phase 6 added the trip planner's index (store schema 3) and its live overlays, and phase 5b, the build this document specifies, provisioned Google Cloud and deployed the service, the Job and its Scheduler on image `v2`. Of "Done means" below, items 1, 2 and 4 hold, 6 held in a one-off Job on the image but not yet through a client, and 5 was measured at 12.4 s, over the expectation (spec section 11); 3 holds for claude.ai, with Claude Code, iOS and a refused second account still to check, 7 for the board-period changeover around 2026-10-31 and 8 for a week of billing.
 
 How the documents divide the work:
 
