@@ -1,4 +1,9 @@
-# ttc-mcp
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo/ttc-mcp-dark.svg">
+    <img src="docs/logo/ttc-mcp.svg" alt="ttc-mcp" width="360">
+  </picture>
+</h1>
 
 Live answers about Toronto's transit network, for Claude and other MCP clients.
 
