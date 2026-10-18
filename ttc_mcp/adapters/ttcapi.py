@@ -6,6 +6,7 @@ import html
 import json
 import re
 import sys
+from collections import Counter
 from dataclasses import dataclass
 
 import httpx
@@ -70,12 +71,15 @@ async def fetch_route_levels(client: httpx.AsyncClient, short_names: list[str], 
     arrived in time, so a build never depends on ttc.ca."""
     sem = asyncio.Semaphore(concurrency)
     out: dict[str, dict] = {}
+    failed: Counter[int] = Counter()
     say = log or (lambda m: print(m, file=sys.stderr))
 
     async def one(short: str) -> None:
         async with sem:
             try:
                 r = await client.get(ROUTE_DETAIL, params={"id": short})
+                if r.status_code != 200:
+                    failed[r.status_code] += 1
                 level = _level(r.json()) if r.status_code == 200 else None
             except Exception as e:
                 level = None
@@ -88,4 +92,7 @@ async def fetch_route_levels(client: httpx.AsyncClient, short_names: list[str], 
             await asyncio.gather(*(one(s) for s in short_names))
     except TimeoutError:
         say(f"[ttcapi] deadline of {deadline:g} s reached; {len(out)} of {len(short_names)} routes fetched")
+    if failed:
+        by = ", ".join(f"HTTP {code} x{n}" for code, n in sorted(failed.items(), key=lambda kv: (-kv[1], kv[0])))
+        say(f"[ttcapi] {failed.total()} of {len(short_names)} route details failed: {by}")
     return out
