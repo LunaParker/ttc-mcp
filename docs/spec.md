@@ -38,7 +38,8 @@ The server exists so that Claude (and any MCP client) can reason about the TTC n
    derived: stop_directions, route_patterns (with stop_sequence), pattern_shapes, pattern_run_times (median minutes between
             consecutive stops per pattern), route_service_hours, station_children, station_aliases, transfer_graph
             (stop <-> station membership, stop <-> stop within walking distance), spatial index for nearest_stops,
-            elevator_units (unit code -> nodes), route_series, route_service_level (ttc.ca, refreshed with the static build),
+            elevator_units (unit code -> nodes), route_series, route_service_level (ttc.ca, refreshed with the static build;
+            a route ttc.ca refuses keeps the level the loaded store had),
             raptor_groups (int32 departure columns per pattern, service and overtaking split; v0.8), station_paths (platform-to-platform
             seconds from the pathways graph; v0.8)
 

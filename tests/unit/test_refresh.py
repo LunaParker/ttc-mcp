@@ -99,6 +99,35 @@ def test_ensure_static_fetches_service_levels_with_the_sync_clients_user_agent(t
     assert "[refresh] ttc.ca service levels: 1 of 6 routes" in msgs
 
 
+def _levels_from(monkeypatch, answers):
+    """ttc.ca's route detail answering the given routes and refusing the rest with 403, as its WAF does Google Cloud's egress."""
+    def fake_async_client(user_agent, timeout=10.0):
+        def handler(req):
+            rid = req.url.params.get("id")
+            return httpx.Response(200, json={"route": answers[rid]}) if rid in answers else httpx.Response(403)
+
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler), headers={"User-Agent": user_agent})
+
+    monkeypatch.setattr("ttc_mcp.adapters.http.make_async_client", fake_async_client)
+
+
+def _named(name):
+    return {"serviceLevel": {"name": name, "description": "d"}, "is10MinutesNetwork": True, "frequency": "Frequent", "routeType": 700, "mapUrl": "u"}
+
+
+def test_a_rebuild_keeps_the_service_level_of_a_route_ttc_ca_refuses(tmp_path, monkeypatch):
+    _levels_from(monkeypatch, {"504": _named("Regular service"), "300": _named("Blue Night Network")})
+    ensure_static(tmp_path, client(), today=dt.date(2026, 10, 5), checks=False)
+    _levels_from(monkeypatch, {"504": _named("Express service")})
+    msgs = []
+    ensure_static(tmp_path, client(etag_merged='"m2"'), today=dt.date(2026, 10, 5), checks=False, log=msgs.append)
+    db = sqlite3.connect(tmp_path / Manifest.load(tmp_path).feeds[0].path)
+    rows = db.execute("SELECT short_name, service_level_name, ten_minute, map_url FROM routes WHERE service_level_name IS NOT NULL ORDER BY short_name").fetchall()
+    db.close()
+    assert rows == [("300", "Blue Night Network", 1, "u"), ("504", "Express service", 1, "u")]
+    assert "[refresh] ttc.ca service levels: 1 of 6 routes; 1 carried over from the loaded store" in msgs
+
+
 def test_every_run_records_the_check_time_and_ckans_last_modified(tmp_path):
     ensure_static(tmp_path, client(), today=dt.date(2026, 10, 5), ttcapi=False)
     m = Manifest.load(tmp_path)
