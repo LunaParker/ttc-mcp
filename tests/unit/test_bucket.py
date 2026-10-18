@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -62,6 +63,37 @@ def test_pull_brings_the_feeds_then_writes_the_manifest_last_and_reuses_same_siz
     (dst / "static-S1.sqlite").write_bytes(b"stale")
     bucket.pull(dst, spy)
     assert (dst / "static-S1.sqlite").read_bytes() == b"x" * 1000
+
+
+def _rebuild(cache: Path, version: str, body: bytes):
+    """A same-size rebuild of one feed: new bytes and a new built_at, as a forced build or a reseed writes it."""
+    (cache / f"static-{version}.sqlite").write_bytes(body)
+    m = Manifest.load(cache)
+    m.upsert(replace(m.get(version), built_at="2026-10-18T21:40:57+0000"))
+    m.save(cache)
+
+
+def test_push_uploads_a_rebuilt_feed_even_when_its_size_is_unchanged(tmp_path):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    _store(cache, "S1")
+    blobs = bucket.MemoryBlobs()
+    bucket.push(cache, blobs)
+    _rebuild(cache, "S1", b"y" * 1000)
+    assert bucket.push(cache, blobs) == ["static-S1.sqlite", NAME] and blobs.read("static-S1.sqlite") == b"y" * 1000
+
+
+def test_pull_replaces_a_same_size_file_the_bucket_has_rebuilt(tmp_path):
+    src, dst = tmp_path / "src", tmp_path / "dst"
+    src.mkdir(), dst.mkdir()
+    _store(src, "S1")
+    blobs = bucket.MemoryBlobs()
+    bucket.push(src, blobs)
+    bucket.pull(dst, blobs)
+    _rebuild(src, "S1", b"y" * 1000)
+    bucket.push(src, blobs)
+    bucket.pull(dst, blobs)
+    assert (dst / "static-S1.sqlite").read_bytes() == b"y" * 1000 and Manifest.load(dst).feeds[0].built_at == "2026-10-18T21:40:57+0000"
 
 
 def test_pull_from_an_empty_bucket_leaves_the_cache_alone_and_returns_none(tmp_path):

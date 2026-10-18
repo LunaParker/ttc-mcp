@@ -42,6 +42,14 @@ async def test_fetch_route_levels_collects_known_routes_and_skips_failures():
 
 
 @pytest.mark.anyio
+async def test_failed_route_details_are_counted_by_status_in_one_log_line():
+    lines = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+        await fetch_route_levels(c, ["504", "999", "998", "boom"], log=lines.append)
+    assert lines == ["[ttcapi] 3 of 4 route details failed: HTTP 404 x2, HTTP 500 x1"]
+
+
+@pytest.mark.anyio
 async def test_the_route_id_travels_as_a_query_parameter():
     seen = []
     def h(req):

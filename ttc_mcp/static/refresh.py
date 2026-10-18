@@ -36,7 +36,24 @@ def _run(coro):
         return ex.submit(asyncio.run, coro).result()
 
 
-def _levels_for(merged_zip: Path, user_agent: str, log) -> dict[str, dict]:
+def _loaded_levels(cache_dir: Path, manifest: Manifest) -> dict[str, dict]:
+    """The service levels the stores already listed carry, the newest feed's winning; a store that cannot be read gives none."""
+    out: dict[str, dict] = {}
+    for f in sorted(manifest.feeds, key=lambda f: (f.start, f.feed_version)):
+        try:
+            conn = sqlite3.connect(f"file:{cache_dir / f.path}?mode=ro", uri=True)
+            try:
+                rows = conn.execute("SELECT short_name, service_level_name, service_level_desc, frequency, ten_minute, map_url FROM routes "
+                                    "WHERE service_level_name IS NOT NULL").fetchall()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            continue
+        out |= {r[0]: {"name": r[1], "description": r[2], "frequency": r[3], "ten_minute": bool(r[4]), "map_url": r[5]} for r in rows}
+    return out
+
+
+def _levels_for(merged_zip: Path, user_agent: str, log, cache_dir: Path | None = None, manifest: Manifest | None = None) -> dict[str, dict]:
     import zipfile
 
     from ttc_mcp.adapters.http import make_async_client
@@ -51,8 +68,10 @@ def _levels_for(merged_zip: Path, user_agent: str, log) -> dict[str, dict]:
             return await fetch_route_levels(client, names, log=log)
 
     levels = _run(go())
-    _log(log, f"[refresh] ttc.ca service levels: {len(levels)} of {len(names)} routes")
-    return levels
+    # ttc.ca's WAF refuses most of a burst from Google Cloud (2026-10-18); a level changes at most once a board period.
+    kept = {s: lv for s, lv in _loaded_levels(cache_dir, manifest).items() if s in names and s not in levels} if cache_dir and manifest else {}
+    _log(log, f"[refresh] ttc.ca service levels: {len(levels)} of {len(names)} routes" + (f"; {len(kept)} carried over from the loaded store" if kept else ""))
+    return levels | kept
 
 
 def _alerts_for_checks(client: httpx.Client, log) -> AlertList | None:
@@ -120,7 +139,7 @@ def ensure_static(cache_dir: Path, client: httpx.Client, *, today: dt.date | Non
     if surf:
         _log(log, f"[refresh] downloading {surf.url} ({surf.size or '?'} bytes)")
         surface_zip, surf_etag = ckan.download(client, surf.url, dl / "surface.zip")
-    levels = _levels_for(merged_zip, str(client.headers.get("User-Agent", "")), log) if ttcapi else None
+    levels = _levels_for(merged_zip, str(client.headers.get("User-Agent", "")), log, cache_dir, manifest) if ttcapi else None
     rep = _register(cache_dir, manifest, merged_zip, surface_zip, url=merged.url, etag=merged_etag,
                      surface_etag=surf_etag, today=today, log=log, service_levels=levels)
     rep["reason"] = reason or rep["reason"]
@@ -130,8 +149,9 @@ def ensure_static(cache_dir: Path, client: httpx.Client, *, today: dt.date | Non
 def build_from_zips(cache_dir: Path, merged_zip: Path, surface_zip: Path | None, *, today: dt.date | None = None,
                     log=None, ttcapi: bool = False, checks: bool = True) -> dict:
     cache_dir = Path(cache_dir)
-    levels = _levels_for(Path(merged_zip), settings().user_agent, log) if ttcapi else None
-    rep = _register(cache_dir, Manifest.load(cache_dir), Path(merged_zip), Path(surface_zip) if surface_zip else None,
+    manifest = Manifest.load(cache_dir)
+    levels = _levels_for(Path(merged_zip), settings().user_agent, log, cache_dir, manifest) if ttcapi else None
+    rep = _register(cache_dir, manifest, Path(merged_zip), Path(surface_zip) if surface_zip else None,
                     url=f"file://{Path(merged_zip).resolve()}", etag=None, surface_etag=None,
                     today=today or dt.date.today(), log=log, service_levels=levels)
     return _checked(cache_dir, rep, None, log) if checks else rep

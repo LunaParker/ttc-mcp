@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from tests.conftest import FIX
 from tests.unit.test_refresh import client
@@ -58,19 +59,18 @@ def test_build_with_an_empty_bucket_builds_and_pushes_as_a_first_run(tmp_path, m
     assert out["reason"] == "built" and out["pulled"] == [] and out["pushed"] == ["static-S1000538.sqlite", NAME]
 
 
-class _ReadSpy(bucket.MemoryBlobs):
+class _DownloadSpy(bucket.MemoryBlobs):
     def __init__(self) -> None:
         super().__init__()
-        self.reads: list[str] = []
+        self.downloads: list[str] = []
 
-    def read(self, name: str) -> bytes | None:
-        self.reads.append(name)
-        return super().read(name)
+    def download(self, name: str, path: Path) -> bool:
+        self.downloads.append(name)
+        return super().download(name, path)
 
 
 def test_from_zip_never_pulls(tmp_path, monkeypatch, capsys):
-    blobs = _ReadSpy()
+    blobs = _DownloadSpy()
     _from_zip_into(blobs, tmp_path / "src", monkeypatch, capsys)
-    blobs.reads.clear()
     out = _from_zip_into(blobs, tmp_path / "local", monkeypatch, capsys)
-    assert NAME in blobs.objects and blobs.reads == [] and "pulled" not in out
+    assert NAME in blobs.objects and blobs.downloads == [] and "pulled" not in out

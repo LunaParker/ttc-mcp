@@ -1,6 +1,6 @@
 # Deploying ttc-mcp to Cloud Run (the phase 5b runbook)
 
-**What is deployed:** nothing, as of 2026-10-15. Phase 5a built the container and everything the service needs in code (spec 6.9, "Implemented"); phase 5b is the GCP provisioning and the first deploy, `docs/cloud-run.md` is its build specification, and this document is its runbook. Each step is one code block to paste into a terminal, in order, from the repository root with `gcloud` signed in as the project owner. Nothing here has run yet, so the first run is also this document's test: fix the step that fails, then commit the fix. When the deploy is done, update the line above and close validation items 14 to 16 in spec 6.9 with a dated line in section 11.
+**What is deployed:** since 2026-10-18, the service, the Job and its Scheduler in `us-east1`, on image `v2`. Phase 5a built the container and everything the service needs in code (spec 6.9, "Implemented"); phase 5b was the GCP provisioning and the first deploy, `docs/cloud-run.md` is its build specification, and this document is its runbook. Each step is one code block to paste into a terminal, in order, from the repository root with `gcloud` signed in as the project owner. The first run (2026-10-18, spec section 11) fixed what it found: the image builds locally (step 8), ttc.ca's firewall refuses most of the Job's route-detail requests (step 9b), and the console's OAuth pages moved (step 6). Validation items 14 and 15 are closed; item 16 holds for claude.ai, and Claude Code, iOS and a refused second account remain (step 12).
 
 ## Values (spec 6.9)
 
@@ -23,7 +23,7 @@ The two accounts match spec 6.9's Identity row and keep its role split: `roles/s
 
 ## 1. Account, project, billing headroom
 
-The cap is project-wide, so other services' spend counts against it. Open the budget's spend in the console (Billing > Reports, this month, this project) and make sure there is room; the amounts below are what the budget allows, not what is spent. `gcloud billing budgets list` may need the Billing Budget API (`billingbudgets.googleapis.com`) enabled on the project; if it refuses, the console check is enough.
+The cap is project-wide, so other services' spend counts against it. Open the budget's spend in the console (Billing > Reports, this month, this project) and make sure there is room; the amounts below are what the budget allows, not what is spent. `gcloud billing budgets list` may need the Billing Budget API (`billingbudgets.googleapis.com`) enabled on the project, and refuses without `--billing-project` ("requires a quota project"); if it still refuses, the console check is enough.
 
 ```bash
 gcloud auth list
@@ -31,7 +31,7 @@ export PROJECT_ID=your-project-id
 export PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
 gcloud config set project $PROJECT_ID
 gcloud billing projects describe $PROJECT_ID --format='value(billingAccountName)'
-gcloud billing budgets list --billing-account="$(gcloud billing projects describe $PROJECT_ID --format='value(billingAccountName)' | sed 's#billingAccounts/##')" --format='table(displayName,amount.specifiedAmount.units,thresholdRules[].thresholdPercent)'
+gcloud billing budgets list --billing-account="$(gcloud billing projects describe $PROJECT_ID --format='value(billingAccountName)' | sed 's#billingAccounts/##')" --billing-project=$PROJECT_ID --format='table(displayName,amount.specifiedAmount.units,thresholdRules[].thresholdPercent)'
 ```
 
 ## 2. APIs
@@ -70,7 +70,7 @@ for s in ttc-mcp-jwt-signing-key ttc-mcp-storage-fernet-key ttc-mcp-oauth-client
 
 ## 6. The OAuth client (console) and its secret
 
-In the console, APIs & Services > Credentials > Create credentials > OAuth client ID: type **Web application**, name `ttc-mcp`, one authorised redirect URI `https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/auth/callback`, no authorised JavaScript origin. (If the console asks for an OAuth consent screen first, create it with your own account as the only test user.) The client secret is shown once: copy it with the dialog's copy button, run the first line below before anything else touches the clipboard, then clear the clipboard. Copy the client ID (not secret) into the shell variable the deploy step reads.
+In the console, Google Auth Platform > Clients > Create client (`https://console.cloud.google.com/auth/clients/create?project=$PROJECT_ID`): application type **Web application**, name `ttc-mcp`, one authorised redirect URI `https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/auth/callback`, no authorised JavaScript origin, and "Use this client for an AI-powered agent" left unchecked. (If the project has no OAuth consent screen yet, the console asks for one first: create it with your own account as the only test user.) The dialog that follows is the only place the client secret is shown, with a copy button beside it and beside the client ID: copy the secret with its button, run the first line below before anything else touches the clipboard, then clear the clipboard. Copy the client ID (not secret) into the shell variable the deploy step reads.
 
 ```bash
 pbpaste | tr -d '\n' | gcloud secrets versions add ttc-mcp-oauth-client-secret --data-file=-
@@ -90,18 +90,10 @@ gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:ttc-m
 
 ## 8. Artifact Registry and the image
 
-`gcloud builds submit` uploads the repository minus `.gitignore` (there is no `.gcloudignore`, so gcloud generates one from it and writes it into the checkout; add `.gcloudignore` to `.gitignore` afterwards so it is not committed) and builds with the repository's `.dockerignore`, so the context is small. The base image pin is the multi-arch index (linux/amd64 and linux/arm64, checked 2026-10-11), so the amd64 build resolves it.
+Cloud Build's Docker builder has no BuildKit, so `gcloud builds submit` rejects the Dockerfile's cache mounts (`RUN --mount=type=cache`: "the --mount option requires BuildKit", 2026-10-18). Build the image locally for amd64 and push it. On Apple silicon the amd64 build runs under emulation (OrbStack, or Docker Desktop with Rosetta); the base image pin is the multi-arch index (linux/amd64 and linux/arm64), so it resolves. `configure-docker` adds Artifact Registry's credential helper to `~/.docker/config.json`.
 
 ```bash
 gcloud artifacts repositories create ttc-mcp --repository-format=docker --location=us-east1 --description="ttc-mcp images"
-gcloud builds submit --tag us-east1-docker.pkg.dev/$PROJECT_ID/ttc-mcp/ttc-mcp:v1
-```
-
-### 8b. If Cloud Build rejects the cache mounts
-
-The Dockerfile uses BuildKit cache mounts (`RUN --mount=type=cache`). If the build fails with "the --mount option requires BuildKit", build locally for amd64 and push instead; on Apple silicon this runs under emulation and takes a few minutes. If `gcloud builds submit` fails on permissions, the error names the build's service account: grant it `roles/artifactregistry.writer` on the repository and retry.
-
-```bash
 gcloud auth configure-docker us-east1-docker.pkg.dev
 docker buildx build --platform linux/amd64 --push -t us-east1-docker.pkg.dev/$PROJECT_ID/ttc-mcp/ttc-mcp:v1 .
 ```
@@ -115,9 +107,20 @@ gcloud run jobs deploy ttc-mcp-static --image us-east1-docker.pkg.dev/$PROJECT_I
 gcloud run jobs execute ttc-mcp-static --region us-east1 --wait
 gcloud storage ls -l gs://ttc-mcp-static-$PROJECT_NUMBER/
 gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="ttc-mcp-static"' --freshness=1h --limit=80 --format='value(textPayload)'
+gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="ttc-mcp-static" AND jsonPayload.reason:*' --freshness=1h --limit=1 --format='json(jsonPayload)'
 ```
 
-Expected, first execution (empty bucket), in time order (the log prints newest first, so it reads bottom up): first `[bucket] no manifest in the bucket; ...`, then the two download lines, `[refresh] ttc.ca service levels: 235 of 235 routes`, the three `[check]` lines (spec 8 items 3 and 9) and `[bucket] pushed static-S<feed>.sqlite (...)`, last the JSON report with `"reason": "built"`, `"pulled": []` and `"pushed": ["static-S<feed>.sqlite", "manifest.json"]`; no `Traceback`. The bucket then lists `manifest.json` and one `static-S<feed>.sqlite` of about 139 MB. Second execution with nothing new on CKAN: `[bucket] pulled static-S<feed>.sqlite (...)` first, then `"reason": "etags unchanged"`, `"pulled": ["S<feed>"]`, `"pushed": ["manifest.json"]`, and the bucket's feed file is untouched. During a board-period overlap (the first is due about 2026-10-31): the pulled manifest keeps the outgoing feed, the build adds the incoming one and `pushed` lists the new feed file and the manifest. `push` never deletes, so the old feed object stays in the bucket indefinitely, and the manifest keeps listing it until the first rebuild after `Manifest.prune`'s cutoff (a feed that ended before yesterday; prune runs only inside `refresh._register`), so the service keeps pulling both feeds until then.
+Expected, first execution (empty bucket), in time order (the log prints newest first, so it reads bottom up): first `[bucket] no manifest in the bucket; ...`, then the two download lines, `[ttcapi] 200 of 235 route details failed: HTTP 403 x200` and `[refresh] ttc.ca service levels: 35 of 235 routes` (the counts vary a little; step 9b), the three `[check]` lines (spec 8 items 3 and 9) and `[bucket] pushed static-S<feed>.sqlite (...)`. The JSON report is the last line on stdout, which Cloud Run logs as `jsonPayload` rather than text, so the last command above shows it: it carries `"reason": "built"`, `"pulled": []` and `"pushed": ["static-S<feed>.sqlite", "manifest.json"]`; no `Traceback`. The bucket then lists `manifest.json` and one `static-S<feed>.sqlite` of about 139 MB (the execution took 1 min 35 s on 2026-10-18, the build itself 68 s). Second execution with nothing new on CKAN: `[bucket] pulled static-S<feed>.sqlite (...)` first, then `"reason": "etags unchanged"`, `"pulled": ["S<feed>"]`, `"pushed": ["manifest.json"]`, and the bucket's feed file is untouched. During a board-period overlap (the first is due about 2026-10-31): the pulled manifest keeps the outgoing feed, the build adds the incoming one and `pushed` lists the new feed file and the manifest. `push` never deletes, so the old feed object stays in the bucket indefinitely, and the manifest keeps listing it until the first rebuild after `Manifest.prune`'s cutoff (a feed that ended before yesterday; prune runs only inside `refresh._register`), so the service keeps pulling both feeds until then.
+
+### 9b. Reseed the service levels from a machine ttc.ca answers
+
+`www.ttc.ca` sits behind an Azure Application Gateway whose firewall lets the first 35 or so route-detail requests from Cloud Run through and answers 403 to the rest, and to every request for a few minutes after (2026-10-18; from a home connection all 235 answer). A rebuild keeps each refused route's service level from the store it pulled, so this is needed once, after the first execution, and again only when a board period brings a route the store has never had a level for: build from your own machine into the bucket, forced, with Application Default Credentials (`gcloud auth application-default login`, once) and the project named for the storage client, which outside Cloud Run cannot find it by itself.
+
+```bash
+GOOGLE_CLOUD_PROJECT=$PROJECT_ID uv run ttc-mcp-build --cache "$(mktemp -d)" --bucket ttc-mcp-static-$PROJECT_NUMBER --force
+```
+
+Expected: `[bucket] pulled ...`, the two downloads, `[refresh] ttc.ca service levels: 235 of 235 routes` and `[bucket] pushed static-S<feed>.sqlite (...)`. Push and pull compare a feed's `built_at` as well as its size, so a rebuild is pushed even at the same size, and the service takes it at its next cold start or pull. A later Job rebuild logs `[refresh] ttc.ca service levels: 35 of 235 routes; 200 carried over from the loaded store`.
 
 ## 10. The service
 
@@ -135,7 +138,7 @@ Expected: the metadata answers 200 with `"resource": "https://ttc-mcp-$PROJECT_N
 
 ## 11. The Scheduler
 
-The Job's run endpoint is Google's own API, so the Scheduler authenticates with an OAuth token for the Job's account (`--oauth-service-account-email`, as Google's "Execute jobs on a schedule" page shows), and that account needs `roles/run.invoker` on the Job. The last two lines fire it once by hand and show the execution.
+The Job's run endpoint is Google's own API, so the Scheduler authenticates with an OAuth token for the Job's account (`--oauth-service-account-email`, as Google's "Execute jobs on a schedule" page shows), and that account needs `roles/run.invoker` on the Job. The last two lines fire it once by hand and show the execution; the execution can take a minute to appear (on 2026-10-18 it started about a minute after the run, then reported `etags unchanged` and pushed only the manifest in 21 s).
 
 ```bash
 gcloud run jobs add-iam-policy-binding ttc-mcp-static --region us-east1 --member=serviceAccount:ttc-mcp-job-sa@$PROJECT_ID.iam.gserviceaccount.com --role=roles/run.invoker
@@ -146,7 +149,7 @@ gcloud run jobs executions list --job ttc-mcp-static --region us-east1
 
 ## 12. The connectors (validation item 16)
 
-- **claude.ai:** Settings > Connectors > Add custom connector: name `TTC`, URL `https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/mcp`, the advanced OAuth client ID and secret fields left empty (the gate registers clients dynamically). Connect, sign in with lunaparker33@gmail.com, accept the consent once (`require_authorization_consent="remember"`). Ask "What is the TTC service status right now?" and expect `service_status` to answer. Then connect with another Google account from a second browser profile and expect "This server is restricted; ... is not authorized."
+- **claude.ai:** Customize > Connectors > Add > Add custom connector (Settings > Connectors now points there): name `TTC`, URL `https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/mcp`, Continue. The next page reads the server's metadata: keep Authentication "Sign in now" and OAuth client "Use Claude's published identity" (both marked Detected; the gate reads claude.ai's client document at `https://claude.ai/oauth/mcp-oauth-client`, so nothing is registered), add no request header, then Add and Connect. The gate's "Application Access Request" page names Claude, the verified domain claude.ai and the callback `https://claude.ai/api/mcp/auth_callback`: Allow Access (remembered after the first time, `require_authorization_consent="remember"`), then sign in with lunaparker33@gmail.com; a browser already signed in to that account passes through Google without a prompt. The connector then lists the 19 tools. Ask "What is the TTC service status right now?" and expect `service_status` to answer. Then connect with another Google account from a second browser profile and expect "This server is restricted; ... is not authorized."
 - **Claude Code:** in a project's `.mcp.json`, then `claude` and `/mcp` to authenticate in the browser:
 
 ```json
@@ -157,11 +160,11 @@ gcloud run jobs executions list --job ttc-mcp-static --region us-east1
 
 ## 13. Every TTC host from us-east1 (validation item 14)
 
-None of the TTC's hosts publish access rules, and four of them 403 the default Python User-Agent; the service sends `ttc-mcp/<version> (+https://github.com/LunaParker/ttc-mcp)` (`TTC_MCP_UA` is not set). Through any of the three clients, call `feed_status` with `probe: true`: that is one live request per source (bustime.ttc.ca's per-stop XML and its two GTFS-RT feeds, ntas.ttc.ca, alerts.ttc.ca, gtfsrt.ttc.ca's alerts, detour and subway trip feeds, www.ttc.ca's route detail). Every `probed` entry must be `null` and no `sources` row may carry `403` or `429` in `status_counts`. Then call `arrivals` for a stop, `next_trains` for a station, `detours` and `service_changes` once each. The Job's log (step 9) already proved CKAN and ttc.ca's route-detail call from the same region. Record the result as a dated line in spec section 11 and close item 14 in 6.9.
+None of the TTC's hosts publish access rules, and four of them 403 the default Python User-Agent; the service sends `ttc-mcp/<version> (+https://github.com/LunaParker/ttc-mcp)` (`TTC_MCP_UA` is not set). Through any of the three clients, call `feed_status` with `probe: true`: that is one live request per source (bustime.ttc.ca's per-stop XML and its two GTFS-RT feeds, ntas.ttc.ca, alerts.ttc.ca, gtfsrt.ttc.ca's alerts, detour and subway trip feeds, www.ttc.ca's route detail). Every `probed` entry must be `null` and no `sources` row may carry `403` or `429` in `status_counts`. Then call `arrivals` for a stop, `next_trains` for a station, `detours` and `service_changes` once each. The Job's log (step 9) proves CKAN from the same region; ttc.ca's route detail answers only the start of the Job's burst of 235 requests (step 9b), while the service's one request per source stays far below that. Before a client is connected, the same calls can run from us-east1 in a one-off Job on the image, through `fastmcp.Client(create_app())` after a `bucket.pull` into `/data` (spec section 11, 2026-10-18). Record the result as a dated line in spec section 11 and close item 14 in 6.9.
 
 ## 14. Cold start with the real store (validation item 15)
 
-With `--min-instances 0` the instance goes away after idling; wait fifteen minutes after the last call, then time the first request. The 401 is produced only once the container is up and the pull is done, so an unauthenticated POST measures the cold start. Spec 6.9 expects 3 to 8 s (container start, manifest read, one regional download of about 139 MB per feed); if it is well above that, 6.9's alternative is a gen2 GCS volume mount of the bucket with SQLite opened read-only. Record the number in section 11 either way and close item 15.
+With `--min-instances 0` the instance goes away after idling; wait fifteen minutes after the last call, then time the first request. The 401 is produced only once the container is up and the pull is done, so an unauthenticated POST measures the cold start. Spec 6.9 expected 3 to 8 s (container start, manifest read, one regional download of about 139 MB per feed); the first measurement was 12.4 s (2026-10-18: the pull ended 8.0 s after the instance started, the gate's setup took 3.0 s more, uvicorn 1.1 s). If it grows well past that, 6.9's alternative is a gen2 GCS volume mount of the bucket with SQLite opened read-only. Record the number in section 11 either way and close item 15.
 
 ```bash
 curl -s -o /dev/null -w '%{http_code} %{time_total}s\n' -X POST https://ttc-mcp-$PROJECT_NUMBER.us-east1.run.app/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
@@ -170,20 +173,21 @@ gcloud run services logs read ttc-mcp --region us-east1 --limit 20
 
 ## 15. Later deploys and rollback
 
-A new tag per deploy; the service keeps its environment and secrets across deploys unless they are passed again, and the Job takes the same tag. Rollback is traffic to the previous revision. After a deploy that bumps the store schema (`static/schema.SCHEMA_VERSION`, 3 since phase 6), the service answers only once the Job has run on the new image: the server skips a store with another schema (every tool answers `StoreUnavailable`) and the Job rebuilds it (`"reason": "schema changed"`). So update and execute the Job first, then deploy the service straight after, since the old revision skips the newer store at its next bucket pull.
+A new tag per deploy, built as in step 8; the service keeps its environment and secrets across deploys unless they are passed again, and the Job takes the same tag. Rollback is traffic to the previous revision, and every traffic move starts the target revision cold (9 to 10 s on 2026-10-18). To see a build change run in the cloud without waiting for a CKAN change, execute the Job once with its arguments overridden: `--args=--bucket,ttc-mcp-static-$PROJECT_NUMBER,--force`. After a deploy that bumps the store schema (`static/schema.SCHEMA_VERSION`, 3 since phase 6), the service answers only once the Job has run on the new image: the server skips a store with another schema (every tool answers `StoreUnavailable`) and the Job rebuilds it (`"reason": "schema changed"`). So update and execute the Job first, then deploy the service straight after, since the old revision skips the newer store at its next bucket pull.
 
 ```bash
-gcloud builds submit --tag us-east1-docker.pkg.dev/$PROJECT_ID/ttc-mcp/ttc-mcp:v2
+docker buildx build --platform linux/amd64 --push -t us-east1-docker.pkg.dev/$PROJECT_ID/ttc-mcp/ttc-mcp:v2 .
 gcloud run jobs update ttc-mcp-static --image us-east1-docker.pkg.dev/$PROJECT_ID/ttc-mcp/ttc-mcp:v2 --region us-east1
 gcloud run jobs execute ttc-mcp-static --region us-east1 --wait   # after a schema bump; otherwise the daily run is enough
 gcloud run deploy ttc-mcp --image us-east1-docker.pkg.dev/$PROJECT_ID/ttc-mcp/ttc-mcp:v2 --region us-east1
 gcloud run revisions list --service ttc-mcp --region us-east1
 gcloud run services update-traffic ttc-mcp --region us-east1 --to-revisions PREVIOUS-REVISION-NAME=100
+gcloud run services update-traffic ttc-mcp --region us-east1 --to-latest   # back to the newest revision
 ```
 
 ## 16. Tearing it all down
 
-In this order, so nothing keeps running or billing. The OAuth client is deleted in the console (APIs & Services > Credentials), and the `ttc`-prefixed collections in Firestore by hand if they should go too.
+In this order, so nothing keeps running or billing. The OAuth client is deleted in the console (Google Auth Platform > Clients), and the `ttc`-prefixed collections in Firestore by hand if they should go too.
 
 ```bash
 gcloud scheduler jobs delete ttc-mcp-static-daily --location us-east1 --quiet

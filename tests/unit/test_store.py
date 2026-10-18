@@ -1,5 +1,6 @@
 import datetime as dt
 import shutil
+from dataclasses import replace
 
 from ttc_mcp.static.manifest import FeedEntry, Manifest
 from ttc_mcp.static.store import StaticStore
@@ -160,6 +161,16 @@ def test_get_store_keeps_its_connections_over_a_check_only_manifest_save_and_reo
     reopened = app_env.get_store()
     assert reopened is not store and [f.version for f in reopened.feeds] == ["S1000538", "S1000542"]
     assert reopened.status(dt.date(2026, 10, 6))["last_check"] == "2026-10-06T03:00:00-04:00"
+
+
+def test_get_store_reopens_when_a_feed_is_rebuilt_under_the_same_version_and_etag(app_env):
+    """A forced build or a bucket reseed replaces the file in place; only built_at says the store on disk is a new one."""
+    cache = app_env.settings().cache_dir
+    store = app_env.get_store()
+    m = Manifest.load(cache)
+    m.upsert(replace(m.feeds[0], built_at="2026-10-18T21:40:57+0000"))
+    m.save(cache)
+    assert app_env.get_store() is not store
 
 
 def test_each_thread_gets_its_own_read_only_connection_and_close_closes_them_all(fixture_db):
