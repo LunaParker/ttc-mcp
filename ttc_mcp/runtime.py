@@ -48,7 +48,7 @@ def get_store(cache_dir: Path | None = None) -> StaticStore:
     global _store, _store_key
     cache_dir = Path(cache_dir or settings().cache_dir)
     m = Manifest.load(cache_dir)
-    key = (cache_dir, tuple((f.feed_version, f.path, f.etag, f.surface_etag) for f in m.feeds))
+    key = (cache_dir, tuple((f.feed_version, f.path, f.etag, f.surface_etag, f.built_at) for f in m.feeds))
     if _store is None or _store_key != key:
         if _store:
             _store.close()

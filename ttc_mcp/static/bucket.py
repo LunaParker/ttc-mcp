@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Protocol
 
-from ttc_mcp.static.manifest import NAME, Manifest
+from ttc_mcp.static.manifest import NAME, FeedEntry, Manifest
 
 
 def _log(log, msg):
@@ -84,19 +84,25 @@ class GcsBlobs:
         self.bucket.blob(name).upload_from_filename(str(path))
 
 
+def _same_build(other: Manifest, f: FeedEntry) -> bool:
+    """A forced build or a reseed rewrites a feed under the same version, often at the same size; built_at tells the two apart."""
+    o = other.get(f.feed_version)
+    return o is not None and (o.path, o.built_at) == (f.path, f.built_at)
+
+
 def pull(cache_dir: Path, blobs: Blobs, log=None) -> Manifest | None:
-    """Bring the bucket's manifest and the feeds it lists into cache_dir: same-size files are kept, a download lands in a .part file first,
+    """Bring the bucket's manifest and its feeds into cache_dir: a file of the same build and size is kept, a download lands in a .part file first,
     the manifest is written after the feeds, then static-*.sqlite files it no longer lists go. A feed missing from the bucket is logged."""
     cache_dir = Path(cache_dir)
     raw = blobs.read(NAME)
     if raw is None:
         _log(log, "[bucket] no manifest in the bucket; static tools will say the store is not built yet")
         return None
-    manifest = Manifest.from_doc(json.loads(raw))
+    manifest, local = Manifest.from_doc(json.loads(raw)), Manifest.load(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     for f in manifest.feeds:
         dest = cache_dir / f.path
-        if dest.exists() and dest.stat().st_size == blobs.size(f.path):
+        if _same_build(local, f) and dest.exists() and dest.stat().st_size == blobs.size(f.path):
             continue
         part = dest.with_suffix(".part")
         try:
@@ -117,12 +123,14 @@ def pull(cache_dir: Path, blobs: Blobs, log=None) -> Manifest | None:
 
 
 def push(cache_dir: Path, blobs: Blobs, log=None) -> list[str]:
-    """Upload the feeds the local manifest lists (skipping same-size files), then the manifest itself, last."""
+    """Upload the feeds the local manifest lists (skipping files the bucket's manifest lists with the same build and size), then the manifest
+    itself, last."""
     cache_dir = Path(cache_dir)
-    manifest, sent = Manifest.load(cache_dir), []
+    raw = blobs.read(NAME)
+    manifest, theirs, sent = Manifest.load(cache_dir), Manifest.from_doc(json.loads(raw)) if raw else Manifest([]), []
     for f in manifest.feeds:
         p = cache_dir / f.path
-        if blobs.size(f.path) != p.stat().st_size:
+        if not _same_build(theirs, f) or blobs.size(f.path) != p.stat().st_size:
             blobs.upload(f.path, p)
             sent.append(f.path)
             _log(log, f"[bucket] pushed {f.path} ({p.stat().st_size} bytes)")

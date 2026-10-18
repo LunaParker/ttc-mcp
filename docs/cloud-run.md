@@ -29,7 +29,7 @@ Roles keep the split spec 6.9 sets: `roles/storage.objectAdmin` on the bucket fo
 ## How the pieces talk
 
 1. At 04:30 the Scheduler runs the Job. The Job starts on an empty in-memory disk, pulls the manifest and the feeds it lists, compares the portal's ETags and the stores' schema with them, and builds only when something changed. A build downloads the two GTFS zips, asks ttc.ca for each route's service level, writes the store with the planner's index, and pushes the feeds first and the manifest last, so a reader never sees a manifest naming a feed that has not landed.
-2. The service pulls the bucket before it listens and again every `TTC_MCP_PULL_S` seconds (6 hours). A pull keeps same-size files, stages a download in a `.part` file, writes the manifest after the feeds and deletes local stores the manifest no longer lists. The server reopens the store on its next tool call and drops its in-memory timetables and overlays with it.
+2. The service pulls the bucket before it listens and again every `TTC_MCP_PULL_S` seconds (6 hours). A pull keeps a file the local manifest lists with the same `built_at` and size, stages a download in a `.part` file, writes the manifest after the feeds and deletes local stores the manifest no longer lists. The server reopens the store on its next tool call and drops its in-memory timetables and overlays with it.
 3. A tool call fetches only what it needs from the TTC, when asked. `connections` loads the timetable's index once per feed (about 0.1 s) and, for a question within an hour of now, fetches the two trip-update feeds and builds its overlay.
 
 ## Sizing
@@ -41,7 +41,7 @@ Cloud Run's container filesystem lives in memory, so the timetable files in `/da
 | Item | Memory | Source |
 |---|---|---|
 | Two stores in `/data` | 2 x 139 MB | S1000542 at schema 3, built 2026-10-15 |
-| A pull's `.part` file while a new feed lands | 139 MB, transient | only when a feed changes; same-size files are kept |
+| A pull's `.part` file while a new feed lands | 139 MB, transient | only when a feed is new or rebuilt; files of the same build are kept |
 | Two planner indexes | 2 x 66 MB | loader measurement, 2026-10-14 |
 | The process: caches, live feeds, both day overlays | about 150 MB | the live benchmark peaked at 217 MB with one index loaded (2026-10-15) |
 | **Total** | **about 700 MB** | about 1.4 GB of headroom under 2 GiB |
