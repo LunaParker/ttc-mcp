@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import zipfile
 
 import pytest
@@ -107,3 +108,16 @@ def test_build_logs_the_index_checks_and_reports_them(tmp_path):
     meta = build_sqlite(FIX / "gtfs-mini.zip", tmp_path / "s.sqlite", FIX / "surface-mini.zip", log=lines.append)
     assert "[check] patterns split for overtaking: 0" in lines and "[check] stop_times with arrival != departure: 0" in lines
     assert (meta.splits, meta.unequal_times) == (0, 0)
+
+
+def test_a_surface_feed_packed_inside_a_folder_still_fills_the_crosswalk(tmp_path):
+    nested = tmp_path / "surface-nested.zip"
+    with zipfile.ZipFile(FIX / "surface-mini.zip") as src, zipfile.ZipFile(nested, "w", zipfile.ZIP_DEFLATED) as out:
+        for info in src.infolist():
+            out.writestr(f"GTFSExport - Copy/{info.filename}", src.read(info))
+    build_sqlite(FIX / "gtfs-mini.zip", tmp_path / "s.sqlite", nested)
+    c = sqlite3.connect(tmp_path / "s.sqlite")
+    try:
+        assert c.execute("SELECT surface_stop_id FROM crosswalk WHERE stop_code='15461'").fetchone()[0] == "4282"
+    finally:
+        c.close()
