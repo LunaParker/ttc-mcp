@@ -32,7 +32,8 @@ class EmailAllowlist(Middleware):
 
 def client_storage(gate: Gate):
     """OAuth state: Firestore when a project is named, sanitized for Firestore ids, prefixed 'ttc' (Claude Code's CIMD client id is
-    one URL shared by every gateway) and Fernet-encrypted; None means FastMCP's in-memory default."""
+    one URL shared by every gateway) and Fernet-encrypted; None means FastMCP's own Fernet-encrypted file store under
+    FASTMCP_HOME, keyed from the JWT signing key."""
     if not gate.firestore_project:
         return None
     if not gate.storage_key:

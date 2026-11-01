@@ -24,7 +24,8 @@ class Settings:
 
 @dataclass(frozen=True)
 class Gate:
-    """Spec 6.9: the in-process Google OAuth gate. OAuth state lives in Firestore when a project is named, else in memory."""
+    """Spec 6.9: the in-process Google OAuth gate. OAuth state lives in Firestore when a project is named, else in FastMCP's
+    encrypted file store under FASTMCP_HOME (key derived from the JWT signing key)."""
     client_id: str
     client_secret: str
     base_url: str
