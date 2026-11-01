@@ -43,10 +43,19 @@ def mode_of(route_type: int, short: str) -> str:
     return "other"
 
 
+def member(z: zipfile.ZipFile, name: str) -> str:
+    """A GTFS file's path in the archive: at the root, or inside one top folder when exactly one holds it (spec 11, 2026-11-01)."""
+    names = z.namelist()
+    if name in names:
+        return name
+    nested = [n for n in names if n.count("/") == 1 and n.endswith("/" + name)]
+    return nested[0] if len(nested) == 1 else name
+
+
 def has(z: zipfile.ZipFile, name: str) -> bool:
-    return name in z.namelist()
+    return member(z, name) in z.namelist()
 
 
 def read_rows(z: zipfile.ZipFile, name: str) -> Iterator[dict[str, str]]:
-    with z.open(name) as f:
+    with z.open(member(z, name)) as f:
         yield from csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig"))
