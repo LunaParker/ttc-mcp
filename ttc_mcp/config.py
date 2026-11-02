@@ -9,6 +9,7 @@ from ttc_mcp import __version__
 
 DEFAULT_UA = f"ttc-mcp/{__version__} (+https://github.com/LunaParker/ttc-mcp)"
 GATE_VARS = ("GOOGLE_OAUTH_CLIENT_SECRET", "BASE_URL", "JWT_SIGNING_KEY", "ALLOWED_EMAILS")
+SECRET_VARS = ("GOOGLE_OAUTH_CLIENT_SECRET", "JWT_SIGNING_KEY", "STORAGE_ENCRYPTION_KEY")
 
 
 @dataclass(frozen=True)
@@ -23,7 +24,8 @@ class Settings:
 
 @dataclass(frozen=True)
 class Gate:
-    """Spec 6.9: the in-process Google OAuth gate. OAuth state lives in Firestore when a project is named, else in memory."""
+    """Spec 6.9: the in-process Google OAuth gate. OAuth state lives in Firestore when a project is named, else in FastMCP's
+    encrypted file store under FASTMCP_HOME (key derived from the JWT signing key)."""
     client_id: str
     client_secret: str
     base_url: str
@@ -50,19 +52,39 @@ def allowed_emails(raw: str) -> frozenset[str]:
     return frozenset(e.strip().lower() for e in raw.split(",") if e.strip())
 
 
+def _secret(env: Mapping[str, str], var: str) -> str | None:
+    """A secret set inline or read from the file <var>_FILE names (stripped); both, an unreadable file or an empty one refuses."""
+    inline, path = env.get(var) or None, env.get(f"{var}_FILE") or None
+    if inline and path:
+        raise RuntimeError(f"{var} and {var}_FILE are both set; set one of them")
+    if not path:
+        return inline
+    try:
+        value = Path(path).expanduser().read_text(encoding="utf-8").strip()
+    except OSError as e:
+        raise RuntimeError(f"{var}_FILE ({path}) cannot be read: {e.strerror or type(e).__name__}") from None
+    if not value:
+        raise RuntimeError(f"{var}_FILE ({path}) is empty")
+    return value
+
+
 def gate_settings(env: Mapping[str, str] | None = None) -> Gate | None:
-    """GOOGLE_OAUTH_CLIENT_ID turns the gate on; then every other variable is required, so a half-configured gate never starts."""
+    """GOOGLE_OAUTH_CLIENT_ID turns the gate on; then every other variable is required (a secret inline or as <name>_FILE),
+    so a half-configured gate never starts."""
     env = os.environ if env is None else env
     client_id = env.get("GOOGLE_OAUTH_CLIENT_ID")
     if not client_id:
         return None
-    missing = [k for k in GATE_VARS if not env.get(k)]
+    secrets = {k: _secret(env, k) for k in SECRET_VARS}
+    v = {k: (secrets[k] if k in secrets else env.get(k)) or "" for k in GATE_VARS}
+    missing = [k for k in GATE_VARS if not v[k]]
     if missing:
-        raise RuntimeError(f"GOOGLE_OAUTH_CLIENT_ID is set but {', '.join(missing)} is not; the gate needs all of {', '.join(GATE_VARS)}")
-    emails = allowed_emails(env["ALLOWED_EMAILS"])
+        raise RuntimeError(f"GOOGLE_OAUTH_CLIENT_ID is set but {', '.join(missing)} is not; the gate needs all of {', '.join(GATE_VARS)} "
+                           "(a secret may also come from a file named by <name>_FILE)")
+    emails = allowed_emails(v["ALLOWED_EMAILS"])
     if not emails:
         raise RuntimeError("ALLOWED_EMAILS names nobody; refusing to gate a server that would admit any Google account")
-    project, key = env.get("GOOGLE_CLOUD_PROJECT") or None, env.get("STORAGE_ENCRYPTION_KEY") or None
+    project, key = env.get("GOOGLE_CLOUD_PROJECT") or None, secrets["STORAGE_ENCRYPTION_KEY"]
     if project and not key:
         raise RuntimeError("GOOGLE_CLOUD_PROJECT is set but STORAGE_ENCRYPTION_KEY is not; OAuth state in Firestore must be encrypted")
-    return Gate(client_id, env["GOOGLE_OAUTH_CLIENT_SECRET"], env["BASE_URL"].rstrip("/"), emails, env["JWT_SIGNING_KEY"], project, key)
+    return Gate(client_id, v["GOOGLE_OAUTH_CLIENT_SECRET"], v["BASE_URL"].rstrip("/"), emails, v["JWT_SIGNING_KEY"], project, key)

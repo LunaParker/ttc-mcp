@@ -47,11 +47,24 @@ async def test_a_request_without_a_token_is_refused(monkeypatch):
         await gate.EmailAllowlist(GATE.allowed_emails).on_request(SimpleNamespace(), _ok)
 
 
-def test_build_auth_is_a_google_provider_on_the_base_url_with_memory_state_when_no_project():
+def test_build_auth_is_a_google_provider_on_the_base_url_with_fastmcps_own_store_when_no_project():
     from fastmcp.server.auth.providers.google import GoogleProvider
     auth = gate.build_auth(GATE)
     assert isinstance(auth, GoogleProvider) and str(auth.base_url).rstrip("/") == "https://ttc.example"
     assert gate.client_storage(GATE) is None
+
+
+@pytest.mark.anyio
+async def test_without_a_project_oauth_state_is_encrypted_on_disk_and_survives_a_restart(fastmcp_home):
+    """Self-hosting relies on this: a restarted server must still know claude.ai's registration (spec 6.9)."""
+    from mcp.shared.auth import OAuthClientInformationFull
+    from pydantic import AnyUrl
+    client = OAuthClientInformationFull(client_id="client-test", redirect_uris=[AnyUrl("https://claude.ai/api/mcp/auth_callback")])
+    await gate.build_auth(GATE).register_client(client)
+    got = await gate.build_auth(GATE).get_client("client-test")
+    assert got is not None and got.client_id == "client-test"
+    stored = [p.read_bytes() for p in (fastmcp_home / "oauth-proxy").rglob("*client_test*.json")]
+    assert stored and all(b"auth_callback" not in b for b in stored)
 
 
 def test_client_storage_refuses_a_project_without_a_key_before_touching_firestore(monkeypatch):
@@ -85,8 +98,8 @@ def _free_port():
 
 def _env(tmp_path, **gate_vars):
     """The developer's shell minus anything that would turn the gate, Firestore or the bucket on; the test names what it wants."""
-    env = {k: v for k, v in os.environ.items() if k not in CLOUD_VARS and not k.startswith("GOOGLE_OAUTH")}
-    return {**env, "TTC_MCP_SKIP_REFRESH": "1", "TTC_MCP_CACHE": str(tmp_path), **gate_vars}
+    env = {k: v for k, v in os.environ.items() if k not in CLOUD_VARS and not k.startswith(("GOOGLE_OAUTH", "JWT_SIGNING_KEY", "STORAGE_ENCRYPTION_KEY"))}
+    return {**env, "TTC_MCP_SKIP_REFRESH": "1", "TTC_MCP_CACHE": str(tmp_path), "FASTMCP_HOME": str(tmp_path / "fastmcp"), **gate_vars}
 
 
 def _boot(env, port):

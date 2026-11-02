@@ -301,9 +301,13 @@ docker run --rm -p 127.0.0.1:8080:8080 -v ttc-mcp-data:/data ttc-mcp
 
 The server is then at `http://127.0.0.1:8080/mcp`. The container never checks the City's portal by itself: run the build command again to refresh the timetable (it does nothing when the TTC hasn't published a new one), and the running server picks the new one up on its next request. Call the installed commands under `/app/.venv/bin`, not `python -m ttc_mcp...`, which inside `/app` would load the source copy instead of the installed package. `-e TTC_MCP_NOW=2026-10-06T08:00` pins the clock the server uses for timetables and closure windows, for a date a loaded timetable covers; live feeds still answer with today's data.
 
+### On your own Linux machine
+
+The maintainer's copy runs this way: two systemd user units, the HTTP server on loopback behind Google sign-in and a daily timer that runs `ttc-mcp-build` instead of a cloud Job, published over HTTPS through a Cloudflare Tunnel. Secrets sit in their own files (`GOOGLE_OAUTH_CLIENT_SECRET_FILE`, `JWT_SIGNING_KEY_FILE`), and the OAuth state stays on disk, encrypted, so a restart doesn't sign clients out. [docs/self-host.md](docs/self-host.md) has the unit files, the tunnel, the checks and a note on keeping a WSL distro running.
+
 ### Google Cloud Run
 
-The hosted shape, specified in [docs/spec.md](docs/spec.md) section 6.9, uses the same image twice:
+The hosted shape, specified in [docs/spec.md](docs/spec.md) section 6.9, uses the same image twice (the maintainer's copy ran this way until 2026-11-01):
 
 - A **Cloud Run service** runs the server over HTTPS behind Google sign-in, scaling between zero and one instance. At startup and every six hours it pulls the timetable from a Cloud Storage bucket; it never contacts the City's portal itself.
 - A **Cloud Run Job**, started daily at 04:30 Toronto time by Cloud Scheduler, runs `ttc-mcp-build --bucket`: it pulls the bucket's timetable, checks the City's portal, and builds and pushes a new timetable only when the TTC has published one.
@@ -337,8 +341,10 @@ The server reads these environment variables, and `ttc-mcp-build` reads `TTC_MCP
 | `BASE_URL` | | The service's public origin; the OAuth redirect URI is `BASE_URL/auth/callback` |
 | `JWT_SIGNING_KEY` | | Signs the tokens the server issues |
 | `ALLOWED_EMAILS` | | The Google accounts allowed in, comma-separated; an empty list refuses to start |
-| `GOOGLE_CLOUD_PROJECT` | unset (OAuth state in memory) | Keeps the OAuth state in this project's Firestore database |
+| `GOOGLE_OAUTH_CLIENT_SECRET_FILE`, `JWT_SIGNING_KEY_FILE`, `STORAGE_ENCRYPTION_KEY_FILE` | unset | A file holding that secret, read and trimmed at startup, instead of the variable itself (never both); an unreadable or empty file refuses to start |
+| `GOOGLE_CLOUD_PROJECT` | unset (OAuth state in encrypted files under `FASTMCP_HOME`) | Keeps the OAuth state in this project's Firestore database |
 | `STORAGE_ENCRYPTION_KEY` | | The Fernet key that encrypts that state; required with `GOOGLE_CLOUD_PROJECT` |
+| `FASTMCP_HOME` | FastMCP's per-user data directory | Read by FastMCP: without Firestore the gate's OAuth state lives here, encrypted with a key derived from `JWT_SIGNING_KEY` |
 
 Command options:
 

@@ -1,3 +1,4 @@
+import fastmcp
 import httpx
 import pytest
 
@@ -30,3 +31,11 @@ def no_network(monkeypatch):
     yield
     if reached:
         pytest.fail("unit test reached the network: " + ", ".join(sorted({httpx.URL(u).host for u in reached})))
+
+
+@pytest.fixture(autouse=True)
+def fastmcp_home(monkeypatch, tmp_path_factory):
+    """A provider built without a store keeps FastMCP's encrypted OAuth state under settings.home; never the developer's real one."""
+    home = tmp_path_factory.mktemp("fastmcp-home")
+    monkeypatch.setattr(fastmcp.settings, "home", home)
+    return home

@@ -73,3 +73,38 @@ def test_settings_refuse_a_pull_interval_under_a_minute(monkeypatch):
             config.settings()
     monkeypatch.setenv("TTC_MCP_PULL_S", "60")
     assert config.settings().pull_s == 60
+
+
+def _without(*keys):
+    return {k: v for k, v in FULL.items() if k not in keys}
+
+
+@pytest.mark.parametrize("var, field", [("GOOGLE_OAUTH_CLIENT_SECRET", "client_secret"), ("JWT_SIGNING_KEY", "jwt_signing_key")])
+def test_a_gate_secret_can_come_from_a_file_and_is_stripped(tmp_path, var, field):
+    f = tmp_path / "secret"
+    f.write_text("  from-file-test\n")
+    assert getattr(config.gate_settings(_without(var) | {f"{var}_FILE": str(f)}), field) == "from-file-test"
+
+
+def test_the_firestore_key_can_come_from_a_file(tmp_path):
+    f = tmp_path / "fernet"
+    f.write_text("fernet-from-file-test\n")
+    assert config.gate_settings({**FULL, "GOOGLE_CLOUD_PROJECT": "proj", "STORAGE_ENCRYPTION_KEY_FILE": str(f)}).storage_key == "fernet-from-file-test"
+
+
+def test_a_secret_set_inline_and_as_a_file_is_refused_without_either_value(tmp_path):
+    f = tmp_path / "secret"
+    f.write_text("from-file-test")
+    with pytest.raises(RuntimeError, match="JWT_SIGNING_KEY and JWT_SIGNING_KEY_FILE") as e:
+        config.gate_settings({**FULL, "JWT_SIGNING_KEY_FILE": str(f)})
+    assert "jwt-test" not in str(e.value) and "from-file-test" not in str(e.value)
+
+
+@pytest.mark.parametrize("content", [None, "", " \n"])
+def test_an_unreadable_or_empty_secret_file_is_refused_by_name_and_path(tmp_path, content):
+    f = tmp_path / "secret"
+    if content is not None:
+        f.write_text(content)
+    with pytest.raises(RuntimeError, match="GOOGLE_OAUTH_CLIENT_SECRET_FILE") as e:
+        config.gate_settings(_without("GOOGLE_OAUTH_CLIENT_SECRET") | {"GOOGLE_OAUTH_CLIENT_SECRET_FILE": str(f)})
+    assert str(f) in str(e.value)
