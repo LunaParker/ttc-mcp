@@ -7,7 +7,7 @@
 
 Live answers about Toronto's transit network, for Claude and other MCP clients.
 
-ttc-mcp is a [Model Context Protocol](https://modelcontextprotocol.io) server for the Toronto Transit Commission (TTC). It lets an assistant answer the questions riders actually ask: when the next streetcar comes, whether a subway line is closed and where the shuttle buses run, how to get across town by a given time and around a closure, whether a station is step-free today. It reads the TTC's timetables and live feeds when you ask, says how fresh each answer is, and attaches service disruptions to every answer they touch.
+ttc-mcp is a [Model Context Protocol](https://modelcontextprotocol.io) server for the Toronto Transit Commission (TTC). It lets an assistant answer the questions riders ask: when the next streetcar comes, whether a subway line is closed and where the shuttle buses run, how to get across town by a given time and around a closure, whether a station is step-free today. It reads the TTC's timetables and live feeds when you ask, says how fresh each answer is, and attaches service disruptions to every answer they touch.
 
 It is an independent, single-user project, not affiliated with or endorsed by the TTC or the City of Toronto.
 
@@ -31,7 +31,7 @@ You ask in plain language and the client picks the tools. Some examples:
 
 | Ask | Tools | What comes back |
 |---|---|---|
-| How do I get from Spadina to Pape? | `connections` | Timetable-exact trips: real departures and arrivals on every leg, up to three transfers, a departure window or an arrival time, the next departures of the first ride, and every disruption on the way with the legs it affects |
+| How do I get from Spadina to Pape? | `connections` | Trips with exact times on every leg, and the disruptions on the way |
 | I'm at the Distillery District. How do I get to Union? | a maps tool to geocode, then `connections` | The same, starting from the place's coordinates |
 | I have to be at Union by 9. When do I leave Kipling? | `connections` with `arrive_by` | The latest trips that still arrive in time, each with its exact times |
 | When's the next 504 at King and Spadina? | `find_stops`, `arrivals` | Predicted minutes with crowding, or timetable minutes and a note when nothing is predicted |
@@ -183,8 +183,8 @@ The [specification](docs/spec.md) records each decision with its evidence; secti
 - **It says how fresh every answer is.** A stale cached answer is never labelled fresh, and timetable minutes always carry `basis: schedule` (see `meta` above).
 - **Disruptions travel with the answer.** Closures, detours, reduced speed zones, delays and elevator outages are attached to the stops, stations, arrivals and trips they affect, and the trip planner never boards, drops off or transfers you at a station closed at the time you ask about, never stops a detoured bus at a stop its detour skips, and never puts you on a train across a section closed at that time.
 - **Trips are planned on the timetable itself.** `connections` searches the trips the TTC actually runs (the RAPTOR algorithm, over an index built with the timetable and loaded into memory once per timetable), so every ride is a real trip with its own departure and arrival. A change between vehicles costs the walk, timed through the station's mapped passageways where the TTC publishes them, plus a two-minute buffer. The answer is the fastest trip for each number of transfers, from one moment, across a departure window, or by an arrival time. For a question within an hour of now it reads the TTC's live trip updates for buses, streetcars and the subway, so the trips it boards run at their predicted times; Lines 5 and 6 publish no trip updates and stay on the timetable.
-- **Closures follow how the TTC runs them.** Stations inside a closure have no trains. Each end station keeps running on the platform facing the open part of the line, and that is where the shuttle buses start. A train prediction for a closed platform is set aside, not trusted.
-- **It says which numbers are estimates:** a shuttle leg's minutes assume a headway and a bus speed, the note states them, and the trip is flagged `estimate`. Every ride is a real trip, at its timetable times or, near now, at the times the TTC's live trip updates predict. Crowding reads "No info" without data. A step-free verdict is `unknown` when a station's elevators aren't fully mapped. Timetable fallbacks say `basis: schedule`.
+- **Closures follow how the TTC runs them.** Each end station keeps the platform facing the open part of the line, and the shuttle buses start there; [The network is disrupted](#the-network-is-disrupted) has the details.
+- **It says which numbers are estimates.** A shuttle leg's minutes are flagged `estimate` (see [An answer during a closure](#an-answer-during-a-closure)), crowding reads "No info" without data, and a step-free verdict is `unknown` when a station's elevators aren't fully mapped.
 - **Timetables come from the TTC's published GTFS**, built into a local SQLite file, with the trip planner's index, and rebuilt only when the City of Toronto's portal publishes a new one. During a board-period changeover both timetables stay loaded, so trips from either resolve.
 - **Live data comes from the TTC's own feeds**: BusTime for buses and streetcars, NTAS for the subway and LRT, and the TTC's alert and GTFS-Realtime feeds (alerts, detours, and trip updates for buses, streetcars and the subway). Every request names the project in its User-Agent, and a failing source is backed off (see below).
 - **Lines 5 and 6 are rapid transit** everywhere: stations, platforms, closures and train predictions.
