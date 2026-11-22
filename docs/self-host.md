@@ -165,3 +165,21 @@ When a release bumps the timetable schema the server skips the old file until th
 ## On WSL
 
 A WSL2 distro with systemd enabled runs all of this, but WSL stops a distro a few seconds after its last client exits, linger or not. Keep one detached client alive from Windows, for example a scheduled task with a boot trigger that runs `wsl.exe -d <distro> --exec sleep infinity` hidden under an S4U principal, so the distro and its units come back after an unattended reboot. A loopback bind and an outbound tunnel need no port forwarding and no mirrored networking.
+
+## Variables for a hosted copy
+
+A hosted copy, here or on Cloud Run, reads these on top of the variables in the [README's Configuration table](../README.md#configuration); `ttc-mcp-build` reads `TTC_MCP_STATIC_BUCKET` too.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `TTC_MCP_STATIC_BUCKET` | unset | HTTP server: pull the timetable from this Cloud Storage bucket at startup and every `TTC_MCP_PULL_S` seconds, and never check the portal. Build: pull the bucket's timetable first and push the result after. Needs the `cloud` extra (`uv sync --extra cloud`) and Google Cloud credentials |
+| `TTC_MCP_PULL_S` | `21600` (6 hours) | How often the HTTP server pulls the bucket; values under 60 are refused |
+| `GOOGLE_OAUTH_CLIENT_ID` | unset (no sign-in) | Turns on Google sign-in for the HTTP server; the next four become required, and a half-configured gate refuses to start |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | | The OAuth client's secret |
+| `BASE_URL` | | The service's public origin; the OAuth redirect URI is `BASE_URL/auth/callback` |
+| `JWT_SIGNING_KEY` | | Signs the tokens the server issues |
+| `ALLOWED_EMAILS` | | The Google accounts allowed in, comma-separated; an empty list refuses to start |
+| `GOOGLE_OAUTH_CLIENT_SECRET_FILE`, `JWT_SIGNING_KEY_FILE`, `STORAGE_ENCRYPTION_KEY_FILE` | unset | A file holding that secret, read and trimmed at startup, instead of the variable itself (never both); an unreadable or empty file refuses to start |
+| `GOOGLE_CLOUD_PROJECT` | unset (OAuth state in encrypted files under `FASTMCP_HOME`) | Keeps the OAuth state in this project's Firestore database |
+| `STORAGE_ENCRYPTION_KEY` | | The Fernet key that encrypts that state; required with `GOOGLE_CLOUD_PROJECT` |
+| `FASTMCP_HOME` | FastMCP's per-user data directory | Read by FastMCP: without Firestore the gate's OAuth state lives here, encrypted with a key derived from `JWT_SIGNING_KEY` |

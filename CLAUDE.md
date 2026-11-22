@@ -1,6 +1,6 @@
 # ttc-mcp
 
-MCP server for the TTC network. `docs/spec.md` is normative: when code and spec disagree, fix one and say which. `docs/data-quirks.md` lists the live data facts the code depends on; spec section 11 is the dated verification log; the README is the user-facing guide (what to ask, hosting, degraded service, licences).
+MCP server for the TTC network. `docs/spec.md` is normative: when code and spec disagree, fix one and say which. `docs/data-quirks.md` lists the live data facts the code depends on; spec section 11 is the dated verification log; the README is the user-facing guide (what to ask, running and hosting it, licences), and `docs/degraded-service.md` covers how answers read when a source fails, the network is disrupted or the timetable is old.
 
 ## What this is
 
