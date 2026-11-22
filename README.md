@@ -15,14 +15,13 @@ It is an independent, single-user project, not affiliated with or endorsed by th
 
 - [What you can ask](#what-you-can-ask)
 - [An answer during a closure](#an-answer-during-a-closure)
-- [The tools](#the-tools)
-- [Design](#design)
-- [When service is degraded](#when-service-is-degraded)
 - [Running it](#running-it)
+- [The tools](#the-tools)
+- [How it behaves](#how-it-behaves)
 - [Configuration](#configuration)
 - [Data sources and licences](#data-sources-and-licences)
-- [Licence](#licence)
 - [Development](#development)
+- [Licence](#licence)
 - [Disclaimer](#disclaimer)
 
 ## What you can ask
@@ -85,73 +84,6 @@ Three things to notice:
 - `meta` says the predictions were fetched live and are fresh, and that the disruption feeds answered.
 
 `connections` plans across a closure on the shuttle buses, with the shuttle leg's minutes marked as an estimate; [docs/degraded-service.md](docs/degraded-service.md#a-trip-across-a-closure) walks through a trip from Finch to Union across a nightly Line 1 closure.
-
-## The tools
-
-Nineteen tools in four groups. Station inputs take an id, a name or a common alias ("Dundas" finds TMU, "Bloor" finds Bloor-Yonge); stop inputs take the public stop number posted at the stop. The output shapes are specified in [docs/spec.md](docs/spec.md) section 4.4.
-
-**Timetable and network**, answered from the TTC's published GTFS on disk:
-
-| Tool | Takes | Answers with |
-|---|---|---|
-| `find_stops` | a name, stop number or station alias; optional route, direction, mode | Matching stops, platforms and stations, with the routes and headsigns each serves |
-| `nearest_stops` | `lat`, `lon`; optional radius (500 m), limit, kind | Nearby stops and stations with walking minutes, routes served and the disruptions touching each (`active_now` says which apply now) |
-| `stop` | a stop number | One stop or platform: location, wheelchair flag, routes, station and disruptions |
-| `station` | a station id, name or alias | Rail platforms with open or closed status, bus bays and streetcar platforms, entrances, the accessibility summary and service per line |
-| `routes` | optional series, mode, `overnight` | Every route with its mode, series (Blue Night, express and community among them) and service hours |
-| `route_stops` | route, direction (0 or 1); optional pattern | Ordered stops per stop pattern, with typical minutes and each stop's status: open, closed or skipped by a detour |
-| `service_hours` | route; optional date | Whether the route runs that day, and its first and last trips |
-| `scheduled_departures` | stop; optional route, time, limit | Timetable departures from a time, including trips past midnight |
-
-**Live**, fetched from the TTC when asked:
-
-| Tool | Takes | Answers with |
-|---|---|---|
-| `arrivals` | a stop number or rail platform; optional route, limit | Next vehicles with minutes, crowding and detour flags, or timetable minutes with a note |
-| `next_trains` | a station or platform | Next trains on every platform, or why a platform has none |
-| `vehicles` | a route or fleet number | Bus and streetcar positions, bearing, speed, current stop and crowding |
-| `feed_status` | optional `probe` | The age and health of every source and of the timetable; `probe: true` checks each source now |
-
-**Disruptions**:
-
-| Tool | Takes | Answers with |
-|---|---|---|
-| `alerts` | optional route, station, stop, type | Current alerts in one shape: closures, suspensions, detours, reduced speed zones, delays, elevator and escalator outages |
-| `service_status` | nothing | The network picture, and the first call for "what's going on" |
-| `detours` | optional route | Active detours with skipped stops, the detour's path, trips affected and the reason |
-| `service_changes` | optional route, date | Route changes for the current board period |
-
-**Derived**:
-
-| Tool | Takes | Answers with |
-|---|---|---|
-| `route_shape` | route, direction; optional pattern, format, simplification, a stop-to-stop span | The route's geometry with its stops |
-| `accessibility` | a station or stop | Platform and entrance flags, elevators and escalators with live status, and a step-free verdict with its basis |
-| `connections` | origin and destination (a stop, a station or `{lat, lon}`); optional maximum transfers (0 to 3), walking distance, a departure time (`depart_at`) with a window (`window_min`, 30 minutes by default) or an arrival time (`arrive_by`), limit | Timetable-exact trips: real departures and arrivals on every leg, up to three transfers, a departure window or an arrival time, the next departures of the first ride, and every disruption on the way with the legs it affects |
-
-Every answer carries `meta`, which names the feeds that answered and says how fresh the answer is, and rows that give times carry `basis`: `realtime` or `schedule`. [docs/degraded-service.md](docs/degraded-service.md#reading-an-answer) explains every field.
-
-## Design
-
-The [specification](docs/spec.md) records each decision with its evidence; section 7 is the summary. The ones that shape what you see:
-
-- **It fetches only when asked.** There is no background polling. A question triggers the requests it needs, each source is cached for its own refresh interval (from 10 seconds for train predictions to 10 minutes for service changes), and simultaneous questions share one request. An idle server sends nothing, which is light on the TTC's servers and lets a hosted copy scale to zero.
-- **It says how fresh every answer is.** A stale cached answer is never labelled fresh, and timetable minutes always carry `basis: schedule` (see `meta` above).
-- **Disruptions travel with the answer.** Closures, detours, reduced speed zones, delays and elevator outages are attached to the stops, stations, arrivals and trips they affect, and the trip planner never boards, drops off or transfers you at a station closed at the time you ask about, never stops a detoured bus at a stop its detour skips, and never puts you on a train across a section closed at that time.
-- **Trips are planned on the timetable itself.** `connections` searches the trips the TTC actually runs (the RAPTOR algorithm, over an index built with the timetable and loaded into memory once per timetable), so every ride is a real trip with its own departure and arrival. A change between vehicles costs the walk, timed through the station's mapped passageways where the TTC publishes them, plus a two-minute buffer. The answer is the fastest trip for each number of transfers, from one moment, across a departure window, or by an arrival time. For a question within an hour of now it reads the TTC's live trip updates for buses, streetcars and the subway, so the trips it boards run at their predicted times; Lines 5 and 6 publish no trip updates and stay on the timetable.
-- **Closures follow how the TTC runs them.** Each end station keeps the platform facing the open part of the line, and the shuttle buses start there; [The network is disrupted](docs/degraded-service.md#the-network-is-disrupted) has the details.
-- **It says which numbers are estimates.** A shuttle leg's minutes are flagged `estimate` (see [An answer during a closure](#an-answer-during-a-closure)), crowding reads "No info" without data, and a step-free verdict is `unknown` when a station's elevators aren't fully mapped.
-- **Timetables come from the TTC's published GTFS**, built into a local SQLite file, with the trip planner's index, and rebuilt only when the City of Toronto's portal publishes a new one. During a board-period changeover both timetables stay loaded, so trips from either resolve.
-- **Live data comes from the TTC's own feeds**: BusTime for buses and streetcars, NTAS for the subway and LRT, and the TTC's alert and GTFS-Realtime feeds (alerts, detours, and trip updates for buses, streetcars and the subway). Every request names the project in its User-Agent, and a failing source is backed off (see below).
-- **Lines 5 and 6 are rapid transit** everywhere: stations, platforms, closures and train predictions.
-- **Accessibility reads the rail platforms**, not the station's own flag (which the feed sets on every station) and not its bus bays, and takes elevator status from live alerts.
-- **No geocoding.** Addresses are a maps tool's job, so the server needs no maps API key.
-- **One person, gated when hosted.** A hosted copy sits behind Google sign-in with an email allowlist, and it speaks stateless HTTP so an idle connection never keeps an instance running.
-- **Built on [FastMCP](https://gofastmcp.com) 4 and Python 3.14.**
-
-## When service is degraded
-
-The server answers what it can and says what it couldn't. When a source fails, its last good answer is reused for a while and marked `cache: stale_fallback`; after that, live answers fall back to the timetable with `basis: schedule`, and a source that keeps failing is backed off so the TTC's servers aren't hammered. A disruption feed that fails is named in `meta`, so read "no disruptions" in that answer as unknown, not as all clear. During a closure the closed platforms read `suspended`, and `connections` never boards you, drops you off or transfers you at a closed station: it crosses the gap on the shuttle buses and flags the shuttle leg as an estimate. [docs/degraded-service.md](docs/degraded-service.md) has each source's refresh and fallback windows, how each kind of disruption shows up, and what happens when the timetable is missing or old.
 
 ## Running it
 
@@ -227,20 +159,39 @@ The maintainer's copy runs this way: two systemd user units, the HTTP server on 
 
 ### Google Cloud Run
 
-The hosted shape, specified in [docs/spec.md](docs/spec.md) section 6.9, uses the same image twice (the maintainer's copy ran this way until 2026-11-01):
-
-- A **Cloud Run service** runs the server over HTTPS behind Google sign-in, scaling between zero and one instance. At startup and every six hours it pulls the timetable from a Cloud Storage bucket; it never contacts the City's portal itself.
-- A **Cloud Run Job**, started daily at 04:30 Toronto time by Cloud Scheduler, runs `ttc-mcp-build --bucket`: it pulls the bucket's timetable, checks the City's portal, and builds and pushes a new timetable only when the TTC has published one.
-- **Google sign-in** runs inside the server: FastMCP's Google OAuth provider with dynamic client registration, then an email allowlist checked on every request. The OAuth state is kept, encrypted, in Firestore so sign-ins survive scaling to zero, and its three secrets live in Secret Manager.
-
-For one person this is sized to stay within Google Cloud's free tiers (the estimate is in spec 6.9); check your project's billing before you start. [docs/cloud-run.md](docs/cloud-run.md) is the build specification for the hosted copy: what gets provisioned, how it is sized now that the trip planner keeps its index in memory, the order deploys must follow when the timetable format changes, and the checks that say it works.
-
-[docs/deploy.md](docs/deploy.md) is the complete runbook, one block of commands per step: billing headroom, APIs, service accounts, the bucket, the secrets, the OAuth client, Firestore, the image, the Job (run once so the bucket has a timetable), the service, the scheduler, then the connectors and the post-deploy checks. It ran end to end on 2026-10-18, and the fixes that run needed are in it. It is written with this project's names, region and allowlist address, uses `pbpaste` (macOS) to keep secrets out of the terminal, and assumes the project already has an OAuth consent screen; substitute yours.
+The same image also runs on Cloud Run, as the maintainer's copy did until 2026-11-01: a service behind Google sign-in that scales between zero and one instance and pulls its timetable from a Cloud Storage bucket, and a Cloud Run Job, started daily by Cloud Scheduler, that builds and pushes a new timetable when the TTC publishes one. For one person it is sized to stay within Google Cloud's free tiers (the estimate is in spec section 6.9); check your project's billing before you start. [docs/cloud-run.md](docs/cloud-run.md) is the build specification and [docs/deploy.md](docs/deploy.md) the runbook, one block of commands per step.
 
 Once it is deployed, connect a client to `https://<your-service-url>/mcp`:
 
 - **claude.ai:** Settings, Connectors, Add custom connector. Paste the URL, leave the advanced OAuth settings empty, and sign in with an allowlisted Google account; the Claude apps share the connector.
 - **Claude Code:** `claude mcp add --transport http ttc https://<your-service-url>/mcp`, then sign in from `/mcp`.
+
+## The tools
+
+Nineteen tools in four groups. Station inputs take an id, a name or a common alias ("Dundas" finds TMU, "Bloor" finds Bloor-Yonge); stop inputs take the public stop number posted at the stop. [docs/spec.md](docs/spec.md) lists each tool's inputs in sections 4.1 and 4.2 and specifies its output in section 4.4.
+
+- **Timetable and network**, answered from the TTC's published GTFS on disk: `find_stops`, `nearest_stops`, `stop`, `station`, `routes`, `route_stops`, `service_hours` and `scheduled_departures`.
+- **Live**, fetched from the TTC when asked: `arrivals`, `next_trains`, `vehicles` and `feed_status`.
+- **Disruptions**: `alerts`, `service_status` (the network picture, and the first call for "what's going on"), `detours` and `service_changes`.
+- **Derived**: `route_shape`, `accessibility` and `connections`.
+
+Every answer carries `meta`, which names the feeds that answered and says how fresh the answer is, and rows that give times carry `basis`: `realtime` or `schedule`. [docs/degraded-service.md](docs/degraded-service.md#reading-an-answer) explains every field.
+
+## How it behaves
+
+The [specification](docs/spec.md) records each decision with its evidence; section 7 is the summary. The ones that shape what you see:
+
+- **It fetches only when asked.** There is no background polling. A question triggers the requests it needs, each source is cached for its own refresh interval (from 10 seconds for train predictions to 10 minutes for service changes), and simultaneous questions share one request. An idle server sends nothing, which is light on the TTC's servers and lets a hosted copy scale to zero.
+- **Trips are planned on the timetable itself.** `connections` searches the trips the TTC actually runs (the RAPTOR algorithm, over an index built with the timetable and loaded into memory once per timetable), so every ride is a real trip with its own departure and arrival. A change between vehicles costs the walk, timed through the station's mapped passageways where the TTC publishes them, plus a two-minute buffer. The answer is the fastest trip for each number of transfers, from one moment, across a departure window, or by an arrival time. For a question within an hour of now it reads the TTC's live trip updates for buses, streetcars and the subway, so the trips it boards run at their predicted times; Lines 5 and 6 publish no trip updates and stay on the timetable.
+- **Lines 5 and 6 are rapid transit** everywhere: stations, platforms, closures and train predictions.
+- **Accessibility reads the rail platforms**, not the station's own flag (which the feed sets on every station) and not its bus bays, and takes elevator status from live alerts.
+- **No geocoding.** Addresses are a maps tool's job, so the server needs no maps API key.
+- **One person, gated when hosted.** A hosted copy sits behind Google sign-in with an email allowlist, and it speaks stateless HTTP so an idle connection never keeps an instance running.
+- **Built on [FastMCP](https://gofastmcp.com) 4 and Python 3.14.**
+
+### When service is degraded
+
+The server answers what it can and says what it couldn't. When a source fails, its last good answer is reused for a while and marked `cache: stale_fallback`; after that, live answers fall back to the timetable with `basis: schedule`, and a source that keeps failing is backed off so the TTC's servers aren't hammered. A disruption feed that fails is named in `meta`, so read "no disruptions" in that answer as unknown, not as all clear. During a closure the closed platforms read `suspended`, and `connections` never boards you, drops you off or transfers you at a closed station: it crosses the gap on the shuttle buses and flags the shuttle leg as an estimate. [docs/degraded-service.md](docs/degraded-service.md) has each source's refresh and fallback windows, how each kind of disruption shows up, and what happens when the timetable is missing or old.
 
 ## Configuration
 
@@ -285,19 +236,15 @@ ttc-mcp reads two kinds of TTC data: open data the TTC publishes on the City of 
 | Closures with their spans and shuttles, reduced speed zones, elevator and escalator outages | `alerts.ttc.ca` | Behind the TTC's website |
 | Route service levels and service changes | `www.ttc.ca/ttcapi` | Behind the TTC's website |
 
-**Open data.** The TTC publishes the four portal datasets, and their pages on the portal give the [Open Government Licence – Toronto](https://open.toronto.ca/open-data-licence/); the portal's API leaves their licence field unspecified. The licence lets you copy, modify, publish and distribute the information for any lawful purpose, commercial included, on a few conditions: credit the source with the attribution statement below and, where possible, link to the licence; don't suggest that the City or the TTC endorses you or your use; it grants no rights to personal information, third parties' rights, official names, crests, logos or trademarks; the information comes as is, without warranty; and the rights end automatically if you don't meet the conditions. ttc-mcp's attribution, which the server also sends to every client in its instructions, with the licence link:
+**Open data.** The TTC publishes the four portal datasets under the [Open Government Licence – Toronto](https://open.toronto.ca/open-data-licence/), as their pages on the portal say (the portal's API leaves their licence field unspecified). The licence allows any lawful use, commercial included, on conditions it sets out, among them crediting the source with the attribution statement below and not suggesting that the City or the TTC endorses you. ttc-mcp's attribution, which the server also sends to every client in its instructions, with the licence link:
 
 > Contains information licensed under the Open Government Licence – Toronto.
 
-**Endpoints behind the TTC's website.** Stop predictions, train predictions, alerts.ttc.ca and ttc.ca's route data aren't open data: they are what the TTC's own website and BusTime map call, and the TTC publishes no terms specific to them. Its [website terms of use](https://www.ttc.ca/transparency-and-accountability/policies/web-site-terms-and-conditions-of-use) let you view and copy material from its site for your own personal, non-commercial use if you leave its copyright, trademark and other notices in place; reserve selling or modifying that material, and republishing, reproducing, displaying or distributing any substantial part of it, to the TTC's prior written permission; ask for the source to be acknowledged whenever TTC material is copied or published; and disclaim its accuracy. They don't say whether they reach these endpoints. ttc-mcp calls them on demand, as the website does, and adds a cache, a User-Agent naming the project and backoff when they fail, to answer one person's own trip questions. It is built for that personal, non-commercial use; whether other uses are allowed is for the TTC to say, and the portal lists opendata@ttc.ca as its open-data contact. The TTC can change or withdraw these endpoints at any time, which is why the answers built on them are marked best effort.
+**Endpoints behind the TTC's website.** Stop predictions, train predictions, alerts.ttc.ca and ttc.ca's route data aren't open data: they are what the TTC's own website and BusTime map call, and the TTC publishes no terms specific to them. Its [website terms of use](https://www.ttc.ca/transparency-and-accountability/policies/web-site-terms-and-conditions-of-use) allow personal, non-commercial use of material from its site and reserve selling, modifying or republishing it to the TTC's prior written permission, but they don't say whether they reach these endpoints. ttc-mcp calls them on demand, as the website does, and adds a cache, a User-Agent naming the project and backoff when they fail, to answer one person's own trip questions. It is built for that personal, non-commercial use; whether other uses are allowed is for the TTC to say, and the portal lists opendata@ttc.ca as its open-data contact. The TTC can change or withdraw these endpoints at any time, which is why the answers built on them are marked best effort.
 
 This section describes the terms as published on 12 October 2026, and it isn't legal advice.
 
 **Not affiliated.** ttc-mcp is an independent project. It is not affiliated with, endorsed by or supported by the Toronto Transit Commission or the City of Toronto, whose names and marks belong to them.
-
-## Licence
-
-ttc-mcp's code is released under the [MIT License](LICENSE.md). The licence covers the code only: the data it reads stays under its publishers' terms, described above, whoever runs it. The Python packages it depends on keep their own licences: MIT, BSD and Apache 2.0 for most of them, ISC, PSF 2.0, MIT-0 and the Unlicense for a few, and MPL 2.0 for the certifi certificate bundle.
 
 ## Development
 
@@ -323,6 +270,10 @@ scripts/smoke_image.sh                 # the container smoke test (needs Docker)
 ```
 
 Every pull request runs four CI jobs: the unit suite, lint, a package build and the container smoke test.
+
+## Licence
+
+ttc-mcp's code is released under the [MIT License](LICENSE.md). The licence covers the code only: the data it reads stays under its publishers' terms, described above, whoever runs it. The Python packages it depends on keep their own licences: MIT, BSD and Apache 2.0 for most of them, ISC, PSF 2.0, MIT-0 and the Unlicense for a few, and MPL 2.0 for the certifi certificate bundle.
 
 ## Disclaimer
 
